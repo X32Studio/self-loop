@@ -1,7 +1,7 @@
 // F-0012; synthetic archival roots, no production trusted-event assertion.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -28,7 +28,7 @@ test('selectors resolve exact pointers and unique headings without fenced decoys
 });
 
 function fixture(t) {
-  const repo = mkdtempSync(join(tmpdir(), 'plan-evidence-synthetic-'));
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), 'plan-evidence-synthetic-')));
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore','pipe','pipe'] }).trim();
   git('init'); git('config', 'user.email', 'synthetic@example.invalid'); git('config', 'user.name', 'Synthetic archive recorder');

@@ -1,5 +1,5 @@
 // P-0006, F-0012, design/dispatch.md#ready-state
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { git, regularFiles, run } from './git-plumbing.mjs';
 import { node as nodeCommand } from './commands.mjs';
@@ -18,7 +18,7 @@ export const HANDOFF_ID = /^R-(\d{4})-(reviewer|critic|actor|judge)((?:-[a-z]+)*
 const recordPointer = /^(?:PL|D|P|F|B|I|L)-\d{4}$|^R-\d{4}-[a-z]+(?:-[a-z]+)*$/;
 
 export function snapshot(records, revision = 'HEAD') {
-  records = resolve(records);
+  records = realpathSync(resolve(records));
   const head = git(records, 'rev-parse', `${revision}^{commit}`);
   const files = new Set(regularFiles(records, head).map(f => f.path)), cache = new Map();
   const bytes = path => {

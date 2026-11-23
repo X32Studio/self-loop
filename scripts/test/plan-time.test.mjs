@@ -1,7 +1,7 @@
 // F-0012, design/time-model.md
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -12,7 +12,7 @@ import { loadForecastHistory, projectPlanTime, validatePlanTime } from '../lib/p
 const hash = b => createHash('sha256').update(b).digest('hex');
 const at = s => new Date(Date.parse('2026-11-22T00:00:00Z') + s * 1000).toISOString();
 function fixture(t) {
-  const repo = mkdtempSync(join(tmpdir(), 'time-model-')); t.after(() => rmSync(repo, { recursive: true, force: true }));
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), 'time-model-'))); t.after(() => rmSync(repo, { recursive: true, force: true }));
   git(repo, 'init', '-q'); git(repo, 'config', 'user.name', 'Test'); git(repo, 'config', 'user.email', 'test@example.invalid');
   const write = (path, value) => { mkdirSync(dirname(join(repo, path)), { recursive: true }); writeFileSync(join(repo, path), typeof value === 'string' ? value : JSON.stringify(value)); };
   const commit = () => { git(repo, 'add', '.'); git(repo, '-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'fixture'); return git(repo, 'rev-parse', 'HEAD'); };
