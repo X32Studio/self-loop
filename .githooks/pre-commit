@@ -1,0 +1,4 @@
+#!/bin/sh
+# Git may give the hook a temporary index (for example, when committing selected paths).
+tree=$(git write-tree) || exit 1
+exec node "$(git rev-parse --show-toplevel)/scripts/version-gate.mjs" pre-commit "$tree"

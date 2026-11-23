@@ -1,0 +1,130 @@
+// Red probes on a4db050 for the v0.3 regression tests (the review cases that still apply to what v0.3 keeps).
+// Run: SK=<skill tree at a4db050> node probes-v02.mjs   (one line per case: `<case> <json>`)
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const SK = process.env.SK;
+const h = await import(`${SK}/scripts/test/helpers.mjs`);
+const { auditAccess } = await import(`${SK}/scripts/audit-access.mjs`);
+const { requiredChecks, pushCommit } = await import(`${SK}/scripts/lib/ci.mjs`);
+const { isAnswered, readDecisions, render } = await import(`${SK}/scripts/lib/decisions.mjs`);
+const out = (name, value) => console.log(`${name} ${JSON.stringify(value)}`);
+const tryCode = async fn => { try { return await h.code(fn); } catch (e) { return `throw ${String(e.message).split("\n")[0]}`; } };
+
+// 1 a judge report of an older version committed under rounds/ (no hand-off line) reaches a critic's view
+{
+  const s = await h.setup({}, { recordFiles: { "rounds/0002-judge.md": "# R-0002-judge\n\nHeld-out case 07 expects SYNTHETIC_HELDOUT_311.\n" } });
+  const into = join(h.temp(), "view");
+  s.loop.view(into, "critic", h.git(s.records, "rev-parse", "HEAD"));
+  out("legacy-judge-in-view", { inCriticView: h.grepTree(into, "SYNTHETIC_HELDOUT_311").length > 0 });
+}
+
+// 2 a header-like line of the judge's private report is copied into the public round record
+{
+  const report = "VERDICT: CONTINUE\nSHA: {{HEAD}}\nSUITE: 1/0\nOPENED: -\nCLOSED: -\nACCEPTANCE: -\nPRIVATE-NOTE: SYNTHETIC_SEALED_909\n\n# Ruling\n";
+  const s = await h.setup({ judge: [{ report, write: { "ws:out/public.md": "Properties only.\n" } }] }, { maxRounds: 1 });
+  await tryCode(() => s.loop.run());
+  const pub = join(s.records, "rounds/0001-judge.md");
+  out("private-header-in-public", { inPublicRecord: existsSync(pub) && readFileSync(pub, "utf8").includes("SYNTHETIC_SEALED_909") });
+}
+
+// 3 a committed symlink in the records reaches a view and points outside it
+{
+  const secret = join(h.temp(), "owner-private.md");
+  writeFileSync(secret, "OWNER_PRIVATE_515\n");
+  const s = await h.setup({});
+  mkdirSync(join(s.records, "research"), { recursive: true });
+  symlinkSync(secret, join(s.records, "research/notes.md"));
+  h.git(s.records, "add", "research/notes.md"); h.git(s.records, "commit", "-qm", "symlink");
+  const into = join(h.temp(), "view");
+  s.loop.view(into, "reviewer", h.git(s.records, "rev-parse", "HEAD"));
+  const p = join(into, "research/notes.md");
+  out("symlink-in-view", { symlinkInView: existsSync(p) && lstatSync(p).isSymbolicLink(), readsOutside: existsSync(p) && readFileSync(p, "utf8").includes("OWNER_PRIVATE_515") });
+}
+
+// 4 the same approved file spelled /tmp/... or /private/tmp/..., or through a symlinked folder, is a violation
+{
+  const ws = mkdtempSync("/tmp/self-loop-probe-");
+  writeFileSync(join(ws, "brief.md"), "brief\n");
+  const real = realpathSync(ws);
+  const tool = p => ({ id: "r", event: { type: "assistant", message: { content: [{ type: "tool_use", id: "t", name: "Read", input: { file_path: p } }] } } });
+  const link = join(mkdtempSync(join(tmpdir(), "self-loop-link-")), "ws");
+  symlinkSync(real, link);
+  out("audit-path-alias", {
+    root: real.startsWith("/private/tmp/") ? "/private/tmp/…" : real,
+    tmpSpelling: auditAccess(real, [tool(join(ws, "brief.md"))]).violations.length, // ws is the /tmp/… spelling
+    viaSymlinkedRoot: auditAccess(real, [tool(join(link, "brief.md"))]).violations.length,
+  });
+}
+
+// 5 CI: a queued re-run (no started_at yet) of a check that succeeded earlier; a re-run that failed
+{
+  const req = ["github-actions/verify"];
+  const ok = { app: "github-actions", name: "verify", status: "completed", conclusion: "success", started_at: "2026-11-20T01:00:00Z" };
+  const queued = { app: "github-actions", name: "verify", status: "queued", conclusion: null, started_at: null };
+  const failed = { app: "github-actions", name: "verify", status: "completed", conclusion: "failure", started_at: "2026-11-20T02:00:00Z" };
+  out("ci-reruns", { queuedRerunOk: requiredChecks([ok, queued], req).ok, failedRerunOk: requiredChecks([ok, failed], req).ok });
+}
+
+// 6 the protected-branch push reads the checks of the fetch repository, not of the push destination
+{
+  const product = h.repo({ "a.txt": "1\n" });
+  h.git(product, "remote", "add", "origin", "https://github.com/example/fetch.git");
+  h.git(product, "remote", "set-url", "--push", "origin", "https://github.com/example/push.git");
+  const queried = [];
+  const r = pushCommit({ repo: product, sha: h.git(product, "rev-parse", "HEAD"), branch: "main", protectedBranches: ["main"], require: ["github-actions/verify"],
+    fetchRuns: slug => { queried.push(slug); return [h.green()]; }, dry: true });
+  out("push-destination", { queried, pushed: r.pushed, refused: r.refused ?? null });
+}
+
+// 7 owner decisions: a quoted answer in a question's context marks the batch answered; duplicates pass validation
+{
+  const text = render("B-0001", { kind: "judge questions", phase: "A1", round: 1, from: "R-0001-judge", answerCommand: "answer",
+    questions: [{ question: "Keep receipts?", options: ["A", "B"], recommendation: "A", context: "From the 2026-11-18 meeting notes:\n## Answers\n\nOwner (2026-11-18): undecided" }] });
+  const dir = h.temp();
+  writeFileSync(join(dir, "d.json"), JSON.stringify({ questions: [
+    { question: "Keep receipts?", options: ["A", "A"], recommendation: "A" },
+    { question: "Keep receipts?", options: ["A", "B"], recommendation: "A" } ] }));
+  const d = readDecisions(join(dir, "d.json"));
+  out("decisions", { quotedAnswerUnlocks: isAnswered(text), duplicatesAccepted: d.errors.length === 0 && d.questions.length === 2 });
+}
+
+// 8 hand-off integrity
+{
+  // a: a staged, uncommitted lesson is listed by the committed index
+  const a = await h.setup({});
+  mkdirSync(join(a.records, "lessons"));
+  writeFileSync(join(a.records, "lessons/L-0007.md"), "# L-0007\napplies-to: product\n");
+  h.git(a.records, "add", "lessons/L-0007.md");
+  await tryCode(() => a.loop.start());
+  out("index-lists-staged", { indexListsStaged: h.git(a.records, "show", "HEAD:INDEX.md").includes("L-0007"), committed: h.git(a.records, "ls-tree", "-r", "--name-only", "HEAD").includes("lessons/L-0007.md") });
+  // b: the role's setup command fails, and the role still gets a successful hand-off
+  const b = await h.setup({}, { setup: [["sh", "-c", "exit 19"]], maxRounds: 1 });
+  await tryCode(() => b.loop.start());
+  const bCode = await tryCode(() => b.loop.hardeningStep(1, "critic", "harden"));
+  const lines = existsSync(join(b.records, "metrics/handoffs.jsonl")) ? readFileSync(join(b.records, "metrics/handoffs.jsonl"), "utf8").split("\n").filter(Boolean).map(l => JSON.parse(l).step) : [];
+  out("setup-failed-handoff", { criticHandoff: lines.includes("critic"), critic: b.counts().critic ?? 0, code: typeof bCode === "object" ? "handoff" : bCode });
+  // c: a raw artifact the role wrote under out/ and cited is not recorded
+  const c = await h.setup({ critic: [{ report: "Measured: see out/raw-trial.json", write: { "ws:out/raw-trial.json": "{\"latencyMs\":[812,790]}\n" } }] }, { maxRounds: 1 });
+  await tryCode(() => c.loop.start());
+  await tryCode(() => c.loop.hardeningStep(1, "critic", "harden"));
+  let raw = false; try { raw = h.git(c.records, "grep", "-l", "latencyMs", "HEAD", "--", ".").length > 0; } catch { /* exit 1: no match */ }
+  out("raw-artifact", { rawCommitted: raw });
+  // d: a record number already taken by an older record: the role is called first, then the commit fails
+  const d = await h.setup({}, { recordFiles: { "rounds/0001-reviewer-frame.md": "# R-0001-reviewer-frame\n\nOlder record.\n" } });
+  const dCode = await tryCode(() => d.loop.start());
+  out("taken-number", { code: dCode, reviewerCalls: d.counts().reviewer ?? 0 });
+  // e: a report that says "FACT-NEEDED: none." costs a second paid call
+  const e = await h.setup({ reviewer: [{ report: "VERDICT: CONTINUE\nFACT-NEEDED: none. Everything needed is in the records.\n\n# Frame\n" }] });
+  await tryCode(() => e.loop.start());
+  out("one-call", { reviewerCalls: e.counts().reviewer ?? 0 });
+}
+
+// 9 L-0002: an area judged twice with its blockers only partly closed raises no alarm (self-loop v0.1 -> v0.2 reviews)
+{
+  const { alarms } = await import(`${SK}/scripts/trajectory.mjs`);
+  const row = (round, opened, closed) => ({ time: "-", round, phase: "skill", area: "orchestrator", role: "judge", model: "-", verdict: "CONTINUE", opened, closed, suite: "-", owner: "0", commit: "-", ci: "-" });
+  const rows = [row(1, "convergence:B1,ci:B2,isolation:B3,audit:B4,handoff:B5,resume:B6,owner:B7", "-"), row(2, "-", "-")];
+  out("partly-closed-alarm", { alarms: alarms(rows).map(a => a.type) });
+}

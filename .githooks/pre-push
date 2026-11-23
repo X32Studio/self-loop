@@ -1,0 +1,3 @@
+#!/bin/sh
+# Every push carries a higher, tagged VERSION and a green suite on the exact commit (self-loop records D-0004).
+exec node "$(git rev-parse --show-toplevel)/scripts/version-gate.mjs" pre-push "$@"

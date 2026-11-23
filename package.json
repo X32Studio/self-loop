@@ -1,0 +1,31 @@
+{
+  "name": "self-loop",
+  "version": "0.4.10",
+  "description": "Ship coding-agent projects to truly done with a fraction of your attention: first-principles framing, cross-vendor adversarial judging, and Git-backed mechanical gates.",
+  "license": "MIT",
+  "author": "Ruiyuan Kang <hello@x32studio.com>",
+  "homepage": "https://github.com/X32Studio/self-loop",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/X32Studio/self-loop.git"
+  },
+  "keywords": [
+    "coding-agents",
+    "claude-code",
+    "codex",
+    "antigravity",
+    "agent-skills",
+    "adversarial-testing",
+    "autonomous-delivery",
+    "software-engineering"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test scripts/test/*.test.mjs",
+    "test:acceptance": "node --test acceptance/*.test.mjs",
+    "test:all": "node --test scripts/test/*.test.mjs && node --test acceptance/*.test.mjs",
+    "demo": "node examples/minimal-loop/demo.mjs"
+  }
+}

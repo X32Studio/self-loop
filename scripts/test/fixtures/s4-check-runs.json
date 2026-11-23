@@ -1,0 +1,1518 @@
+{
+ "source": "GitHub check runs and workflow runs of example/app, read 2026-11-20 with gh api (actions/runs?per_page=100 and commits/<sha>/check-runs); 9fc7a06 was pushed only inside a later push and has no runs.",
+ "samples": [
+  {
+   "sha": "07b7cb31f0411ad7b4dc5d68998aa8ebf385d1d0",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T06:18:12Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T06:18:12Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T06:18:12Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "0d6210ae1ca90e58b86e1559e7fd5183ce16b64c",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T02:59:29Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T02:59:30Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "12cd799f778379d7e36a1dd4cce2790d6159c519",
+   "branch": "test/s4-collab",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T14:20:18Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T14:20:18Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T14:20:18Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "1f2439f7efbfe137c7c70dba2abbeeff540e90ae",
+   "branch": "rewrite",
+   "workflow": "failure",
+   "check_runs": [
+    {
+     "conclusion": "failure",
+     "name": "linux-host",
+     "started_at": "2026-11-19T05:02:08Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T05:02:08Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T05:02:08Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "2a606d620c533bc3fdaea2a9907f2d9b20832816",
+   "branch": "test/s4-collab",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T14:25:55Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T14:25:55Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T14:25:55Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "2b3216436998da722ec3d3637bf8947b18d76fc5",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T14:00:23Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-18T14:00:23Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "2c3e5d8a07293c761a4d704b1a71baf6ad54186a",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T15:24:21Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-18T15:24:22Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "2d28c2f63ac019ea7289cb6b1dd9803d23267490",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-18T15:40:25Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T15:40:24Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "2d8cde072469a31673cbd60ad68393bde42aec67",
+   "branch": "test/s4-collab",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T13:48:15Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T13:48:14Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T13:48:14Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "43b93bc276bdbbc1422ae5671582f9ce3f2825c2",
+   "branch": "test/s4-collab",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T18:52:53Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T18:52:53Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T18:52:53Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "4c9b8268eac415ba38f82617ea68fc62dd202bc1",
+   "branch": "test/s4-collab",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-20T00:00:03Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-20T00:00:03Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-20T00:00:03Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "4f0e9d3b3f389b3b9d494f5e11898d0a04d7197f",
+   "branch": "test/s4-collab",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T12:47:54Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T12:47:54Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T12:47:54Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "4fad72e8bbe61ce92913aaa62323aa5ac4d97dee",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-18T16:54:54Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T16:54:53Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "5789c241472306c8d9d7f1f51f85d0885a89246b",
+   "branch": "desk/environment-facts",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T06:48:53Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T06:48:53Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T06:48:53Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "6506fa8cfcd49c422c9c357b470c8d33a4b66b15",
+   "branch": "test/s4-collab",
+   "workflow": "failure",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-20T03:35:47Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-20T03:35:47Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "failure",
+     "name": "verify",
+     "started_at": "2026-11-20T03:35:47Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "65349e94dc3cf918079d823c387f1e5605086550",
+   "branch": "ci/peer-account",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T05:08:46Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T05:08:46Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T05:08:45Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "67beec570a2fb859a1525ad5340e03814feb3600",
+   "branch": "test/s4-collab",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T13:35:26Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T13:35:26Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T13:35:26Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "6927aad2f393aac8078614b34adc211df65aac46",
+   "branch": "test/s4-collab",
+   "workflow": "failure",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T13:44:17Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T13:44:17Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "failure",
+     "name": "verify",
+     "started_at": "2026-11-19T13:44:18Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "6bf995950d466ef7968b810391d5af5f1d4f2764",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T12:51:04Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "6fa728cb7bda03586358d49771bea6cc72004fd6",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T13:15:57Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "719a718eec44f5e175956ef60fb35249ea67af77",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-18T17:17:03Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T17:17:03Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "73f541d9ad1d64714132ae5723532f75fe367cdd",
+   "branch": "rewrite",
+   "workflow": "failure",
+   "check_runs": [
+    {
+     "conclusion": "failure",
+     "name": "verify",
+     "started_at": "2026-11-18T15:33:54Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-18T15:33:53Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "7b89be1695d5c0685251698038a83c0479f3cd6b",
+   "branch": "rewrite",
+   "workflow": "failure",
+   "check_runs": [
+    {
+     "conclusion": "failure",
+     "name": "sandbox",
+     "started_at": "2026-11-18T13:57:27Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T13:57:27Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "7da50ab95384313aacaf3c4f948a8036ecf5422c",
+   "branch": "test/s4-collab",
+   "workflow": "failure",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-20T01:05:40Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "failure",
+     "name": "verify",
+     "started_at": "2026-11-20T01:05:39Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-20T01:05:40Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "8035cdb810462bc9d6c3417cd6205a2b1b1076cf",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-18T17:13:45Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T17:13:45Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "83e1402255dda337013c9a7a85d5ee2a20f6d86b",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T14:01:21Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-18T14:01:21Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "86fb6d3fa8ab1d85a567133caf000550e90a5c90",
+   "branch": "rewrite",
+   "workflow": "failure",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-18T15:37:20Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "failure",
+     "name": "verify",
+     "started_at": "2026-11-18T15:37:19Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "8a1c63c09f3164d1a5b74cee88bf71f6fe722360",
+   "branch": "ci/peer-account",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T05:12:02Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T05:12:02Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T05:12:02Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "91c57fdc9759b8d1ba7c6cc03086ef2b9964f007",
+   "branch": "test/s4-collab",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T14:45:10Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T14:45:10Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T14:45:10Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "93eb485bd8ecdbda53af9a44c255df11abad68f7",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T13:26:02Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "97dce66486418183d091243cef50667337097d63",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T04:55:10Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T04:55:10Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T04:55:10Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "9a7254ad540cae576c39398c71664de3181b8585",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T06:23:17Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T06:23:17Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T06:23:17Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "9ee95c7b2f8984ed22c888223358f98da2993d84",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T08:12:21Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T08:12:20Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T08:12:20Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "a3a63c0f64c1d4c8ed261e6dc104c46a84884c72",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T05:19:56Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T05:19:56Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T05:19:56Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "a69e4eb083d505cd413bd2a7e62032e77f2a624c",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T09:02:20Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T09:02:20Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T09:02:20Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "ab147d886b7051672a5f77cfbc19cf6933bc5605",
+   "branch": "test/s4-collab",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T13:20:46Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T13:20:46Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T13:20:46Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "ae061d9bb6f7ef3e634d4682c8a0d88ecc2fb23e",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T13:40:53Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "af3bbf1cacf874d9cd91f44a6d38198caaf53816",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T02:36:39Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T02:36:38Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "b15e5a606d41b272d24edaf939f02b8725ca87d0",
+   "branch": "test/s4-collab",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T22:11:24Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T22:11:24Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T22:11:24Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "b93389583c5c82c700dfa891e900b03ec10f6e56",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T13:37:32Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "bc838f0c4fcd217fbce95ee92009896f8b3b7907",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T07:40:07Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T07:40:07Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T07:40:07Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T07:21:27Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T07:21:28Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T07:21:27Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "bf9bf3a9326b9f418203488fe7397efad9757866",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T13:01:59Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "c5958ca45a4a859e1d8b6de13594a55fb1342132",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T16:15:08Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-18T16:15:08Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "c6dff1961d86033f719eec06d6a32ceeb8456681",
+   "branch": "test/s4-collab",
+   "workflow": "failure",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-20T02:47:06Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "failure",
+     "name": "verify",
+     "started_at": "2026-11-20T02:47:05Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-20T02:47:05Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "c7d752ca8e8fe94c5935e577223b61fd8fd4a32c",
+   "branch": "test/s4-collab",
+   "workflow": "failure",
+   "check_runs": [
+    {
+     "conclusion": "failure",
+     "name": "verify",
+     "started_at": "2026-11-20T04:32:43Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-20T04:32:43Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-20T04:32:43Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "c893681fae002965d748e19eb8eb70639c927056",
+   "branch": "rewrite",
+   "workflow": "failure",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T13:59:18Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "failure",
+     "name": "sandbox",
+     "started_at": "2026-11-18T13:59:18Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "cd26bb3fbe55ec3e771efb2fb822ff3af1baabf2",
+   "branch": "test/s4-collab",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-20T05:53:18Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-20T05:53:17Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-20T05:53:17Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "ce173c4d021bca198485f792267ee41ab2d2bcf8",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-18T15:16:18Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T15:16:18Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "d07a0e385e529d3029e7847353f7d05cc1e1743e",
+   "branch": "test/s4-collab",
+   "workflow": "failure",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T13:12:35Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T13:12:34Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "failure",
+     "name": "verify",
+     "started_at": "2026-11-19T13:12:34Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "d60c8fa6d5a339ca2c21cbbe85bc21aff4fad08c",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T05:15:33Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T05:15:33Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T05:15:33Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "d85166d5320236fbfa050b0787f06b75a088db13",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T04:16:35Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T04:16:35Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T04:16:35Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "dc126dd11fc5f80796bbe3fef64a8e573a3a18eb",
+   "branch": "test/s4-collab",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T14:10:37Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T14:10:38Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T14:10:37Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "de9ac225d05f198402ab1287b506f016f5842e70",
+   "branch": "test/s4-collab",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T13:39:04Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T13:39:05Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T13:39:04Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "df3afa60861654e9e0afdca9e0c4ce7ac167d9a5",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T16:38:50Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-18T16:38:51Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "e35008ffeb85246881e3c2549b86f8065199ef87",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T05:00:02Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T05:00:02Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T05:00:01Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "e4d416f045a66f5b3e7b4aba7160886b7e715da4",
+   "branch": "test/s4-collab",
+   "workflow": "failure",
+   "check_runs": [
+    {
+     "conclusion": "failure",
+     "name": "verify",
+     "started_at": "2026-11-19T12:52:21Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T12:52:22Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T12:52:22Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "e529c295e97a736ea52110adfff3c5af9bfa0e9a",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T08:36:59Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T08:36:59Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T08:36:58Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "e786e1724bee292226fa524da722935c23d38d60",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T02:38:59Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T02:38:58Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "e9f4bbf4eaa6fddd0a2f1c34e766b384a9a41d6f",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T07:08:16Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T07:08:16Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T07:08:16Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "ed11123f6fe377b0c11f2721171a98966ae5084d",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T03:18:41Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T03:18:41Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "ed50a46fb1b3beacfd2c147430a3b04d63af2a3a",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T06:17:26Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T06:17:26Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T06:17:26Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "f13e1ec5665d6873f6343b0428c52fb7c0bc0cec",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-18T16:14:28Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-18T16:14:28Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "f34b3a9df89675211baa5aeb22f0e035647c7d92",
+   "branch": "test/s4-collab",
+   "workflow": "failure",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T12:51:44Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T12:51:44Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "failure",
+     "name": "verify",
+     "started_at": "2026-11-19T12:51:44Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "f899d3b3bdcc67d18c472a24421aa9fa1c957e49",
+   "branch": "test/s4-collab",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T18:07:20Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T18:07:20Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T18:07:20Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "f8ba2880c1b1c9b426480686aafd96478b9fa6fd",
+   "branch": "test/s4-collab",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T13:04:17Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T13:04:17Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T13:04:17Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "f9212127d05b16d07e87b5707784f2a01c57773c",
+   "branch": "test/s4-collab",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T13:53:33Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T13:53:33Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T13:53:33Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "fb1f719e01d23c4f70f5b73ff4ec968fa8ac89a7",
+   "branch": "rewrite",
+   "workflow": "success",
+   "check_runs": [
+    {
+     "conclusion": "success",
+     "name": "verify",
+     "started_at": "2026-11-19T08:34:33Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "linux-host",
+     "started_at": "2026-11-19T08:34:33Z",
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "sandbox",
+     "started_at": "2026-11-19T08:34:33Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "sha": "9fc7a06cf085f4d82a480fcab485f4683b47c86b",
+   "branch": "test/s4-collab",
+   "workflow": "none",
+   "check_runs": []
+  }
+ ]
+}

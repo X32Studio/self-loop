@@ -1,0 +1,6 @@
+{
+  "sealed": ["/path/to/product-loop-sealed"],
+  "sealedReaders": ["judge", "lead"],
+  "extraKinds": [{ "kind": "Normal-entry inventory", "path": "evidence/normal-entry/", "changes": "editable" }],
+  "publicImports": []
+}

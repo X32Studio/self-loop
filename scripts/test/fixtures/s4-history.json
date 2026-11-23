@@ -1,0 +1,52 @@
+[
+  {
+    "sha": "aa760bfc520e54c5a6a7996d99a7360c423826a0",
+    "parent": null,
+    "refs": [],
+    "access": null
+  },
+  {
+    "sha": "b9ae5a65dd78e02a50bafb8b3bbc83687c55dc76",
+    "parent": "aa760bfc520e54c5a6a7996d99a7360c423826a0",
+    "refs": [
+      "refs/remotes/origin/main"
+    ],
+    "access": null
+  },
+  {
+    "sha": "a69e4eb083d505cd413bd2a7e62032e77f2a624c",
+    "parent": "aa760bfc520e54c5a6a7996d99a7360c423826a0",
+    "refs": [
+      "refs/remotes/origin/rewrite"
+    ],
+    "access": []
+  },
+  {
+    "sha": "c6dff1961d86033f719eec06d6a32ceeb8456681",
+    "parent": "a69e4eb083d505cd413bd2a7e62032e77f2a624c",
+    "refs": [],
+    "access": [
+      "// it asks): `[{ pid, command }]`. On Linux from /proc, else from lsof; either way only processes this account may inspect",
+      "    listed = execFileSync(process.platform === \"darwin\" ? \"/usr/sbin/lsof\" : \"lsof\", [\"-n\", \"-P\", \"-F\", \"pc\", \"--\", path],",
+      "    if (error.status !== 1) throw new Error(`ExampleApp cannot tell whether another program has it open (lsof: ${error.message})`);"
+    ]
+  },
+  {
+    "sha": "c7d752ca8e8fe94c5935e577223b61fd8fd4a32c",
+    "parent": "c6dff1961d86033f719eec06d6a32ceeb8456681",
+    "refs": [],
+    "access": [
+      "// it asks): `[{ pid, command }]`. On Linux from /proc, else from lsof; either way only processes this account may inspect",
+      "    listed = execFileSync(process.platform === \"darwin\" ? \"/usr/sbin/lsof\" : \"lsof\", [\"-n\", \"-P\", \"-F\", \"pc\", \"--\", path],",
+      "    if (error.status !== 1) throw new Error(`ExampleApp cannot tell whether another program has it open (lsof: ${error.message})`);"
+    ]
+  },
+  {
+    "sha": "cd26bb3fbe55ec3e771efb2fb822ff3af1baabf2",
+    "parent": "c7d752ca8e8fe94c5935e577223b61fd8fd4a32c",
+    "refs": [
+      "refs/remotes/origin/test/s4-collab"
+    ],
+    "access": []
+  }
+]

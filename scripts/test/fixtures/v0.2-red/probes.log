@@ -1,0 +1,13 @@
+legacy-judge-in-view {"inCriticView":true}
+private-header-in-public {"inPublicRecord":true}
+symlink-in-view {"symlinkInView":true,"readsOutside":true}
+audit-path-alias {"root":"/private/tmp/…","tmpSpelling":1,"viaSymlinkedRoot":1}
+ci-reruns {"queuedRerunOk":true,"failedRerunOk":false}
+push-destination {"queried":["example/fetch"],"pushed":false,"refused":null}
+decisions {"quotedAnswerUnlocks":true,"duplicatesAccepted":true}
+index-lists-staged {"indexListsStaged":true,"committed":false}
+setup-failed-handoff {"criticHandoff":true,"critic":1,"code":"handoff"}
+raw-artifact {"rawCommitted":false}
+taken-number {"code":7,"reviewerCalls":1}
+one-call {"reviewerCalls":2}
+partly-closed-alarm {"alarms":[]}

@@ -1,0 +1,156 @@
+[
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": ".githooks/pre-commit",
+    "line": 1,
+    "text": "#!/bin/sh"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": ".githooks/pre-push",
+    "line": 1,
+    "text": "#!/bin/sh"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "acceptance/run.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/backtest.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/bench-gate.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/blueprint.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/call.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/ci-green.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/decisions.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/facts.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/gated-push.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/lead-guard.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/loop.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/owner-words.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/records-check.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/self-loop.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/suite-green.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/test/fake-agent.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/trajectory.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/version-gate.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "self-loop",
+    "commit": "cc3231e40f37e36f1d48fe9db49ba0fbad96f0b6",
+    "path": "scripts/word-gate.mjs",
+    "line": 1,
+    "text": "#!/usr/bin/env node"
+  },
+  {
+    "project": "example-app",
+    "commit": "cd92105fd7c18c8676072a48f4964bab70fdad7a",
+    "path": "scripts/verify-sandbox.sh",
+    "line": 1,
+    "text": "#!/usr/bin/env bash"
+  }
+]

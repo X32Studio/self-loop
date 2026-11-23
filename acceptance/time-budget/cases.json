@@ -1,0 +1,380 @@
+{
+  "classification": "INDEPENDENT PRODUCT ACCEPTANCE; archived abstract examples are reference only and were not rerun",
+  "contract": "self-loop-records@bd8a1ad:evidence/0012/admitted-time-budget/contracts.json",
+  "abstractSource": "self-loop-records@9a376ae:evidence/0011/time-budget-cases",
+  "abstractCount": 24,
+  "mapping": [
+    {
+      "abstractId": "one-day-plan",
+      "title": "Agreed synthetic 24h budget includes review, CI and rework",
+      "productTests": "budget; graph",
+      "coverage": "covered",
+      "contractPointers": [
+        "/forecastRules/0",
+        "/forecastRules/1",
+        "/forecastRules/2",
+        "/forecastRules/3",
+        "/types/Estimate"
+      ]
+    },
+    {
+      "abstractId": "usable-delivery",
+      "title": "A verified vertical release within the example budget",
+      "productTests": "quality",
+      "coverage": "GAP: no admitted trusted release evidence matcher; negative handoff control only",
+      "contractPointers": [
+        "/planTime/criteria",
+        "/transitions/budget",
+        "/transitions/promise",
+        "/forecastObservation/publicationTime"
+      ]
+    },
+    {
+      "abstractId": "half-budget",
+      "title": "At half budget remaining work exceeds available time after reserve",
+      "productTests": "half-budget",
+      "coverage": "covered",
+      "contractPointers": [
+        "/forecastRules/0",
+        "/forecastRules/1",
+        "/forecastRules/2",
+        "/forecastRules/3",
+        "/types/Estimate"
+      ]
+    },
+    {
+      "abstractId": "parallel-path",
+      "title": "Admitted simultaneous branches overlap before integration",
+      "productTests": "graph: parallel",
+      "coverage": "covered",
+      "contractPointers": [
+        "/forecastRules/0",
+        "/forecastRules/1",
+        "/forecastRules/2",
+        "/forecastRules/3",
+        "/types/Estimate"
+      ]
+    },
+    {
+      "abstractId": "serialized-path",
+      "title": "Real serialization dependency prevents pretending parallelism",
+      "productTests": "graph: serialized",
+      "coverage": "covered",
+      "contractPointers": [
+        "/forecastRules/0",
+        "/forecastRules/1",
+        "/forecastRules/2",
+        "/forecastRules/3",
+        "/types/Estimate"
+      ]
+    },
+    {
+      "abstractId": "unknown-tail",
+      "title": "External blocker without bounded response has unknown upper ETA",
+      "productTests": "unknown: blocked; unresolved blocker",
+      "coverage": "covered",
+      "contractPointers": [
+        "/forecastRules/0",
+        "/forecastRules/1",
+        "/forecastRules/2",
+        "/forecastRules/3",
+        "/types/Estimate"
+      ]
+    },
+    {
+      "abstractId": "unknown-ci",
+      "title": "Unknown CI tail is not a zero-duration reserve",
+      "productTests": "unknown: missing estimate",
+      "coverage": "covered",
+      "contractPointers": [
+        "/forecastRules/0",
+        "/forecastRules/1",
+        "/forecastRules/2",
+        "/forecastRules/3",
+        "/types/Estimate"
+      ]
+    },
+    {
+      "abstractId": "stale-plan",
+      "title": "Old forecast cannot represent the current plan",
+      "productTests": "restart/cancel; genuine successor",
+      "coverage": "covered",
+      "contractPointers": [
+        "/historicalOperands",
+        "/forecastRules/4",
+        "/forecastObservation/selection"
+      ]
+    },
+    {
+      "abstractId": "stale-evidence",
+      "title": "New evidence requires forecast reconciliation, not relabeling",
+      "productTests": "historical: frozen",
+      "coverage": "covered",
+      "contractPointers": [
+        "/historicalOperands",
+        "/forecastRules/4",
+        "/forecastObservation/selection"
+      ]
+    },
+    {
+      "abstractId": "no-progress",
+      "title": "Passage of time consumes budget without fabricating progress",
+      "productTests": "freshness; no progress",
+      "coverage": "covered",
+      "contractPointers": [
+        "/transitions/noProgress",
+        "/historicalOperands/current"
+      ]
+    },
+    {
+      "abstractId": "restart-cancel",
+      "title": "Attempts retain original elapsed budget; effort is separately summed",
+      "productTests": "restart/cancel; stable binding",
+      "coverage": "covered; signed negative replaces abstract clamp",
+      "contractPointers": [
+        "/clockRules",
+        "/transitions/checkpoint",
+        "/transitions/budget",
+        "/authority/readers"
+      ]
+    },
+    {
+      "abstractId": "authorized-descope",
+      "title": "Remove preauthorized optional work while retaining vertical criteria",
+      "productTests": "restart/cancel",
+      "coverage": "PARTIAL: ordinary successor covered; optional scope authority mapping remains lead/judge obligation",
+      "contractPointers": [
+        "/storage/immutability",
+        "/authority/lead",
+        "/authority/owner",
+        "/planTime/baseline"
+      ]
+    },
+    {
+      "abstractId": "unauthorized-descope",
+      "title": "Unapproved scope change stays an owner decision",
+      "productTests": "authority",
+      "coverage": "PARTIAL: baseline mutation rejected; arbitrary deferredPackages authority mapping not independently proven",
+      "contractPointers": [
+        "/storage/immutability",
+        "/authority/lead",
+        "/authority/owner",
+        "/planTime/baseline"
+      ]
+    },
+    {
+      "abstractId": "minimum-tampering",
+      "title": "Passing date cannot redefine a usable version as a fragment",
+      "productTests": "immutable baseline; authority",
+      "coverage": "covered",
+      "contractPointers": [
+        "/storage/immutability",
+        "/authority/lead",
+        "/authority/owner",
+        "/planTime/baseline"
+      ]
+    },
+    {
+      "abstractId": "tamper-start",
+      "title": "Plan revision cannot rewrite original start",
+      "productTests": "immutable baseline; authority",
+      "coverage": "covered",
+      "contractPointers": [
+        "/storage/immutability",
+        "/authority/lead",
+        "/authority/owner",
+        "/planTime/baseline"
+      ]
+    },
+    {
+      "abstractId": "tamper-deadline",
+      "title": "Plan revision cannot rewrite original deadline",
+      "productTests": "immutable baseline; authority",
+      "coverage": "covered",
+      "contractPointers": [
+        "/storage/immutability",
+        "/authority/lead",
+        "/authority/owner",
+        "/planTime/baseline"
+      ]
+    },
+    {
+      "abstractId": "tamper-quality",
+      "title": "Plan revision cannot rewrite original quality",
+      "productTests": "immutable baseline; quality",
+      "coverage": "PARTIAL: weakening baseline rejected; exact release quality matcher missing",
+      "contractPointers": [
+        "/storage/immutability",
+        "/authority/lead",
+        "/authority/owner",
+        "/planTime/baseline"
+      ]
+    },
+    {
+      "abstractId": "red-ci",
+      "title": "On-time artifact with failing quality evidence is not a usable release",
+      "productTests": "quality",
+      "coverage": "PARTIAL: handoff-only rejected; no structured complete-release/red-CI positive/negative pair available",
+      "contractPointers": [
+        "/planTime/criteria",
+        "/transitions/budget",
+        "/transitions/promise",
+        "/forecastObservation/publicationTime"
+      ]
+    },
+    {
+      "abstractId": "visible-cadence",
+      "title": "Missed promises remain visible alongside next checkpoint and blocker",
+      "productTests": "entry; restart/cancel",
+      "coverage": "covered for late current entry only; no wake",
+      "contractPointers": [
+        "/clockRules",
+        "/transitions/checkpoint",
+        "/transitions/budget",
+        "/authority/readers"
+      ]
+    },
+    {
+      "abstractId": "late-delivery",
+      "title": "Later valid release keeps original deadline miss visible",
+      "productTests": "quality; budget",
+      "coverage": "GAP: valid late delivery and trusted event-time matcher unavailable",
+      "contractPointers": [
+        "/planTime/criteria",
+        "/transitions/budget",
+        "/transitions/promise",
+        "/forecastObservation/publicationTime"
+      ]
+    },
+    {
+      "abstractId": "example-not-promise",
+      "title": "One-day illustration does not invent a hard deadline",
+      "productTests": "budget",
+      "coverage": "covered",
+      "contractPointers": [
+        "/clockRules",
+        "/transitions/checkpoint",
+        "/transitions/budget",
+        "/authority/readers"
+      ]
+    },
+    {
+      "abstractId": "deadline-equality",
+      "title": "Exactly at deadline is due; one tick later is missed",
+      "productTests": "budget; freshness",
+      "coverage": "covered",
+      "contractPointers": [
+        "/clockRules",
+        "/transitions/checkpoint",
+        "/transitions/budget",
+        "/authority/readers"
+      ]
+    },
+    {
+      "abstractId": "fresh-forecast-no-progress",
+      "title": "Refreshing an estimate alone does not become progress",
+      "productTests": "no progress; new completion",
+      "coverage": "covered; nonempty identity control replaces toy length predicate",
+      "contractPointers": [
+        "/transitions/noProgress",
+        "/historicalOperands/current"
+      ]
+    },
+    {
+      "abstractId": "repeat observations and clock advance cannot dispatch or erase commitments",
+      "productTests": "pinned reads; entry; historical restart; stable binding",
+      "coverage": "covered",
+      "source": "cases.test.mjs final invariant test",
+      "contractPointers": [
+        "/clockRules",
+        "/transitions/checkpoint",
+        "/transitions/budget",
+        "/authority/readers"
+      ]
+    }
+  ],
+  "additions": [
+    {
+      "id": "TB-ADD-01",
+      "productTests": "continuation.test.mjs: all six tests",
+      "coverage": "covered for exact binding + synthetic public terminal receipts; no real provider/transport",
+      "contractPointers": [
+        "/forecastRules/6",
+        "/authority/readers"
+      ]
+    },
+    {
+      "id": "TB-ADD-02",
+      "productTests": "historical: frozen",
+      "coverage": "covered via Git and process-restarted CLI",
+      "contractPointers": [
+        "/historicalOperands/example",
+        "/historicalOperands/current"
+      ]
+    },
+    {
+      "id": "TB-ADD-03",
+      "productTests": "history; pinned reads; genuine successor; unrelated valid root",
+      "coverage": "covered bounded corruption/fork/resolve cases",
+      "contractPointers": [
+        "/forecastObservation/reader",
+        "/forecastObservation/selection",
+        "/forecastObservation/sourceBinding"
+      ]
+    },
+    {
+      "id": "TB-ADD-04",
+      "productTests": "unknown: blocked; entry",
+      "coverage": "covered in actual readyPlan/next/start, no mutation",
+      "contractPointers": [
+        "/pureInterfaces/consumer",
+        "/authority/readers"
+      ]
+    },
+    {
+      "id": "TB-ADD-05",
+      "productTests": "historical unknown; real disconnected; cross-repository; mutation sensitivity",
+      "coverage": "covered bounded missing/future sources; no complete global source assurance",
+      "contractPointers": [
+        "/historicalOperands/missing",
+        "/historicalOperands/done"
+      ]
+    },
+    {
+      "id": "TB-ADD-06",
+      "productTests": "budget; freshness",
+      "coverage": "covered signed seconds and strict boundaries",
+      "contractPointers": [
+        "/forecastRules/4",
+        "/units",
+        "/transitions/checkpoint"
+      ]
+    },
+    {
+      "id": "TB-ADD-07",
+      "productTests": "no progress; new completion",
+      "coverage": "covered nonempty refs repinned at new publication commits and actual positive new handoff",
+      "contractPointers": [
+        "/transitions/noProgress"
+      ]
+    },
+    {
+      "id": "TB-ADD-08",
+      "productTests": "admitted packages.json I1.exitPrerequisites/J1",
+      "coverage": "DOCUMENTARY/COORDINATOR ONLY: candidate Sol response + exact final suite/dual CI eligibility still unexecuted; no toy scheduler fabricated",
+      "contractPointers": [
+        "packages.json:/packages/3/exitPrerequisites",
+        "packages.json:/packages/4/acceptance"
+      ]
+    }
+  ],
+  "contractSurfaces": [
+    "planTime",
+    "historicalOperands",
+    "forecastObservation.reader/selection/sourceBinding/completeness",
+    "clockRules",
+    "transitions.noProgress/checkpoint/promise/budget",
+    "authority.readers",
+    "pureInterfaces"
+  ]
+}

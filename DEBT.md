@@ -1,0 +1,292 @@
+# Enforcement debt
+
+Rules the loop still relies on by judgment (rung 4), by prose (rung 5), or by a weaker rung than they could reach, with
+why and what would mechanise them (REQUIREMENTS item 11). Shrink this list every phase; when a rule moves up, delete its
+entry here and name the mechanism in SKILL.md's ladder. Version 0.3.1, 2026-11-20 (answers the v0.2 review, earlier loop records
+`reviews/self-loop-v0.2.md`, by lesson `L-0002`).
+
+## Moved from code to the lead in 0.3
+
+Two reviews (v0.1: B1–B7; v0.2: all seven only partly closed, with new reproductions) found false results in the
+orchestrator's decisions, and every fix added edges (550 → 865 lines). Every fix shared one premise: the orchestrator
+must decide convergence, close rounds, resume and run the owner flow by itself. The loop already ran end to end with the
+lead deciding and certain gates as scripts, and none of the reviews' false results exist on that path. So the deciding
+layer was deleted, not patched (`L-0002`). What it did is now the lead's judgment, guided by SKILL.md and checked by the
+gates in its "Who decides" table; nothing below is replaced by a new mechanism unless the last column says so.
+
+| Moved | Deleted code (v0.2 `self-loop.mjs` unless named) | False results the reviews found there | What the lead runs instead |
+|---|---|---|---|
+| Choosing the next step (frame, role, CI wait, diagnosis, subtraction, owner, held, cap) | `nextAction`, `drive`, `start`/`run`/`close`/`status` | v0.2 B6: a held reframe reached `closed` by `run → close → close` (0 → 5 → 0) with no batch sent; a legacy record number cost a call before failing; v0.1 B6: the cap refused the subtraction round | `loop.mjs next` lists record-backed actions in order; the lead follows the procedure and chooses what to run |
+| Accepting a CONVERGED | `convergenceUnmet`, `independence`, `openBlockers`, the loop's own suite run (`runSuite`) | v0.2 B1: converged while the product's real entry point exited 1 (an untracked file changed acceptance); a blocker closed by a provisional ruling stayed closed; the loop's suite run stood in for the judge's | the convergence gates: `ci-green.mjs` on the ruled SHA, the trajectory's open blockers, `records-check.mjs`, `blueprint.mjs status --phase`, `decisions.mjs status`; vendor and model from the hand-offs' `agent` (configured and observed model) |
+| Closing a round on CI; waiting for CI | `resolveCi`, `effectiveCi`, the `ci` hand-off step, `publish` | v0.2 B2: a subtraction round reused a stale green of the same SHA; a red that turned green after a re-run stayed red; a queued re-run was read as the old success | `ci-green.mjs` at the moment of the claim (no stored CI state is trusted); latest run by check-run id, a queued run counts as latest (code, `lib/ci.mjs`) |
+| Pushing the loop branch | `publish`, config `push`, `remote` | v0.2 B2: CI read in the fetch repository while the push went to the push URL; the loop branch pushed before the records check refused the hand-off | `suite-green.mjs` then `gated-push.mjs`, which refuses any push without a green suite receipt for that SHA and, for protected branches, without a committed judge convergence and CI green in the push destination (code); `ci-green.mjs` reads the push destination (code) |
+| Phase close and the subtraction mode | `close`, `maxSubtractionRounds`, mode `subtraction` in hand-offs | v0.1 B6, v0.2 B6 (above) | SKILL.md phase close; `--step reviewer-subtraction` |
+| Resuming after a failure | attempt replay in `drive`, `attempt`/`failAttempt` bookkeeping | v0.1 B6: a retry skipped a diagnosis; v0.2 B6: legacy record numbers | the lead re-calls; failed calls keep numbered evidence and never get a hand-off line (code) |
+| The owner budget: send, defer, hold, raise | `plan`, `maxOwnerBatches`, `decide`, `sendHeld`, `after` | v0.1 B7: three batches under a cap of two; a regex phase name counted 0; v0.2 B6/B7: a held reframe closed the phase; an empty budget path returned 0 | the lead decides what to send (SKILL.md Owner interface); `decisions.mjs validate`/`send` refuse a malformed batch (code) |
+| Deciding a batch is answered | `isAnswered` (text match on `## Answers`) | v0.2 B7: a quoted meeting note in a question's context marked the batch answered | answer events in `owner/answers.jsonl`, written only by `decisions.mjs answer` (code, not the lead) |
+| Format repair calls and FACT-NEEDED answers | `judgeFormat`, the reviewer's repair and revise calls, `answer` (fact queries) | v0.2 real FRAME: `FACT-NEEDED: none.` cost a second paid call | the lead reads the report; another call, if wanted, is the lead's choice |
+| The reviewer's fact pack | `facts` (pack built per call) | — (cost only) | the lead runs `trajectory.mjs alarms` and `facts.mjs` and puts the results in the task |
+| Trajectory rows from the judge's header | the judge hand-off's verdict, blockers, suite, unmet; `rowsOf`; `trajectory.mjs append --step` for manual loops | v0.2 B3: a header-like line of the private report (`PRIVATE-NOTE:`) became public; v0.2 B5: a manual row claiming CONVERGED with `0/1` let `run` return 0 | the lead appends rows to `metrics/trajectory.jsonl` from the ruling it read; alarms read them and decide nothing; the judge's public record is its `out/public.md` only (code) |
+| Round status in the index | `handoffStatus` (CONVERGED / PROVISIONAL) | v0.2 B5: the index said CONVERGED while CI was pending | the index shows no verdict (code) |
+| When a diagnosis is due | `fresh`, `needsDiagnosis`, `acked` | — | `call.mjs` refuses a critic, actor or judge call (and its preparation and dry run) while an alarm of the phase at the view has no later `reviewer-diagnosis` hand-off naming its key (code, `lib/diagnosis.mjs`); `loop.mjs next` lists the same alarms, from the same function at the records HEAD |
+| The round cap | `maxRounds` | — | the lead's round budget, reported as not converged when spent |
+| Recording the actor's design note as `design/<area>.md` | the copy in `hardeningStep` | — | `call.mjs` updates the current design in the actor’s hand-off; the lead promotes converged design to the product documents |
+
+## Left to the lead
+
+| # | Step | Why no script does it | What would mechanise it |
+|---|---|---|---|
+| 1 | Every decision in the table above | a decision layer gave false results twice (`L-0002`); the gates make each claim checkable instead | a gate per claim that a reviewer finds the lead skipping; never a decision layer again without a premise test |
+| 2 | Choose the full-suite command for `suite-green.mjs`, and push only through `gated-push.mjs` | the gate cannot know which command is the full suite; a plain `git push` bypasses it | CLOSED as far as code reaches (0.3.1, lead decision): `gated-push.mjs` refuses every push without a green `suite-green.mjs` receipt for that exact SHA of that repository. Admission: real runs of this skill's suite, red on c7e7c50 (68/2), green on a4db050 (70/0) and 4748705 (61/0), `scripts/test/fixtures/suite-green/`. Left: a server-side hook that rejects pushes not made by gated-push |
+| 3 | Promote a converged commit to a protected branch | the lead decides when to promote; the gate verifies the committed judge hand-off, sealed ruling, matching trajectory and live CI | a host hook to require the same evidence if a push bypasses the local gate |
+| 4 | Review the screening findings (dangling IDs, sealed paths in non-judge material, changed records, paths changed outside a role's ownership, denied tool calls, shell text naming outside paths, repeated questions) | each is decided from text or intent and has no two-way historical admission | count false alarms and misses per rule in the phase report; promote a rule once its real red and legitimate green are recorded |
+| 5 | Run a Codex frame reviewer or backtest | its reads are not confined, so the result is not a blind proof | a read-restricted sandbox or container for confined Codex roles |
+| 6 | Declare older records public (`records.json` `publicImports`) | whether an old judge report holds held-out content is a reading judgment | screening: n-gram overlap of the listed files with sealed files before they are listed |
+| 7 | Record only the owner's own words with `decisions.mjs answer` | the script cannot tell who typed the words | a host hook that records owner messages and lets `answer` take only a recorded message |
+
+## Prose only
+
+| # | Rule | Why not mechanised yet | What would mechanise it |
+|---|---|---|---|
+| 8 | Log every owner intervention outside a batch as `I-NNNN` (frame before, reframe, general question, raised first?, the mechanism carrying the question) | the lead hook and transcript sync capture the words; a word marked `direction` stays open, and the phase unconverged, until its intervention is committed, and `owner-words.mjs metrics` reports the directions per phase and the share raised first (round 8); `next` lists every intervention without a `rung:` and `carried-by:` disposition (A1, screening). Whether a word is a direction, rather than routine or an answer, and whether the named mechanism really carries the general question, still require reading; a word a record cites stays `unclassified` without a mark | an independent review of the phase's classifications and dispositions before the counts are reported (Owner directions and the share raised first, below); a hard gate on the disposition only with two-way admission evidence (REQUIREMENTS item 11) |
+| 9 | Re-score a question-bank change on a held-out backtest before keeping it | grading is a model's judgment and costly; no structured link between an engine change and its score | a field `score: backtests/<date>/RESULTS.md@<commit>` in each `engines/*.md`, checked by `records-check.mjs` |
+| 10 | Traceability both ways: every design rule has an ID, names its code and tests; no code enforces an unstated rule | product-specific | a product `check:trace` command; a product requirement proposal |
+| 11 | Verification carries its sync commit; changes since then go to review | not implemented | a `verified: <commit>` field per rule link; a diff over the covered symbols as screening |
+| 12 | Phase acceptance through the user's real entry point, with drift triage | needs a product verification harness; `ACCEPTANCE: pass` is the judge's word | a product verification run whose receipt the lead records |
+| 13 | Real dependencies from round 1 and the spend envelope | calls go through the role's own tools | a spend ledger: real calls through a proxy that counts and refuses beyond the bound |
+| 14 | Merge the integration branch every round | the lead's step | a merge before each critic call, a conflict refusing the call |
+| 15 | The actor never keys behaviour on a case id; the critic attacks only realistically | judgment | screening: grep the implementation diff for case ids and fixture constants, in the judge's task |
+| 16 | The judge's public report carries no held-out content | the full record is sealed by construction; the public one is the judge's own text | screening: n-gram overlap between `rounds/*-judge.md` and sealed files before the next view is built |
+| 17 | Subtraction loses nothing a requirement needs; promotion keeps one source per rule | judgment | partly item 10 |
+| 18 | Agent memory points, it does not copy (RECORDS rule 10) | memory lives in host files the loop does not own | screening of memory files for restated record content |
+| 19 | Rot metrics beyond size and partly-closed blockers (special cases and churn per requirement, documents growing without code, cost per closed blocker) | need per-requirement attribution | trajectory fields for requirement IDs touched, then alarms like growth |
+| 20 | Backtests screen visible material for answer hints and grade old and new question banks on one blind scale | not implemented in `backtest.mjs` | a pre-run screen of the snapshot tree against the sealed keys' distinctive terms |
+
+## Weaker rung or weaker evidence than it could be
+
+| # | Rule | Now | Gap |
+|---|---|---|---|
+| 21 | No project memory for agents | CLOSED by construction for Claude: measured 2026-11-20 that `claude -p` in a worktree loads the repository's auto-memory and `--restricted` loads none; every Claude call runs `--restricted` | a Codex role's memory sources are not measured |
+| 22 | Critic and actor cannot read the sealed repository or the records outside their view | never told where they are; their views exclude `sealed/`; a file tool on a sealed path or anywhere in the records repository is a violation; a shell command naming one is a flag | read confinement for worktree roles (any runner): a container with only the worktree and the folder mounted |
+| 23 | Judge independence: vendor and model differ from the actor | the hand-off records the configured model and, for Claude, the model the stream reports; the lead compares | the observed model for Codex (thread metadata) |
+| 24 | Access audit violations block | a successful file-tool call on a forbidden path (worktree roles) or outside the folder (the reviewer), with canonical paths; refused calls are `denied`. Real green: the four frozen backtest runs; the review's `/tmp` vs `/private/tmp` spelling and a symlinked root are regression tests; red: constructed from real event shapes | the admission rule asks for a recorded real defect; none exists. Kept hard because it is decided by structured tool fields and no legitimate role opens a sealed path |
+| 25 | A `cmd` runner (the test stand-in) | CLOSED (0.3.1): refused unless `SELF_LOOP_TEST=1`, before anything runs | — |
+| 26 | `path@commit` citations resolve; evidence digests match | screening | hard once a real broken citation or digest is recorded |
+| 27 | Evidence retention and prune at phase close (RECORDS rule 8) | evidence is kept forever, failed attempts included | `records-check.mjs --prune` listing uncited evidence with digests into a prune record |
+| 28 | Lessons carry `applies-to` and the change they led to | prose | a required field checked by `records-check.mjs`; admit once a real lesson without it is recorded |
+| 29 | The product commit of a call whose records commit then fails | the commit object exists but no branch moves: the base branch moves only after the hand-off is committed | — (closed in 0.3; kept one version as a pointer) |
+| 30 | A judge record carries `flow:` and a listed `loss:` for every blocker its round opened (D-0018 item 4, D-0023 item 4) | hard (records check) from the view commit that holds the adopting decision; red: constructed (R6-C-R01 to R6-C-R05; `scripts/test/judge-bar.test.mjs`), since no judge called with the bar has omitted the fields yet; green: R-0001-judge to R-0005-judge replayed (R6-C-R06), and this loop's records at 7ef344084cbc9a3533797196043807a8fc4c1db0 (R-0005-judge held and passing) | the admission rule asks for a recorded real defect; none exists. Kept hard because the owner asked for the refusal (D-0018 item 4), it is decided by structured facts (the row's opened keys, the view commit's tree, line prefixes), and a further judge call of the round is the way out. It establishes the format, not that the flow is reachable or the loss follows: that stays the judge's ruling and the next judge's audit. A key mistyped into the append-only row cannot be corrected; `trajectory.mjs append` now refuses an `--opened` key that no judge record of its round names (row 34), so a mistyped opening no longer reaches the row. Records that number the adopting decision otherwise must name it in `records.json` `blockerBar` before they run this check: an unrelated product's `decisions/D-0018.md` is an unrelated decision, and without `"blockerBar": "decisions/D-0052.md"` legacy judge records (rounds 35 to 51) would fail |
+| 31 | The lead guard refuses the lead's edits of product code (D-0019 item 2) | hard where the Claude Code `PreToolUse` hook is installed: product code is what the edited checkout's index tracks, or an untracked path no `.gitignore`, `.git/info/exclude` or `core.excludesFile` rule ignores, outside `--allow` and the role workspaces; pathnames are matched literally (and case-insensitively under `core.ignorecase`); nothing under a `.git` directory is product code, since Git never tracks it; a Git that cannot answer refuses, naming why. Real red: the D-0019 incident (`.claude/settings.local.json` under the lead checkout's exclude line `/.claude/`), refused by 0.4.4 and allowed now (`scripts/test/lead-guard.test.mjs`); green: tracked and new product files stay refused (R6-C-G01 to R6-C-G07) | other harnesses have no hook yet (slices 8 to 10); an ignored file can hold the lead's code until a shell command force-adds it, which the hook does not see (Lead shell tools); the landing gates still hold |
+| 32 | Heavy calls start only on a measured host budget (D-0020 item 2, D-0025, D-0027 item 1, interface B6) | screening, advisory, with no reservation (`hostLoad` in `lib/registry.mjs`, `lib/host.mjs`, `loop.mjs`): `next` suggests a critic, actor or judge call or the integration head's suite command only while the one-minute load average is at most `maxLoadRatio` × logical cores and the available memory, read as `os.freemem()` (on Linux the kernel's `MemAvailable`), at least the floor: defaults 0.7 and the smaller of 16 GiB and a quarter of `os.totalmem()` (D-0029 item 2) in `scripts/lib/thresholds.mjs` and `lib/host.mjs`, either settable in the owner store's `products.json` (a `minAvailableMemoryGB` set there is the floor as written); over the bound those actions read `Waiting on the host load:` naming each exceeded measurement. `Load N` lists the heavy calls, shown and not the bound: unrecorded prepared critic, actor and judge workspaces with a live worktree, and every `call-*` and `suite-*` lease in the host load directory whose pid answers `process.kill(pid, 0)`. A `heavyBudget` still loads and `next` says it is not read. Tests: `scripts/test/host.test.mjs`, `loop.test.mjs` (the measured bound; the count shown, not bounding), `registry.test.mjs`; acceptance R7-B6-07 to R7-B6-09. Actor B measured 0.16 ms per reading on Linux | on macOS `os.freemem()` counts only free pages, not reclaimable ones, so a busy Mac can read as over the bound while it has room. The reading is taken when `next` runs and reserves nothing: two sessions that read it together can both start a heavy call, and the one-minute load average trails a call that has just started. A lease names only a pid, and nothing removes the lease of a crashed call or suite; once the OS reuses its pid the stale lease is shown as a live heavy call (it no longer bounds anything). A prepared T3 workspace whose child never started counts until it is recorded or its worktree is removed (Phase supervision). Putting the process's start time in the lease would tell a reused pid apart |
+| 33 | One tree, one suite run (D-0020, D-0023) | Exact measured-tree checks in lib/ci.mjs; missing trees receive no legacy credit. suite-green.mjs reuses only direct literal node --test commands with no install or NODE_OPTIONS and PATH resolving to its own binary, pinned at execution. The cache includes executable digest and runtime identity. Other commands rerun with runtime unknown. Git original objects determine publication trees. | Opaque commands pay repeated execution cost; the cache is not pruned. Tests: suite-green.test.mjs and ci-gate.test.mjs. This is conservative reuse, not runtime inference for arbitrary launchers. |
+| 34 | Blocker dispositions match the ruling (D-0026) | lib/blockers.mjs selects the last compatible structured ruling by first-addition Git commit then path and derives all four disposition sets. Flags cannot reverse its dispositions; historical records and supplemental flags remain supported. Full tokens must match before CI is read. | Documentary matching does not establish semantic truth. A bare id in a historical ruling still lacks class identity. Structured dispositions reduce transcription; historical free-text interpretation still needs judgment. |
+| 35 | Recurrence counts distinct blockers; shelved and carried blockers (D-0024, loop policy, interface C4) | screening: `trajectory.mjs alarms` counts each `class:id` once, at the first row that opens it; a key first seen as `carried` never counts; distinct keys of one ruling count. Partly-closed counts an area's distinct earlier blockers still open after its next ruling; `shelved` keys leave the open set, listed apart from closed ones; carried keys never enter. Measured on clones: a baseline loop's `blocker-recurring:grant-store` falls from 5 to 4 (R33-1 listed again in round 35); no alarm of its phase A1 waits for a diagnosis before or after; this loop gains `blocker-recurring:suite-evidence` and `blocker-recurring:comment-admission` (two distinct blockers each in round 6), which wait for a diagnosis; no existing alarm fires on a later row in either ledger | the identity is the whole `class:id`: a blocker listed again under another class counts in both. A blocker closed and then opened again counts once, so a failed fix shows only through `partly-closed` or `area-rounds`. `carried` and `shelved` derive from compatible structured rulings; historical free-text flags still depend on the lead's transcription; a carried blocker listed under `opened`, as rows written before C4 did, is still counted once by its key. Rows written before C4 can hold `shelved` findings by bare ID (early production loops, `S12-1`), which match no blocker |
+| 36 | Comments are pointers or directives (D-0016) | lib/comments.mjs uses established whole-source ECMAScript spans and positive directive/pointer facts. Unmatched comments and unproven source coverage become source-bound independent-review candidates; committed audited judge resolutions govern retry and phase close. Established prose refuses; pending does not mean prose. Tests: comment-resolution.test.mjs and call.test.mjs. | Whole-file review for non-JavaScript, dialects and parser failure increases review cost. Unknown extensions remain outside scope. Bundled Acorn is an internal Node interface. Pointer form does not prove its target exists. Judge evidence is semantically assessed, not mechanically proved; provenance is not a guarantee of different vendors. The source-review output contract and closure await independent judge assessment. |
+| 37 | CI is read only where the push goes, on github.com (interface A5) | hard (`lib/ci.mjs`): the reader takes the host and `owner/repo` from the one push URL of the loop's `gates.remote` (`destinationIdentity`: `https://`, `ssh://` and scp-like forms) and reads check runs only when that host is in `CI_HOSTS` (github.com), through `gh api --hostname <host>` with `GH_HOST` set to it, whatever host `gh` would otherwise pick; every reading and receipt names `host` and `repository` (both null when nothing could be read), and a shown push URL has its `http(s)` user information masked as `***`. Tests: R6-1 in `ci-gate.test.mjs` (a host-aware stand-in `gh`); acceptance R7-A01 to R7-A04. Loops pushing to a single github.com URL pass this destination check | a destination on any other host (a GitHub Enterprise server, another forge) is unreadable CI: its protected push exits 2 and no CONVERGED row can be written, so a loop there cannot close until a reader for that host is built (a new `CI_HOSTS` entry when the host speaks the same API). A protected loop with `"require": []` passes the protected push with no CI read, but the closing writer and `next` still need a green reading over at least one check, so no new CONVERGED row can be written and the phase cannot converge; the branch moves only on an existing ruling. R-0007-actor-a proposes that `gated-push.mjs` refuse `"require": []` while `protected` is non-empty (the lead's call) |
+| 38 | Whole blocker identifiers | lib/blockers.mjs and the judge-bar matcher use complete Unicode/punctuation-aware tokens. Prefixes of longer identifiers are not evidence. Tests: blockers.test.mjs and judge-bar.test.mjs. | Token identity cannot prove two differently named blockers mean the same thing; semantic identity remains judgment. |
+| 39 | A session's next steps read the owner store it was given (D-0027 item 2, interface B7) | construction: `self-loop.mjs start --owner-store <dir>` runs its `next` with that store (`lib/start.mjs`; R7-B7-01, `start.test.mjs`) | `tick` (`lib/tick.mjs`) runs `next` for each registered product with the store of the environment (`SELF_LOOP_OWNER_STORE`, else `~/.self-loop/owner-store`), not the store it read the registry from, so its next steps can show another store's products and host bound; `tick.mjs` is in no round-7 package (R-0007-actor-b open item 3) |
+| 40 | One blocker-state authority | lib/blockers.mjs owns the transition used by next, append explanations and partly-closed screening. Open/carry precede close/shelve; carried+closed ends closed. Semantic retry identity excludes timestamps and repeated CI readings. | Historical malformed bare-id shelves retain their old interpretation; no retrospective migration or blocker closure is inferred. |
+| 41 | The closing append carries the ruling dispositions | Structured OPENED/CLOSED/SHELVED/CARRIED sets are derived from the selected compatible ruling. The selected set is complete rather than a union of contradictory reports. Explicit flags remain for historical/supplemental records. | Structured fields can still be semantically wrong. The judge assesses the ruling; automatic extraction does not authorize convergence. |
+
+## Roles run as T3 child threads (runner `t3`)
+
+Chosen by the owner (2026-11-20) so each role can be watched and stopped live in T3. What the CLI path holds by
+construction and a `t3` role holds only by screening or by the lead:
+
+| Rule | CLI path | `t3` path | What would mechanise it |
+|---|---|---|---|
+| No personal settings, memory or MCP servers in a role | `claude -p --restricted --strict-mcp-config` | the T3 session's own settings apply | a T3 option for a restricted child session |
+| Codex sandbox per role (`workspace-write` unless the config asks for full access) | `codex exec -s <mode>` | the T3 thread's runtime mode | passing the sandbox mode through `delegate_task` |
+| The role works in its worktree | the agent's working directory | the child starts in the T3 project root and is told to `cd`; commands naming outside paths are screened | a working directory option for a T3 child |
+| The child is started with the prepared prompt | the script passes it | the lead passes it; `record` refuses a child whose first prompt does not hold it verbatim (exit 7) | — (already a gate) |
+| The run's exit status | the CLI's exit code | `record` checks the bound provider transcript for completion or abort; an unknown state keeps the worktree | read T3's terminal run state and automatically map its child ID to the provider session |
+
+## Blueprint
+
+| Rule | Now | Gap |
+|---|---|---|
+| Every important feature has the right requirement, a reason, a current design pointer and meaningful acceptance | structured requirement and dependency links are checked, and active purpose records without feature links raise an alarm | the frame reviewer and lead decide importance, relevance and completeness from the product and the owner's words. The feature's prose and test references have no product-independent schema |
+| A ruling accepted or reopened the cited feature, or a decision retired it with a valid reason | the cited judge round or decision must exist. Available judge hand-offs bind completions to their SHA and named features. A retirement decision must name the feature ID | the lead reads the ruling or decision for its meaning. A structured per-feature judge verdict and retirement decision would let the check verify the disposition |
+| A baseline really predates loop records and was entered by the lead | the first recorded completion may cite a resolving product acceptance heading with `by: lead` and a green CI receipt | the lead verifies the historical claim. Neither a Markdown heading nor the Git date proves when someone accepted work, and the event writer's name is caller-supplied |
+| Done cites the CI receipt from the applicable run | offline, the check validates the receipt's green verdict, required-check results and full SHA (the tip's when the event names one); a `done --round` takes commit, tip and receipt from that round's CONVERGED trajectory row, whose receipt the append itself read and saved; a baseline `done` is confirmed by one reading of its commit at the moment of writing where the records' loop pushes, and there is no done without a loop.json | a baseline's cited receipt is checked offline only; the confirming reading is not stored. A CONVERGED row written before the append read CI names no receipt, so its round cannot back a `done` (a new round can) |
+| Blueprint changes are append-only | `blueprint.mjs set` only appends. The records checker screens an edit to a managed log against HEAD | direct edits and history rewrites are outside the CLI. Git records who changed the files, but the checker does not establish who wrote a past event or prevent a file from being deleted |
+| Design citations stay current | the checker compares recognizable headings at the pinned commit and the product branch and raises a screening alarm | Markdown conventions and inaccessible product commits can make a comparison incomplete. Whole-project design relevance and free-text acceptance pointers remain for review |
+| A role works on the features it claims | new calls require existing IDs and hand-offs record the declaration. Three-round inactivity and unfinished dependencies raise alarms | the lead and judge verify that the task and result advance those features. Old workspaces have no declared IDs and supply no feature-level activity evidence |
+
+The 748a70d blueprint review leaves these cases open:
+
+- Duplicate literal Markdown headings resolve to the first match. Unambiguous slugs can cite later matches.
+- The blueprint phase check reads the working records. A convergence gate pinned to a committed records tree is still pending.
+- `ci-green --from-json` receipts do not carry source provenance. Use the actual CI gate to collect completion evidence.
+- Evidence with a commit still requires a matching CI receipt. Whether a pre-completion status should accept a SHA alone is undecided.
+
+## Phase frame
+
+The adversarial roles require the phase's committed frame hand-off. Intent batches (D-0031) give a new requirement's
+owner questions a checked structure (Owner batches: intent and outcomes, below), but nothing establishes that intent
+was confirmed before its design, that the frame addresses it, or that the blueprint reflects it: the lead and the
+judge read that. A design hand-off that names its requirement's answered intent batch or its recorded grounds could
+make the first claim checkable.
+
+## Current designs
+
+An old design can still apply to a new phase. The checker screens for an actor hand-off naming the design in the
+current phase. The lead reviews relevance and decides which designs to refresh or promote to the product documents.
+A conflict keeps the proposal in the actor's evidence. While the incumbent content is unchanged, a decision citing
+the conflicting hand-off or a later actor hand-off recording the design clears the screening item.
+
+## Owner words
+
+The lead reviews whether a citation actually distils the words or whether a mark is warranted. The checker can
+resolve an ID and screen for absent source lines, but a resolved citation does not prove intent alignment.
+The capture hook queues raw prompts in the records checkout's Git directory when the provider identity is
+unavailable. Official words come from submitted transcript events. The stop hook checks the current transcript
+again, and `sync` reports queued payloads without an unambiguous match. Review those payloads if the transcript
+is missing, or when an identity-less hook follows an already-written identical prompt. A provider prompt ID
+in every hook would let the queue resolve directly. A Codex human fork with neither its parent transcript nor
+usable fork timestamps has no reliable boundary between copied and new messages. A T3 hand-off uses a paragraph
+boundary, which distinguishes it from an inline delimiter in owner text. A literal delimiter with identical framing
+is ambiguous in the legacy string. A structured payload with the sender, message ID and original body would also
+disambiguate echoes of the lead’s own sends.
+
+## Owner directions and the share raised first (F-0011, D-0030 item 1)
+
+| Claim | What the mechanism establishes | What still requires judgment or evidence |
+|---|---|---|
+| A word is a direction, an answer, routine or not the owner's | the latest valid mark is its one class; a direction stays open until its intervention is committed, so convergence waits for it; `metrics` counts only settled words and lists open ones apart | the class is the lead's reading. A mixed answer carries one class; its batch answer event is counted separately. A word settled by citation only stays `unclassified` (screened, never refused) |
+| The loop raised a direction first | records check: the named record's first adding commit is strictly earlier than the capture of every word the intervention cites or marks to it (Git seconds against the capture timestamp) | file chronology only: a passage added to an older record later, a clock that was wrong, or a capture that lagged the utterance are not seen; the semantic priority is the independent reviewer's ruling (R-0008-judge-frame, Objective). Unknown capture or unreadable history is screening and never earns credit. The refusal is hard on structured facts (the claim line, the tree, the commit times), but its admission corpus is the critic's replay of real direction words and their timestamps (R8-G1-01 to R8-G1-04), synthetic claims, and this loop's own interventions (two `raised-first: no`, one without the line, screened): no real false claim is recorded yet (REQUIREMENTS item 11) |
+| Precision of the loop's recommendations | `answersByOutcome` counts each answer event's `outcome`; precision is as-recommended over labelled answers | one count per event: a batch answered in two events counts twice, and an answer that approves one question and amends another has one label. Proposal-level outcomes (R-0008-judge-frame) need a per-question outcome field; the label is the lead's reading, never checked against the words |
+| The counts are history-backed | one `phaseMetrics` over one committed snapshot | no per-version history of the counts is kept and no independent semantic review is attached to them yet (R-0008-judge-frame, admission item 7); the owner words of this loop live in the product owner ledger, so its own records show none |
+| Every intervention names what carries its general question (A1) | `next` lists every intervention without a valid `rung:` (one of five) and a nonblank `carried-by:` (a pointer, or `none:` with a reason), with what each lacks; `metrics` reports every disposition | the content is judgment: whether the carrier carries the question, and whether the rung is the highest it can reach. Nothing refuses on an absent or weak disposition until two-way admission evidence exists (REQUIREMENTS item 11). This loop's I-0001 to I-0003 have none yet: appending theirs is the lead's (R-0008-judge-mechanisms, lead to-do 3) |
+| A screening predicate would have raised a direction (A2, coverage) | `metrics` replays every predicate a disposition cites (`PREDICATES` in `loop.mjs`: the stall, the cadence, the idle packages, open words and the five trajectory alarms) by its own code on the records commit just before each citing word; a fire there lists the word under `wouldHaveFired`, apart from `raisedFirst`, which counts only record claims proven by commit order (R-0008-judge, raised-first-credit:R8-1; D-0030 item 1); a replay never counts as raised first and nothing is raised against an intervention that says `raised-first: no`; its firing episodes over the phase window's earlier commits that contain no such commit are false alarms | the replay runs today's code on old trees, so it shows coverage ("it would have raised it"), never that the loop showed it then; F-0011 item 7's per-version history and independent semantic review remain owed, and whether the cited predicate is the right carrier is judgment. A predicate that needs data the records do not hold decides only that it does not fire: `idle-packages` needs launch or acknowledgement events and the capacity at reconciliation (F-0012). The unit is the episode, not the commit; commit times are Git's whole seconds |
+| The objective measures are in front of the lead (A4) | `next` and `start` print the Measures header from `phaseMetrics` and `measurePlan` with unknown values as `unknown` (`measuresLines` in `loop.mjs`); the owner waiting of the phase sums each batch of the phase from its first publication to its answer, its replacement or, while unanswered, now, so an open batch accrues and is named; `unknown` with the reason when a time cannot be established, `0 s` only when the phase sent no batch, and a plan naming no batch prints `owner waiting n/a` instead of `0 s` (measures-zero, Grok 4.6 review under D-0036) | that the lead's reports quote it is prose (SKILL.md Phase close step 6). By admission no target, deviation alarm or gate rests on these numbers |
+
+## Owner batches: intent and outcomes (D-0031)
+
+| Claim | What the mechanism establishes | What still requires judgment or evidence |
+|---|---|---|
+| A question is asked only when the owner alone can settle it | an intent question needs a nonempty `whyAsked` | the reason's truth, and whether the records, code and first principles really leave an owner choice, is the lead's and judge's reading |
+| Dependent questions carry the recommendation that follows | `dependsOn` must name an earlier question, `ifOther` keys must be options of it | complete coverage of the changed branches cannot be inferred from a prose recommendation; an explicit recommended-option key would let code check it (a schema proposal, not built) |
+| One batch and at most one follow-up per requirement | `send` counts the phase's committed intent batches for the requirement, answered and replaced included, and refuses a third (exit 2) | a batch sent without `kind: intent` is not counted; whether a question belongs to a new requirement is the lead's reading. A requirement with no purpose record is screened, not refused. The refusal's admission corpus is synthetic: no real third batch is recorded |
+| The owner's words stay the answer | `answer` stores the words as given and the outcome as a separate field; the shared parser refuses an unknown outcome and an outcome on a replacement | whether the label is right is reviewed, never inferred |
+
+## Planning and dispatch (F-0012)
+
+| Claim | What the mechanism establishes | What still requires judgment or evidence |
+|---|---|---|
+| Every compatible, authorized package starts | `plan.mjs ready` and `next` list each ready package with its command, and each wait with its hold and release, from the committed records and the measured host. Every package ready by the plan (only the lead's own steps left) with no start and no recorded hold (`hold:` and `release:` on the package in its plan) is a screening alarm in `next`, `tick` (an `idle` finding, exit 2) and `start` (A3); a release made of record IDs, owner batch IDs, `capacity` or times is computed, and a met release no longer holds; a release with any part in words still holds the package and `next`, `tick` and `start` list it on every reconciliation as a release no code can check, awaiting review, apart from the idle packages (R-0008-judge, idle-hold:R8-2) | nothing launches or claims a package: the lead or the harness adapter starts them. The reading reserves no capacity, and packages carry no resource demand, so several ready heavy packages are each admitted by the same reading; reconcile and read again between launches. An authority ID proves the record exists, not that its text settles this package's direction. The alarm has no grace: a package about to be started is flagged until it is prepared (no minute threshold until a launch or acknowledgement event is recorded, by admission). Whether a release in words has come true is the lead's and judge's reading; `tick` and `start` also list it for other registered products as `unchecked-release`, separately from idle findings (tick-start-holds.test.mjs). Joint admission is shelved (R-0008-judge): ready packages are admitted per snapshot against the host bound, not as a set, and `call.mjs` only writes a lease, so packages that each fit may together exceed the host; reopen if an overload causes a red suite or a lost call that a gate acts on; to do: measured per-role demand once a wave exists, no numeric cap. The lead's turn end is no reconciliation point yet: the only turn-end adapter, the word gate's Stop hook, acts by blocking, and A3 is screening; a non-blocking turn-end message is F-0009 work |
+| One reading never starts two writers of one file | every current plan of the phase is reconciled together (`admitAcrossPlans` in `lib/plan.mjs`, read by `next`, `plan.mjs ready`, `tick` and `start`): in plan ID order and package order, a package whose files overlap a running package of another current plan, or one already offered a start, waits on a `writer` hold naming it and gets no command (Grok 4.6 review under D-0036, ready-overlap). Exhaustive over 2 current plans (2 packages and 1) × 6 file patterns × 3 run states (5,832 states) in `bounded-models.test.mjs`, with two seeded defects | the order decides which package goes first, not the packages' priority: the lead revises a plan to change it. A running package of a superseded plan holds overlapping work only through its live prepared workspace; a CLI-runner call of a superseded plan is not matched to files |
+| A package is running | a live prepared workspace with the package's hand-off ID, or a live call lease of `call.mjs` naming it (a CLI call in progress) | a preparation is not a launch acknowledgement: a T3 child that was never started reads as running. A recorded launch or acknowledgement event would close it |
+| The dispatcher's state machines are safe and make progress (A5) | exhaustive bounded checks in `scripts/test/bounded-models.test.mjs` on the shipped functions, each with its bound in its name and seeded defects it must catch: disjoint writers (3 packages × 6 patterns beside a live writer, 1,296 states), acyclic needs (67 graphs), no duplicate start (216 run states), carried-and-closed precedence (2,401 sequences), progress after reconciliation (5,400 states), the advancing review within the cadence (4,843 sequences), record transactions (5 interleavings of up to 3 writers, real Git) | a defect that needs more packages, patterns or events than a bound escapes; a bound grows only when a real defect escapes it. A theorem prover waits for a kernel stable across two phases that let a costly defect escape and has a property enumeration cannot cover (R-0008-judge-mechanisms) |
+| A plan is valid | `plan.mjs validate`, run by the lead before committing the plan; `next` lists a committed plan that does not validate | the records check does not run it, so an invalid plan can be committed; adding it to the records check needs a legitimate-history corpus first (REQUIREMENTS item 11) |
+| The three P-0006 measures | `plan.mjs measure`: critical-path work from committed transcript times or recorded seconds; owner wait from a batch's first publication to its answer (to now while it is unanswered, marked open; a replaced batch to its replacement's answer), summed over the batches the plan names; a plan naming none has no figure (`n/a`, `null` in JSON), never `0 s` | dispatchable idle time stays unknown (only candidate intervals) until admission, capacity and launch events are committed; the batch's publication stands in for its send; a missing duration makes the critical path unknown |
+
+## Phase supervision
+
+| Claim | What the records can show | What still requires judgment or evidence |
+|---|---|---|
+| A building feature has a live call | A prepared workspace with an intact worktree and declared feature IDs is evidence of prepared work | The lead checks whether the child actually started, finished or was abandoned. CLI calls and old workspaces without feature IDs cannot attest to live feature activity. A host run-state feed correlated to the prepared call ID could establish this |
+| An alarm was diagnosed | `call.mjs` refuses every critic, actor and judge call of the phase until a `reviewer-diagnosis` hand-off of the phase, recorded after the alarm's row (a later time; on the same second, the commit that added the hand-off already holds the row: D-0017 item 3), names the key on its task's `alarms:` line (`lib/diagnosis.mjs`). `ci-absent` blocks like every alarm, old rows included (D-0017 item 1). Replayed on phase v1: round 2 is refused for `ci-absent:v1:1` alone and rounds 3 and 4 for their alarms; with every candidate green, rounds 1 and 2 pass and rounds 3 and 4 are refused. `next` lists the alarms the gate refuses on, from the same function at the records HEAD | Whether the report actually diagnosed the alarm and tested its premise is the lead's reading. A `--view` pinned before the alarm's row passes the gate, as the role then cannot see the alarm; the hand-off records that view (D-0017 item 3 leaves it this round) |
+| The phase is ready to converge | `next` lists open words, status gaps, exact-SHA evidence gaps, unresolved blockers, open batches and diagnoses requiring review | The lead reads the ruling and its acceptance evidence, confirms actor/judge independence, and uses the product's additional acceptance gates. A structured acceptance receipt and observed vendor/model identity would establish more of this |
+| No progress has been made | `stall` dates the last blueprint event, hand-off, ruling or batch answer for phases with unfinished work or no features | The lead checks ongoing work before intervening. Workflow events before hand-off are unavailable to the records; the timer is a supervision alarm |
+| The advancing round runs on the cadence (D-0032 item 1) | `next` counts the judged adversarial rounds since the last advancing round (a round with a `reviewer-frame*` and a `judge-frame` hand-off), lists `advancing round due` with its three calls before every critic and actor item, and withholds convergence while it is due (`lib/cadence.mjs`); the `Cadence:` line names the rounds still to go before that | `call.mjs` runs every call while it is due (screening, rung 3): settled work is meant to run alongside, and which packages touch the area under review is the lead's reading, since no record ties a package to an area. The blind frame's view is the full view: its blindness rests on its task. Whether the frame reviewer read the returns, whether leaving an area was judged, and whether the judge ruled the derivations sound is the lead's reading of their records. The judged rows of an advancing round itself (settled work numbered in it) never count toward the next window |
+
+## Paired benchmark coverage
+
+The median bound reports nominal coverage under independent paired ratios. Pairs on a single host can share
+load or runtime state, which lowers effective sample size. Alternating order and warm-up address order and
+startup effects. Estimating coverage across independently sampled benchmark sessions remains open.
+
+## Lead shell tools
+
+The lead guard recognizes direct Git push commands in simple shell statements. Shell writes and executions
+through scripts, aliases or shell constructs outside that grammar are not reliably attributable to a path
+or command by the hook. Role workspaces and the gated push entry point carry the corresponding controls.
+
+
+## Deferred in D-0005
+
+- Astra 17. A remote refusal after validation can leave a local release tag. A later retry on another commit with the
+  same unpublished version requires local tag cleanup. Defer publishing the local tag reference until the push succeeds.
+- Opus 6. The compatibility path for a version-1 prepared call trusts the legacy manifest when the snapshot is missing.
+  A child with filesystem access can tamper with both. Move the trusted snapshot outside the child’s writable area before
+  dropping that fallback.
+- Opus 7. Independence screening compares the judge to the latest integrated actor. Earlier actors whose commits are
+  in the judged tree still require the lead’s review until the screening enumerates all contributing hand-offs.
+- Opus 10. The direct-push screen still leaves command substitutions, subshells, shell wrappers and prefixes such as
+  `sudo` or `time` outside its grammar. The existing Lead shell tools item tracks the coverage gap.
+
+Release receipts are local pre-push evidence. A locally approved push attempt can fail at the receiver, leaving a
+receipt that will also cover a later bypass for the same destination, ref and commit (D-0006 finding 7). A server-side
+record of accepted gate receipts would distinguish those attempts across clones. Use the atomic release command
+when creating a branch update and a tag together.
+
+## Deferred in D-0007
+
+- Opus 3. If Claude submits a bare slash command to the prompt hook, the pending capture can outlive its
+  transcript row and block up to three stops. Reconcile it against the slash-command row with the same
+  prompt ID even when the row has no owner text.
+- Opus 5. Invoking `word-gate.mjs`, `owner-words.mjs`, `lead-guard.mjs` or `records-check.mjs` through
+  a symlink can silently skip the CLI. Compare the real paths at entry as `version-gate.mjs` does.
+  Live hooks use real paths.
+
+## Every product watched (phase v1)
+
+`self-loop.mjs` with the owner store's registry, `tick`, durable stall alarms, the heartbeat and `start` (D-0009 item 1)
+moves the I-0001 gap to rung 1 (the scheduler runs `tick` for every registered product) and rung 3 (stalls, products
+without records or `loop.json`, unreadable products, unregistered records, all shown at `start`). What still depends on
+judgment, prose or a weaker rung:
+
+| Claim | What the mechanism establishes | What is still open, and what would close it |
+|---|---|---|
+| Every product the lead runs is registered | `tick` and `start` report a records repository (the top of its own Git working tree holding `records.json`) anywhere under the registry's `roots`, also nested in a code repository, that the registry does not name; a root that cannot be searched, or whose search reaches `ROOT_SCAN_FOLDERS` (50,000), is reported | A records repository outside every root, or in a hidden folder, `node_modules` or a registered loop's work folder, is not seen; registering is the lead's step (prose). Slice 4's capture by place would report a session in an unregistered folder |
+| The stall is shown at the next lead entry | `start` shows every registered product's live committed alarm (and a stall no tick recorded) from any folder; `next` shows the product's own | Nothing yet makes a session run `start`: the rules-file line and the adapters' `inject-entry` (slices 6, 8, 10) would; until then the lead runs it by the procedure (prose). The rest of §6.2 (lead or child, rules block, open words, adapter and hooks health) is not built |
+| `onStall: resume` restarts the loop | `tick` records `resume unavailable` with the alarm and shows the stall | No adapter provides `run-lead` (slices 8 and 10); D-0003's three unattended resumes a day and the owner notification wait for it |
+| The heartbeat runs | `heartbeat install --dry-run` prints entries that run the release worktree; install and uninstall are tested against stand-in `launchctl` and `crontab`; `start` shows a stall no tick has recorded as `no alarm recorded … is the heartbeat installed?` | A heartbeat that stopped is seen only once some product stalls; tick records no run of its own, so `start` cannot show the last tick's age. A tick ledger in the owner store (slice 4) would let `start` alarm on a stale heartbeat |
+| A round closed on green CI | `trajectory.mjs append` is told no loop, remote, checks or CI word: the loop is the loop.json of the records repository holding the ledger's real path, the row's phase must be its phase, and the append reads the pushed SHA's CI once (the VERSION-only tip, else the ruled SHA) where a push to `gates.remote` goes, over every `gates.require` check, saves the reading in those records and names it in the row. A CONVERGED row needs the word `success` (unreadable refuses it); without a loop CONVERGED is refused. The records check verifies offline that a CONVERGED row's receipt is a green reading of its SHA. `ci-absent` raises a judge row whose CI never ran or could not be read | A row is a log, not the authority: the convergence gate and the protected push read CI live at their point of use. A non-CONVERGED row records whatever the reading said at that moment. A row appended while CI is transiently unreadable (a `gh` outage at append time) gets `unknown`, raises `ci-absent` and costs one diagnosis (about $1.5 and 5 minutes, R-0006-reviewer-diagnosis): a delay, not `stuck`, since the diagnosis is the way out the product offers. Rows written before this contract keep their CI word without a receipt. The receipt is unsigned: the records check verifies its fields, not that GitHub produced them |
+| A stall is real | The clock is the last recorded phase activity: blueprint events, hand-offs, judge rulings, batch answers | A role call in progress records nothing until its hand-off, so a call longer than the threshold (`STALL_HOURS`, 12) alarms falsely; delegation records at prepare (slice 7) would count as activity |
+| The registry is what the owner store holds | Commands read the working `products.json` and refuse a malformed one (exit 64); `registry add` validates and commits | A hand edit left uncommitted is read as is; the records check of the owner layout (slice 4) would refuse it at commit |
+
+
+## Time-budget evidence
+
+Time projection is screening, not a release or authority gate. The Scope/Release/Event interpretation is now
+design-admitted by the final amended freeze at self-loop records
+`f81d0e8:evidence/0012/admitted-positive-final/`; the current contract and trust boundary are documented in
+`RECORDS.md` (Time-binding evidence contract). Archived NOTADMITTED author labels are historical. Design eligibility
+does not establish matcher implementation, independent acceptance, integration or actual usable delivery.
+
+The outstanding delivery chain remains explicit:
+
+- E1's frozen evaluator is archived at records `3c46d35:evidence/0012/positive-evaluator/`;
+  C2's stable 95/95 focused result is `8b445d9:evidence/0012/positive-acceptance-final/`.
+  These construction receipts do not establish exact-candidate full-suite or remote CI success.
+- I2 joins verified release, budget/promise timing, historical completion operands, checkpoint resolution and
+  delivery identities in progress comparisons in `plan-time.mjs`; `plan-measures.mjs` renders the result.
+  `scripts/test/time-budget-positive-integration.test.mjs` exercises real committed Git fixtures and CLI entries.
+  Focused receipts are supplied by the I2 role, not inferred from this documentation. No production event is created.
+- `loop.mjs` now displays minimum delivery status, evidence/time and current availability independently,
+  resolved checkpoint history, and scope-verified `forecast.releaseEta` separately from conditional arithmetic
+  diagnostics. `scripts/test/time-budget-entry-display.test.mjs` verifies real `next`/`start` output using
+  synthetic committed C2 evidence, including distinct promise criteria, unknown timing/scope and current
+  regressions without erasing historical delivery. Its 13 tests plus the relevant start/loop/time-entry
+  regressions passed 37/37 in the P2 entry-display followup; exact-candidate full-suite, review and remote CI
+  remain pending.
+- Historical canonical completion without a trusted Event at the historical cut no longer zeroes remaining work.
+  Older forecast tests expecting zero from handoff timestamps require independent expectation review under the
+  final contract; the I2 role must not change protected acceptance or another owner's tests.
+- Actual production trusted event evidence is absent from this admitted freeze. A working matcher with synthetic
+  archives would not supply it. Real claims need authorized independent public evidence under the documented
+  recording boundary, for the exact candidate, recipient/channel, criteria and event. Missing event time can leave
+  availability verified while on-time/late remains unverified.
+
+These implementation and evidence obligations are distinct from unsupported guarantees: no autonomous wake,
+transport/replay or physical clock/provider attestation is added. Public external assessments do not become native
+call.mjs audit or protected-push acceptance, and private/session/sealed reads are not a workaround. The matcher
+cannot prove archive integrity against its recorder. Do not solve missing production evidence by a caller trust
+flag, issuer whitelist, invented timestamp or a weaker gate.
+
+Existing forecast, history and ordinary-entry tests verify only their stated surfaces. Candidate review and response,
+the exact final committed full suite and remote CI remain separate exit obligations; targeted green results do not
+replace them. Later integration may update these pending statuses only with its own exact evidence. Existing
+R9/R10/R11 CLOSED CONTINUE closures are unchanged; this documentation claims no convergence or installation.

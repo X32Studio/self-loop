@@ -1,0 +1,23 @@
+{
+ "repository": "/work/self-loop",
+ "sha": "a4db05069494875d02fb99c0a68e605ec1b2863f",
+ "command": "node --test scripts/test",
+ "install": null,
+ "exit": 0,
+ "summary": {
+  "tests": 70,
+  "suites": 0,
+  "pass": 70,
+  "fail": 0,
+  "cancelled": 0,
+  "skipped": 0,
+  "todo": 0
+ },
+ "durationMs": 34943,
+ "green": true,
+ "reasons": [],
+ "log": {
+  "sha256": "ed651af284fccec4f59da3d6389bd8c47aa46a80e425210d4225ee1d745ce0ba",
+  "bytes": 7505
+ }
+}

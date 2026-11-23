@@ -1,0 +1,163 @@
+{
+ "source": {
+  "view": "records@23bbfbb2c08ce1cb9446d3a53c804a0ee0f9f255",
+  "handoffs": "metrics/handoffs.jsonl sha256:fa6ec8b240ac519d648c1eecafcdddc07034585bcf7399f858a4fd3b8d6b0707",
+  "trajectory": "metrics/trajectory.jsonl sha256:6f492c5536f6ac6bcbd35faefcf8178c5c1c81d8b700512c889fba9ae048a65f",
+  "diagnosisTask": "rounds/0005-reviewer-diagnosis.md, its alarms: line"
+ },
+ "rows": [
+  "{\"time\":\"2026-11-21T14:25:16Z\",\"area\":\"watch\",\"model\":\"-\",\"verdict\":\"CONTINUE\",\"opened\":\"stall-entry:R1-1,registry-discovery:R1-2,stall-independence:R1-3,product-isolation:R1-4,tip-ci-evidence:R1-5,acceptance-contract:R1-6\",\"closed\":\"-\",\"suite\":\"233/5\",\"owner\":\"0\",\"commit\":\"b4ed5490ff28720817261673e2fb06b828d4b079\",\"ci\":\"absent\",\"round\":1,\"phase\":\"v1\",\"role\":\"judge\"}",
+  "{\"time\":\"2026-11-21T15:01:58Z\",\"area\":\"watch\",\"model\":\"-\",\"verdict\":\"CONTINUE\",\"opened\":\"tip-ci-evidence:R2-1\",\"closed\":\"stall-entry:R1-1,registry-discovery:R1-2,stall-independence:R1-3,product-isolation:R1-4,acceptance-contract:R1-6\",\"suite\":\"261/1\",\"owner\":\"0\",\"commit\":\"1968e39419d8aff7a1cbaa7716d44a30fe6717ac\",\"ci\":\"absent\",\"round\":2,\"phase\":\"v1\",\"role\":\"judge\"}",
+  "{\"time\":\"2026-11-21T15:43:16Z\",\"area\":\"watch\",\"model\":\"-\",\"verdict\":\"CONTINUE\",\"opened\":\"-\",\"closed\":\"tip-ci-evidence:R1-5\",\"suite\":\"275/0\",\"owner\":\"0\",\"commit\":\"378cbf90c1f548f4342093b5b2daaa9b0c58345e\",\"ci\":\"absent\",\"round\":3,\"phase\":\"v1\",\"role\":\"judge\"}",
+  "{\"time\":\"2026-11-21T16:20:24Z\",\"area\":\"watch\",\"model\":\"-\",\"verdict\":\"CONTINUE\",\"opened\":\"tip-ci-evidence:R1-5\",\"closed\":\"tip-ci-evidence:R2-1\",\"suite\":\"286/0\",\"owner\":\"0\",\"commit\":\"b9073ee45ca07f58d37e3e0b05eb4e6374c39a3f\",\"ci\":\"absent\",\"round\":4,\"phase\":\"v1\",\"role\":\"judge\"}"
+ ],
+ "handoffs": [
+  {
+   "id": "R-0001-reviewer-frame",
+   "time": "2026-11-21T13:38:34Z",
+   "phase": "v1",
+   "round": 1,
+   "step": "reviewer-frame",
+   "role": "reviewer",
+   "view": "f2c68be77cc90fa3bd5bd9cb9480e6ba94a2e05e"
+  },
+  {
+   "id": "R-0001-critic",
+   "time": "2026-11-21T13:52:32Z",
+   "phase": "v1",
+   "round": 1,
+   "step": "critic",
+   "role": "critic",
+   "view": "3f613ffdee0177102f472f4737434614db03858e"
+  },
+  {
+   "id": "R-0001-actor",
+   "time": "2026-11-21T14:16:21Z",
+   "phase": "v1",
+   "round": 1,
+   "step": "actor",
+   "role": "actor",
+   "view": "3f613ffdee0177102f472f4737434614db03858e"
+  },
+  {
+   "id": "R-0001-judge",
+   "time": "2026-11-21T14:24:59Z",
+   "phase": "v1",
+   "round": 1,
+   "step": "judge",
+   "role": "judge",
+   "view": "129c7b54cac2d31a54c3ef7e07c7128c4a863892"
+  },
+  {
+   "id": "R-0002-critic",
+   "time": "2026-11-21T14:34:28Z",
+   "phase": "v1",
+   "round": 2,
+   "step": "critic",
+   "role": "critic",
+   "view": "30418b6e19953d6cfc15b53ba89219a89770574e"
+  },
+  {
+   "id": "R-0002-actor",
+   "time": "2026-11-21T14:54:04Z",
+   "phase": "v1",
+   "round": 2,
+   "step": "actor",
+   "role": "actor",
+   "view": "30418b6e19953d6cfc15b53ba89219a89770574e"
+  },
+  {
+   "id": "R-0002-judge",
+   "time": "2026-11-21T15:01:58Z",
+   "phase": "v1",
+   "round": 2,
+   "step": "judge",
+   "role": "judge",
+   "view": "cb701ce69c7db606ba35fbc6d25bafb4bbce38aa"
+  },
+  {
+   "id": "R-0002-actor-b",
+   "time": "2026-11-21T15:06:37Z",
+   "phase": "v1",
+   "round": 2,
+   "step": "actor-b",
+   "role": "actor",
+   "view": "cb701ce69c7db606ba35fbc6d25bafb4bbce38aa"
+  },
+  {
+   "id": "R-0003-critic",
+   "time": "2026-11-21T15:11:00Z",
+   "phase": "v1",
+   "round": 3,
+   "step": "critic",
+   "role": "critic",
+   "view": "a949917db197dc77e05ede1b0e6432ce835d9a70"
+  },
+  {
+   "id": "R-0003-actor",
+   "time": "2026-11-21T15:36:35Z",
+   "phase": "v1",
+   "round": 3,
+   "step": "actor",
+   "role": "actor",
+   "view": "89eac6466cea7ea8cd9a07dc8cf5ee1b5dfb3920"
+  },
+  {
+   "id": "R-0003-judge",
+   "time": "2026-11-21T15:43:16Z",
+   "phase": "v1",
+   "round": 3,
+   "step": "judge",
+   "role": "judge",
+   "view": "06de129aa1b9f3e3a1d8eb2f69dd33ca9b6071ae"
+  },
+  {
+   "id": "R-0004-critic",
+   "time": "2026-11-21T15:51:01Z",
+   "phase": "v1",
+   "round": 4,
+   "step": "critic",
+   "role": "critic",
+   "view": "84052bab82d2780eada13131d8245a4adaac1d9e"
+  },
+  {
+   "id": "R-0004-actor",
+   "time": "2026-11-21T16:03:26Z",
+   "phase": "v1",
+   "round": 4,
+   "step": "actor",
+   "role": "actor",
+   "view": "84052bab82d2780eada13131d8245a4adaac1d9e"
+  },
+  {
+   "id": "R-0004-actor-b",
+   "time": "2026-11-21T16:11:13Z",
+   "phase": "v1",
+   "round": 4,
+   "step": "actor-b",
+   "role": "actor",
+   "view": "5c2e4ee0a5f1eda080f5194ca03bd123bfdb1b33"
+  },
+  {
+   "id": "R-0004-judge",
+   "time": "2026-11-21T16:20:13Z",
+   "phase": "v1",
+   "round": 4,
+   "step": "judge",
+   "role": "judge",
+   "view": "b594c0e06db66776964ea68be6f18d17ffea7f92"
+  },
+  {
+   "id": "R-0005-reviewer-diagnosis",
+   "time": "2026-11-21T16:27:01Z",
+   "phase": "v1",
+   "round": 5,
+   "step": "reviewer-diagnosis",
+   "role": "reviewer",
+   "view": "cada56821e2802f4592b1471143d0602bd11daae"
+  }
+ ],
+ "alarmsLines": {
+  "R-0005-reviewer-diagnosis": "alarms: partly-closed:v1:watch:2, partly-closed:v1:watch:3, area-rounds:v1:watch, blocker-recurring:tip-ci-evidence"
+ }
+}

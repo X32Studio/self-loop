@@ -1,0 +1,1 @@
+重试确实处理了一部分竞争。让编辑在临时副本准备期间完成，单次编辑引发第二次复制，更新和迁移结果都保留；五次连续编辑引发五次复制，ExampleApp 保留原 inode 和全部编辑，给出逐行拒绝告警。这里仅固定编辑发生的时点，文件操作与比较均由真实实现执行。源码还显示，最后的 stat/内容回读与 rename 是两个操作，没有针对其他写入者的原子条件替换。测试没有测量这个极短窗口的自然发生率。[重试与拒绝](/private/tmp/example-app/s4/judge/r28/editor.log:1) · [比较与替换](/private/tmp/example-app/s4/judge/wt/src/access.js:148)

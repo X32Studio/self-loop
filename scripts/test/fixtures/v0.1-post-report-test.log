@@ -1,0 +1,113 @@
+✔ green: the four real backtest runs have no violation under the confined rule (38.171125ms)
+✔ red (constructed from real event shapes): a file tool outside the folder, or a tool not allowed (0.150291ms)
+✔ worktree mode: only forbidden (sealed) roots are certain; other outside paths and shell text are flags (0.113667ms)
+✔ red: the four S4 pushes whose Linux verify failed are refused (0.168208ms)
+✔ red: a commit with no check runs at all is refused (never ran) (0.053208ms)
+✔ green and red agree with the workflow's own conclusion on every recorded commit (zero false kills) (3.924542ms)
+✔ a re-run that passed replaces the earlier result; the latest run per name counts (0.094209ms)
+✔ repoSlug reads GitHub remotes only (0.113083ms)
+✔ gated-push refuses c7d752c and passes the rewrite head (real repository, recorded checks) (625.042166ms)
+✔ shipped: a symbol present only on an unmerged branch is reported as such (101.893416ms)
+✔ shipped: on the real S4 repository the lsof-based key-file replacement never reached rewrite, main or a tag (69.452625ms)
+✔ area: rounds, blockers and commits per area from the trajectory (0.21825ms)
+✔ ci: the latest conclusion per check on one exact commit (22.245375ms)
+✔ sizes: lines per path per commit, absent where the file did not exist (52.737625ms)
+✔ the layout is parsed from RECORDS.md, the one source (0.517583ms)
+✔ undeclared files, red and green on the real example-loop file list (b2ca438) (0.921083ms)
+✖ undeclared files, live read-only check of example-loop (134.044333ms)
+✔ dangling ID: red on the lesson that cites a ruling the repository lacks, green once the decision exists (63.110125ms)
+✖ dangling ID: zero false kills on all real loop text (no ID-like token besides the lesson's own) (114.832792ms)
+✔ sealed reference: red when an actor or reviewer record names a sealed file; green for the judge and for prose (49.292125ms)
+✔ sealed reference: zero false kills on the real loop records and backtest briefs (12.616292ms)
+✔ index: missing or drifted fails with the fix command; --write makes it pass; the check is read-only (37.375708ms)
+✔ screening: the real judge-28 citation of a moved worktree line and its scratch paths are reported, not failed (28.555958ms)
+✔ screening: commit citations, digests, secrets and history inside a design file (38.896583ms)
+✔ CLI: exit 1 with the finding on a certain failure, exit 0 with screening only (140.207625ms)
+✔ S4 rounds 24–27: no alarm (green CI, distinct blockers, module under the threshold) (0.255458ms)
+✔ S4 key-file problem: the alarms fire after round 28 and 29, before the lead's premise test after round 31 (0.29425ms)
+✔ a diagnosed alarm comes back only when it grows (0.068917ms)
+✔ rows are validated before they are appended (1.183916ms)
+✔ CLI: alarms exit 0 whatever they find (screening never blocks) (71.1755ms)
+✔ one round converges only with independence and green CI on the exact SHA; records are complete and pass the check (428.669167ms)
+✔ a judge on the actor's vendor is PROVISIONAL and cannot converge: the loop runs to the round cap (655.330208ms)
+✔ CONVERGED on a red CI does not close the round; the CI alarm triggers a diagnosis, which is acknowledged (767.03075ms)
+✔ a diagnosis of a recurring area must carry a premise test; REFRAME stops with an owner batch (1411.149166ms)
+✔ owner questions need a recommendation each; a phase sends at most maxOwnerBatches, then proceeds on recommendations (961.18175ms)
+✔ a certain access to a sealed root by the actor stops the loop with the audit as evidence (209.49225ms)
+✔ phase start asks the owner frame questions with recommendations; the reviewer is confined and gets facts (156.776791ms)
+✔ pure parts: header, owner questions, independence, redaction (0.159125ms)
+✔ FACT-NEEDED lines are answered from git and the reviewer is called once more to revise (202.258792ms)
+✔ --dry-run writes the prompts, calls nothing, records nothing and leaves no worktree (133.993417ms)
+ℹ tests 40
+ℹ suites 0
+ℹ pass 38
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6576.646208
+
+✖ failing tests:
+
+test at scripts/test/records-check.test.mjs:35:1
+✖ undeclared files, live read-only check of example-loop (134.044333ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   {
+  +     detail: 'no declared kind and path (RECORDS.md layout or records.json extraKinds)',
+  +     path: 'reviews/self-loop-v0.1.md',
+  +     rule: 'undeclared'
+  +   }
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///work/self-loop/scripts/test/records-check.test.mjs:39:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ { rule: 'undeclared', path: 'reviews/self-loop-v0.1.md', detail: 'no declared kind and path (RECORDS.md layout or records.json extraKinds)' } ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/test/records-check.test.mjs:58:1
+✖ dangling ID: zero false kills on all real loop text (no ID-like token besides the lesson's own) (114.832792ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+      'lessons/L-0001.md: L-0001',
+  +   'reviews/self-loop-v0.1.md: D-0007',
+  +   'reviews/self-loop-v0.1.md: R-0012-judge',
+  +   'reviews/self-loop-v0.1.md: L-0001',
+  +   'reviews/self-loop-v0.1.md: L-0001',
+  +   'reviews/self-loop-v0.1.md: L-0001',
+  +   'reviews/self-loop-v0.1.md: P-0008',
+  +   'reviews/self-loop-v0.1.md: L-0001',
+  +   'reviews/self-loop-v0.1.md: D-0020',
+  +   'reviews/self-loop-v0.1.md: L-0001',
+  +   'reviews/self-loop-v0.1.md: L-0001'
+    ]
+  
+      at TestContext.<anonymous> (file:///work/self-loop/scripts/test/records-check.test.mjs:74:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'lessons/L-0001.md: L-0001', 'reviews/self-loop-v0.1.md: D-0007', 'reviews/self-loop-v0.1.md: R-0012-judge', 'reviews/self-loop-v0.1.md: L-0001', 'reviews/self-loop-v0.1.md: L-0001', 'reviews/self-loop-v0.1.md: L-0001', 'reviews/self-loop-v0.1.md: P-0008', 'reviews/self-loop-v0.1.md: L-0001', 'reviews/self-loop-v0.1.md: D-0020', 'reviews/self-loop-v0.1.md: L-0001', 'reviews/self-loop-v0.1.md: L-0001' ],
+    expected: [ 'lessons/L-0001.md: L-0001' ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

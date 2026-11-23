@@ -1,0 +1,22 @@
+[
+  "Their implementation is not open-ended; focus on delivering and verifying the specific feature.",
+  "Why make routing so complex with multiple tiers? Keep the decision rule simple.",
+  "Approved.",
+  "Refer to /work/example-spec for the design principles.\nKeep rules executable as code or lint gates rather than prose:\n1. Prevention by construction\n2. Hard gate\n3. Screening alarm\n4. Model judgment\n5. Prose debt",
+  "Run the product build and the skill update in parallel.",
+  "Package the skill archive so I can test installing it locally.",
+  "How is progress? Can self-loop report subagent progress directly without hiding it in background logs?",
+  "2",
+  "Use vendor-a for the actor and vendor-b for the critic.",
+  "You pick the details; also run independent packages in parallel and verify the file layout.",
+  "We still need a guard against documentation drift and stale file references.",
+  "Continue with the product milestone using self-loop.",
+  "I",
+  "Where is the single-source blueprint tracking requirements, design rationale, and completion status?",
+  "Make sure project rules enforce capturing owner directives and running both engines.",
+  "Keep self-loop self-contained: capture intent clearly, maintain a single source of truth, and optimize for minimal owner attention.",
+  "Go with the recommendation.",
+  "Do not leave key decisions in chat context where they decay; distill them into durable records and reusable skills.",
+  "1. Keep the skill and product decoupled on the same principles. 2. Agreed, make self-loop harness-agnostic.",
+  "Agreed, maintain self-loop in its own repository with versioned releases."
+]
