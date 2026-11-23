@@ -4,7 +4,7 @@
 
 # self-loop
 
-### Ship coding-agent projects to truly done — with a fraction of your attention.
+### Turn a chaotic agent mob into a trustworthy delivery organization — so you can drink coffee at a street-side café while they ship.
 
 <p>
   <a href="README.zh-CN.md">中文</a> · <b>English</b> · <a href="docs/METHODOLOGY.md">Methodology</a> · <a href="SKILL.md">Skill Spec</a>
@@ -16,18 +16,22 @@
 
 ---
 
-> **Never trust an agent that grades its own homework.**
+> **In the AI era, compute is cheap and agent instances are infinite. Human attention is your scarcest resource — and your real bottleneck.**
+>
+> How well you govern your agent swarm and organize it into a trustworthy delivery organization now defines your leverage.
+> - **Without `self-loop`:** an ungoverned swarm is just a chaotic mob — self-grading its own homework, patching broken premises, and dragging you back into the terminal until you burn out.
+> - **With `self-loop`:** your agents run as a disciplined, cross-checked organization that frames, critiques, builds, independently verifies, and ships — while you sit at a street-side café drinking coffee, stepping in only when a real strategic decision is batched for you.
 
 Most "autonomous coding loops" in 2026 are `while true` wrappers: let an agent edit code, run unit tests, feed failures back into the prompt, and repeat until green.
 
-On toy tasks, that works. On real software, naive loops fail in four predictable ways:
+On toy tasks, that works. On real software, an ungoverned agent mob fails in four predictable ways:
 
-1. **Test-gaming & silent compromises** — an agent that writes both implementation and checks optimizes for passing checks, not solving the requirement.
+1. **Test-gaming & silent compromises** — an agent that grades its own homework optimizes for passing checks, not solving the requirement.
 2. **Patching on a broken premise** — when two fixes fail in the same area, a retry loop adds patch #3, #4, and #5 while the underlying assumption is false.
 3. **Context & document rot** — architecture notes, rationale, and "Round N" logs blur together until nobody knows what the system actually guarantees.
 4. **Prose rules decay under load** — instructions written only in prompts get skipped after a few turns, dragging you back into full-time babysitting.
 
-**`self-loop` is an autonomous delivery protocol for coding agents** (Claude Code, Codex, and T3/Antigravity harnesses). It pairs a first-principles **Frame Reviewer** with a **cross-vendor Critic / Actor / Judge** hardening loop, trajectory-driven premise tests, and Git-backed mechanical gates.
+**`self-loop` turns chaotic coding-agent swarms (Claude Code, Codex, and T3/Antigravity harnesses) into a trustworthy delivery organization.** It pairs a first-principles **Frame Reviewer** with a **cross-vendor Critic / Actor / Judge** hardening loop, trajectory-driven premise tests, and Git-backed mechanical gates.
 
 ---
 
