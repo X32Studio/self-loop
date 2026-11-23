@@ -296,3 +296,41 @@ test("D-0007: the themes index settles its citations when its records kind expli
   assert.deepEqual(openWords(r).map(w => w.id), [incidental]);
   assert.deepEqual(openWords(r, old).map(w => w.id), [themed, incidental]);
 });
+
+test("AC-28: AWS secret screening flags ASIA/AKIA keys and AWS secret access key assignments without false positives", () => {
+  const secret40Slash = "aB3dE6gH9jK2mN5pQ8rS1tU4vW7xY0zA2bC4dE6/";
+  const secret40Plus = "zY9xW8vU7tS6rQ5pN4mK3jH2gE1dB0aZ9yX8wV7+";
+  const secret40Eq = "1234567890abcdefghijklmnopqrstuvwxyzABC=";
+  const asiaKey = "ASIA" + "A1B2C3D4E5F6G7H8";
+  const akiaKey = "AKIA" + "Z9Y8X7W6V5U4T3S2";
+  const sshKeyId = "APKA" + "1234567890ABCDEF";
+
+  const positiveSamples = [
+    ["env-slash", `AWS_SECRET_ACCESS_KEY=${secret40Slash}\n`],
+    ["json-lower", `{"aws_secret_access_key": "${secret40Plus}"}\n`],
+    ["json-pascal", `{"SecretAccessKey": "${secret40Eq}"}\n`],
+    ["sts-asia", `Temporary key ${asiaKey} in log\n`],
+    ["iam-akia", `Static key ${akiaKey} in log\n`],
+  ];
+  for (const [label, body] of positiveSamples) {
+    const dir = repo({ "README.md": "# r\n", "research/sample.md": `# Sample\n\n${body}` });
+    const state = inspect(dir, { layoutText });
+    const secrets = state.screening.filter(f => f.rule === "secret");
+    assert.ok(secrets.length >= 1, `${label}: expected secret screening hit`);
+  }
+
+  const negativeSamples = [
+    ["asiatic-word", "The ASIATIC region label is benign.\n"],
+    ["asia-15", `Short tail ${"ASIA" + "A1B2C3D4E5F6G7H"} is not 16 chars.\n`],
+    ["asia-17", `Long tail ${"ASIA" + "A1B2C3D4E5F6G7H89"} is 17 chars.\n`],
+    ["ssh-apka", `SSH key ID ${sshKeyId} is public.\n`],
+    ["secret-41", `AWS_SECRET_ACCESS_KEY=${secret40Slash}X\n`],
+    ["secret-39", `AWS_SECRET_ACCESS_KEY=${secret40Slash.slice(0, 39)}\n`],
+  ];
+  for (const [label, body] of negativeSamples) {
+    const dir = repo({ "README.md": "# r\n", "research/sample.md": `# Sample\n\n${body}` });
+    const state = inspect(dir, { layoutText });
+    const secrets = state.screening.filter(f => f.rule === "secret");
+    assert.deepEqual(secrets, [], `${label}: unexpected secret hit: ${JSON.stringify(secrets)}`);
+  }
+});

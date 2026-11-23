@@ -4,10 +4,10 @@
 // each wins, a failed re-run is a failure, a queued re-run is pending).
 //
 // node ci-green.mjs --repo <product> --sha <commit> --require app/name,... [--remote origin] [--from-json <check-runs>] [--out <prefix>]
-// Prints { repository, sha, ci, ok, missing, conclusions, runs }: `runs` names the run (id, status, conclusion,
-// started_at) that decided each required check.
+// Prints { forge, host, [region, account], repository, sha, ci, ok, missing, conclusions, runs, source }: `runs` names
+// the run (id, [build_id], status, conclusion, started_at) that decided each required check.
 // Exit 0 green, 2 not green (failure, pending, absent, unreadable), 64 usage. With --out write the same receipt to
-// <prefix>.json, never replacing a file. GH_TOKEN from the caller's environment.
+// <prefix>.json, never replacing a file. Reads GitHub via `gh` (GH_TOKEN) or AWS CodeBuild via `aws` (AWS credentials).
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
@@ -20,11 +20,12 @@ cli(() => {
   let fetchRuns;
   if (args["from-json"]) {
     const raw = JSON.parse(readFileSync(args["from-json"], "utf8"));
-    fetchRuns = () => (Array.isArray(raw) ? raw : raw.check_runs);
+    fetchRuns = (_destination, _sha, _parsedRequired) => (Array.isArray(raw) ? raw : raw.check_runs);
   }
   let result;
   try { result = ciGreen({ repo: args.repo, remote: args.remote || "origin", sha: args.sha, require: args.require.split(","), ...(fetchRuns ? { fetchRuns } : {}) }); }
   catch (e) { throw new UsageError(e.message); }
+  if (args["from-json"]) result = { ...result, source: "from-json" };
   const receipt = `${JSON.stringify(result, null, 2)}\n`;
   if (args.out) {
     const file = `${args.out}.json`;

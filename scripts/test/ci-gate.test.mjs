@@ -8,7 +8,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { ciWord, requiredChecks } from "../lib/check-runs.mjs";
-import { ciDestination, ciGreen, DestinationError, destinationIdentity, pushCommit, pushDestination, repoSlug } from "../lib/ci.mjs";
+import { ciDestination, ciGreen, DestinationError, parseDestination, pushCommit, pushDestination } from "../lib/ci.mjs";
 import { readCi } from "../lib/ci-receipt.mjs";
 import { policyOf } from "../gated-push.mjs";
 import { fixtures, git, green, redOn, repo, s4History, scripts, temp } from "./helpers.mjs";
@@ -84,12 +84,12 @@ test("a re-run that passed replaces the earlier result; the latest run per name 
   assert.equal(requiredChecks([], []).ok, false, "no required checks is no verdict, never success");
 });
 
-test("repoSlug reads GitHub remotes only", () => {
-  assert.equal(repoSlug("https://github.com/example/app.git\n"), "example/app");
-  assert.equal(repoSlug("git@github.com:example/app.git"), "example/app");
-  assert.equal(repoSlug("https://gitlab.com/a/b.git"), null);
-  assert.equal(repoSlug("https://github.com.evil.example/a/b.git"), null);
-  assert.equal(repoSlug("/srv/git/github.com/a/b.git"), null, "a local path is not GitHub");
+test("parseDestination identifies GitHub remotes and rejects unsupported/local paths", () => {
+  assert.deepEqual(parseDestination("https://github.com/example/app.git\n"), { forge: "github", host: "github.com", region: null, repository: "example/app", profile: null });
+  assert.deepEqual(parseDestination("git@github.com:example/app.git"), { forge: "github", host: "github.com", region: null, repository: "example/app", profile: null });
+  assert.equal(parseDestination("https://gitlab.com/a/b.git").forge, null);
+  assert.equal(parseDestination("https://github.com.evil.example/a/b.git").forge, null);
+  assert.equal(parseDestination("/srv/git/github.com/a/b.git"), null, "a local path is not a remote forge");
 });
 
 // ---------- review v0.2 B2: the latest run, the destination repository ----------
@@ -115,19 +115,19 @@ test("CI is read in the repository the push goes to, never the fetch repository"
   const sha = git(product, "rev-parse", "HEAD");
   const records = repo({ "metrics/trajectory.jsonl": convergence(sha), ...judgeEvidence(sha) });
   const queried = [];
-  const fetchRuns = slug => { queried.push(slug); return slug === "example/push" ? [green()] : [green("verify", "github-actions", "failure")]; };
+  const fetchRuns = dest => { queried.push(dest.repository); return dest.repository === "example/push" ? [green()] : [green("verify", "github-actions", "failure")]; };
   const req = ["github-actions/verify"];
   const suite = { repository: product, sha, tree: git(product, "--no-replace-objects", "rev-parse", `${sha}^{tree}`), green: true, reasons: [] };
   const r = pushCommit({ repo: product, records, sha, suite, branch: "main", protectedBranches: ["main"], require: req, fetchRuns, dry: true });
   assert.deepEqual(queried, ["example/push"]);
   assert.equal(r.refused, undefined);
   assert.deepEqual([ciGreen({ repo: product, sha: sha.slice(0, 7), require: req, fetchRuns }).repository, ciGreen({ repo: product, sha, require: req, fetchRuns }).sha], ["example/push", sha]);
-  // pushInsteadOf sends the push to a local bare repository: no GitHub checks exist there, so a protected push is refused
+  // pushInsteadOf sends the push to a local bare repository: no supported forge checks exist there, so a protected push is refused
   const bare = temp("bare-"); git(bare, "init", "-q", "--bare");
   git(product, "config", "--unset", "remote.origin.pushurl");
   git(product, "config", `url.${bare}.pushInsteadOf`, "https://github.com/example/fetch.git");
-  assert.throws(() => ciDestination(product), /not a GitHub repository/);
-  assert.match(pushCommit({ repo: product, records, sha, suite, branch: "main", protectedBranches: ["main"], require: req, fetchRuns: () => [green()] }).refused, /not a GitHub repository/);
+  assert.throws(() => ciDestination(product), /not a supported CI forge repository/);
+  assert.match(pushCommit({ repo: product, records, sha, suite, branch: "main", protectedBranches: ["main"], require: req, fetchRuns: () => [green()] }).refused, /not a supported CI forge repository/);
   assert.equal(spawnSync("git", ["-C", bare, "rev-parse", "--verify", "-q", "refs/heads/main"]).status, 1, "nothing was pushed");
   assert.equal(pushCommit({ repo: product, sha, suite, branch: "work", protectedBranches: ["main"] }).pushed, true, "a working branch is not gated");
   assert.equal(git(bare, "rev-parse", "refs/heads/work"), sha);
@@ -323,7 +323,7 @@ test("one push destination: several push URLs are refused by every reader, namin
     && /https:\/\/github\.com\/example\/push\.git, git@github\.com:example\/mirror\.git/.test(e.message)
     && /its own remote/.test(e.message) && /remove the extra push URL/.test(e.message));
   const queried = [];
-  const reading = ciGreen({ repo: product, sha, require: ["github-actions/verify"], fetchRuns: slug => { queried.push(slug); return [green()]; } });
+  const reading = ciGreen({ repo: product, sha, require: ["github-actions/verify"], fetchRuns: dest => { queried.push(dest.repository); return [green()]; } });
   assert.deepEqual([reading.ci, reading.ok, reading.repository, reading.sha, queried], ["unknown", false, null, sha, []]);
   assert.match(reading.error, /example\/mirror\.git/);
   assert.deepEqual(reading.missing, [reading.error]);
@@ -414,21 +414,21 @@ for (const run of runs) console.log(JSON.stringify(run));
 
 const ciGreenCli = (args, env) => spawnSync(process.execPath, [join(scripts, "ci-green.mjs"), ...args], { encoding: "utf8", env });
 
-test("R6-1: the identity of a push URL is its host and owner/repo; only github.com is a CI host read today", () => {
+test("R6-1: the identity of a push URL is its forge, host and repository; unsupported hosts have forge: null", () => {
   const cases = [
-    ["https://github.com/example/product.git", { host: "github.com", repository: "example/product" }],
-    ["https://x-access-token:secret@GitHub.com/example/product", { host: "github.com", repository: "example/product" }],
-    ["ssh://git@github.com/example/product.git", { host: "github.com", repository: "example/product" }],
-    ["git@github.com:example/product.git", { host: "github.com", repository: "example/product" }],
-    ["https://ghe.example.com/example/product.git", { host: "ghe.example.com", repository: "example/product" }],
-    ["git@ghe.example.com:example/product.git", { host: "ghe.example.com", repository: "example/product" }],
-    ["https://github.com:8443/example/product.git", { host: "github.com:8443", repository: "example/product" }],
+    ["https://github.com/example/product.git", { forge: "github", host: "github.com", region: null, repository: "example/product", profile: null }],
+    ["https://x-access-token:secret@GitHub.com/example/product", { forge: "github", host: "github.com", region: null, repository: "example/product", profile: null }],
+    ["ssh://git@github.com/example/product.git", { forge: "github", host: "github.com", region: null, repository: "example/product", profile: null }],
+    ["git@github.com:example/product.git", { forge: "github", host: "github.com", region: null, repository: "example/product", profile: null }],
+    ["https://ghe.example.com/example/product.git", { forge: null, host: "ghe.example.com", region: null, repository: "example/product", profile: null }],
+    ["git@ghe.example.com:example/product.git", { forge: null, host: "ghe.example.com", region: null, repository: "example/product", profile: null }],
+    ["https://github.com:8443/example/product.git", { forge: null, host: "github.com:8443", region: null, repository: "example/product", profile: null }],
     ["/srv/git/github.com/example/product.git", null],
     ["file:///srv/git/example/product.git", null],
     ["https://github.com/example/product/extra", null],
   ];
-  for (const [url, identity] of cases) assert.deepEqual(destinationIdentity(url), identity, url);
-  assert.deepEqual(cases.map(([url]) => repoSlug(url)), ["example/product", "example/product", "example/product", "example/product", null, null, null, null, null, null]);
+  for (const [url, identity] of cases) assert.deepEqual(parseDestination(url), identity, url);
+  assert.deepEqual(cases.map(([url]) => { const d = parseDestination(url); return d?.forge ? d.repository : null; }), ["example/product", "example/product", "example/product", "example/product", null, null, null, null, null, null]);
 });
 
 test("R6-1: CI is read only from the API of the destination's host, whatever host gh would choose, and every reading names host and repository", () => {
@@ -602,7 +602,7 @@ test("R6-6: Git names the remote: any name Git accepts, with dots or slashes, re
   }
   for (const unknown of ["team", "absent/remote", "--all", ""]) assert.throws(() => pushDestination(product, unknown), e => e instanceof DestinationError && /Git knows no remote/.test(e.message), unknown);
   git(product, "remote", "add", "fork/gh", "https://github.com/example/fork.git");
-  const reading = ciGreen({ repo: product, remote: "fork/gh", sha, require: ["github-actions/verify"], fetchRuns: slug => (slug === "example/fork" ? [green()] : []) });
+  const reading = ciGreen({ repo: product, remote: "fork/gh", sha, require: ["github-actions/verify"], fetchRuns: dest => (dest.repository === "example/fork" ? [green()] : []) });
   assert.deepEqual([reading.host, reading.repository, reading.ci], ["github.com", "example/fork", "success"]);
   const { store } = registeredLoop(product, { remote: "team/origin" });
   const receipt = join(temp(), "suite.json");
@@ -679,6 +679,6 @@ test("R6-7: policyOf reads the loop's own keys, never defaults standing in for t
 
 test("flow: a configured remote includes its default transport port; loss: false-verdict; semantic destinations agree while alternate ports stay separate", () => {
   for (const url of ["https://GitHub.com:443/Example/Product.git", "ssh://git@github.com:22/example/product.git", "git@github.com:example/product.git", "https://github.com./example/product/"])
-    assert.deepEqual(destinationIdentity(url), { host: "github.com", repository: "example/product" });
-  assert.deepEqual(destinationIdentity("ssh://git@github.com:2222/example/product"), { host: "github.com:2222", repository: "example/product" });
+    assert.deepEqual(parseDestination(url), { forge: "github", host: "github.com", region: null, repository: "example/product", profile: null });
+  assert.deepEqual(parseDestination("ssh://git@github.com:2222/example/product"), { forge: null, host: "github.com:2222", region: null, repository: "example/product", profile: null });
 });

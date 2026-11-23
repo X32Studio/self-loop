@@ -6,108 +6,58 @@
 // A word: { id, time, source: "claude" | "codex", session, text, sha256 }. Its ID is derived from the session, the text
 // and its ordinal among identical texts of that session, so the hook and a later transcript sync agree on it.
 //
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, relative, resolve, sep } from "node:path";
-import { canonical } from "../audit-access.mjs";
+import { basename, join, resolve } from "node:path";
+import { antigravityHookSession, antigravityTranscript, collectAntigravityWords } from "./antigravity-words.mjs";
 import { git } from "./git-plumbing.mjs";
+import {
+  captureOwnerText,
+  codexAgentSession,
+  DELEGATED_NOTICE,
+  delegatedThread,
+  handoffMessage,
+  inside,
+  isLeadPrompt,
+  LeadSends,
+  MARKS,
+  numberWords,
+  ownerPrompt,
+  ownerPromptText,
+  projectRoots,
+  rowsOf,
+  SEND,
+  sha,
+  T3_AGENT_NOTICE,
+  textOf,
+  wordId,
+  WORDS,
+} from "./owner-words-core.mjs";
 import { appendJsonLines, commitRecords, recordsSnapshot } from "./records-commit.mjs";
 
-export const WORDS = "owner/words.jsonl";
-export const MARKS = "owner/word-marks.jsonl";
-const LEAD_MARKERS = ["self-loop call ", "[lead", "Your task is the file "];
+export {
+  captureOwnerText,
+  codexAgentSession,
+  DELEGATED_NOTICE,
+  delegatedThread,
+  handoffMessage,
+  inside,
+  isLeadPrompt,
+  LeadSends,
+  MARKS,
+  numberWords,
+  ownerPrompt,
+  ownerPromptText,
+  projectRoots,
+  rowsOf,
+  sha,
+  T3_AGENT_NOTICE,
+  wordId,
+  WORDS,
+};
+
 const CODEX_INJECTED = /^(?:<environment_context>|# AGENTS\.md instructions\b|<user_instructions>|<permissions instructions>|<turn_aborted>|<user_shell_command>)/;
-const HANDOFF = /^Context handoff \([a-z_]+\):(?:\r?\n|$)/;
-const SLASH_COMMAND = /^<command-name>(\/[^<]+)<\/command-name>\s*<command-message>[\s\S]*?<\/command-message>\s*<command-args>([\s\S]*)<\/command-args>$/;
-const SEND = /(?:^|__)t3_thread_send(?:_attachments)?$/;
-const DELEGATED = /^Act as the [\w -]+ sub-agent for this task\./;
-const T3_AGENT_NOTICE = /^\[T3 Code: (?:the agent in T3 thread "[^"\r\n]+"(?: on linked environment "[^"\r\n]+")? sent this message, not the user|this message came through T3 Code's tools, not from the user typing in this chat)\.\](?:\r?\n|$)/;
-const DELEGATED_NOTICE = /^Delegated task (?:node:|thread:)?delegated-task:\S+(?: \([^\r\n]*\))?(?: in child thread \S+)? (?:\[(?:completed|failed|cancelled|interrupted)\]:|asked a question and is still working\.)/;
-
-const sha = text => createHash("sha256").update(text).digest("hex");
-const rowsOf = file => readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap(l => { try { return [JSON.parse(l)]; } catch { return []; } });
-const textOf = content => typeof content === "string" ? content : Array.isArray(content)
-  ? content.filter(p => p?.type === "text" || p?.type === "input_text").map(p => p.text ?? "").join("\n") : "";
-
-export const projectRoots = value => String(value ?? "").split(",").map(s => s.trim()).filter(Boolean).map(p => resolve(p));
-export const delegatedThread = (env = process.env) => /delegated-task/.test(env.T3CODE_THREAD_ID ?? "");
-
-export const isLeadPrompt = text => DELEGATED.test(text.trimStart()) || LEAD_MARKERS.some(m => text.trimStart().startsWith(m));
-export const codexAgentSession = meta => meta.thread_source === "subagent" || Boolean(meta.source?.subagent)
-  || Boolean(meta.parent_thread_id && !meta.forked_from_id) || meta.source === "exec" || meta.originator === "codex_exec";
-
-export function inside(dir, roots) {
-  const child = canonical(dir);
-  return roots.some(root => {
-    const r = relative(canonical(root), child);
-    return r !== ".." && !r.startsWith(".." + sep) && !r.startsWith(sep);
-  });
-}
-
-export function wordId(session, text, ordinal) {
-  return `W-${sha(`${session}\0${text}\0${ordinal}`).slice(0, 10)}`;
-}
-
-/** The exact owner message appended to a T3 context summary. */
-export function handoffMessage(text) {
-  if (!HANDOFF.test(text.trimStart())) return null;
-  // T3 separates the new message from the summary with a paragraph break. An inline delimiter inside the
-  // owner's message is literal text. Older envelopes without paragraph framing use the last delimiter line.
-  const marker = [...text.matchAll(/(?:\r?\n){2,}User message:\r?\n/g)].at(-1)
-    ?? [...text.matchAll(/\r?\nUser message:\r?\n/g)].at(-1);
-  const message = marker && text.slice(marker.index + marker[0].length);
-  return message?.trim() ? message : null;
-}
-
-function ownerPrompt(text, { claude = false } = {}) {
-  while (HANDOFF.test(text.trimStart())) {
-    text = handoffMessage(text);
-    if (text === null) return null;
-  }
-  const content = text.trim();
-  if (!content
-    || (claude && /^\[Request interrupted by user(?: for tool use)?\]$/.test(content))
-    || /^(?:\[Historical (?:user|assistant); [^\]\r\n]*\]|<codex_internal_context\b)/.test(content)
-    || T3_AGENT_NOTICE.test(content) || DELEGATED_NOTICE.test(content)
-    || /^<(task-notification|system-reminder|local-command-stdout)>[\s\S]*<\/\1>$/.test(content)
-    || /^<local-command-caveat>[\s\S]*?<\/local-command-caveat>/.test(content)) return null;
-  const command = SLASH_COMMAND.exec(content);
-  if (command) return command[2].trim() ? { text: command[2], command: command[1] } : null;
-  return { text };
-}
-
-export const ownerPromptText = text => ownerPrompt(text)?.text ?? null;
-
-export function captureOwnerText(text) {
-  const owner = typeof text === "string" ? ownerPrompt(text, { claude: true })?.text : null;
-  return owner && !isLeadPrompt(owner) ? owner : null;
-}
-
-class LeadSends {
-  recent = [];
-
-  add(name, input, time) {
-    if (typeof name !== "string" || !SEND.test(name) || typeof input?.message !== "string") return;
-    this.recent.push({ text: input.message, attachments: name.endsWith("_attachments"), time });
-  }
-
-  matches(text, time) {
-    const i = this.recent.findIndex(send => {
-      const elapsed = Date.parse(time) - Date.parse(send.time);
-      if (Number.isFinite(elapsed) && (elapsed < 0 || elapsed > 30_000)) return false;
-      return text === send.text || (send.attachments && text.startsWith(send.text)
-        && /^(?:\s*\[Attached file "[^"\r\n]+" is saved at: [^\r\n]+\])+\s*$/.test(text.slice(send.text.length)));
-    });
-    if (i !== -1) {
-      this.recent.splice(i, 1);
-      return true;
-    }
-    // A genuine intervening prompt breaks the association with earlier sends.
-    this.recent = [];
-    return false;
-  }
-}
 
 function claudeOwnerPrompt(row) {
   if (row?.type !== "user" || row.toolUseResult || row.isMeta || row.isCompactSummary || row.isSidechain) return null;
@@ -116,22 +66,6 @@ function claudeOwnerPrompt(row) {
 }
 
 export const claudeOwnerText = row => claudeOwnerPrompt(row)?.text ?? null;
-
-function number(session, items, source) {
-  const seen = new Map(), trimmed = new Map();
-  return items.map(({ time, text, event, command }) => {
-    const n = (seen.get(text) ?? 0) + 1;
-    seen.set(text, n);
-    const normalized = text.trim();
-    const ordinal = (trimmed.get(normalized) ?? 0) + 1;
-    trimmed.set(normalized, ordinal);
-    const legacyId = wordId(session, text, n);
-    const id = event && source === "claude" ? wordId(session, `claude-event:${event}`, 1) : legacyId;
-    const word = { id, time, source, session, text, sha256: sha(text), ...(event ? { event } : {}) };
-    return Object.defineProperties(word, { legacyId: { value: legacyId }, trimmedId: { value: wordId(session, normalized, ordinal) },
-      command: { value: command } });
-  });
-}
 
 const claudeAgent = rows => rows.some(row => row.type === "session_meta" && row.source?.subagent)
   || isLeadPrompt(rows.map(claudeOwnerText).find(text => text !== null) ?? "");
@@ -163,7 +97,7 @@ function claudeTranscript(file, roots, expected) {
     else items.push(item);
   }
   // Number the whole session before filtering CWD. Overlapping project lists must agree on every word's ID.
-  const words = number(session, items, "claude");
+  const words = numberWords(session, items, "claude");
   const inScope = item => item.cwd && inside(item.cwd, roots);
   return { words: roots ? words.filter((_, i) => inScope(items[i])) : words, echoes: roots ? echoes.filter(inScope) : echoes };
 }
@@ -222,7 +156,7 @@ function codexWords({ meta, session, items }, roots, sessions) {
     }
   }
   if (!items.length || isLeadPrompt(items[0].text)) return [];
-  return number(session, items, "codex").filter((_, i) => items[i].cwd && inside(items[i].cwd, roots));
+  return numberWords(session, items, "codex").filter((_, i) => items[i].cwd && inside(items[i].cwd, roots));
 }
 
 export const codexSessionWords = (file, roots) => codexWords(codexMessages(file), roots, new Map());
@@ -235,8 +169,8 @@ export const claudeSlug = dir => resolve(dir).replace(/[/.]/g, "-");
 const defaultClaude = () => process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
 const defaultCodex = () => process.env.CODEX_HOME || join(homedir(), ".codex");
 
-/** Scan Claude project directories and verify the cwd of each transcript row inside a configured project. */
-export function transcriptWords(roots, { claudeHome = defaultClaude(), codexHome = defaultCodex() } = {}) {
+/** Scan Claude, Codex and Antigravity transcripts; isolate Antigravity DB/transcript errors into a skip report. */
+export function transcriptWordsReport(roots, { claudeHome = defaultClaude(), codexHome = defaultCodex(), env = process.env, home, sqliteLoader } = {}) {
   const claude = projectSessions(join(claudeHome, "projects")).flatMap(file => claudeSessionWords(file, roots));
   const rollouts = [...walk(join(codexHome, "sessions")), ...jsonl(join(codexHome, "archived_sessions"))];
   const sessions = new Map();
@@ -245,7 +179,14 @@ export function transcriptWords(roots, { claudeHome = defaultClaude(), codexHome
     if (!prior || prior.items.length < session.items.length) sessions.set(session.session, session);
   }
   const codex = [...sessions.values()].flatMap(s => codexWords(s, roots, sessions));
-  return [...claude, ...codex].sort((a, b) => String(a.time).localeCompare(String(b.time)));
+  const antigravity = collectAntigravityWords(roots, { env, ...(home !== undefined ? { home } : {}), ...(sqliteLoader ? { sqliteLoader } : {}) });
+  const words = [...claude, ...codex, ...antigravity.words].sort((a, b) => String(a.time).localeCompare(String(b.time)));
+  return { words, antigravity: { skipped: antigravity.skipped, reason: antigravity.reason } };
+}
+
+/** Scan Claude, Codex and Antigravity transcripts and return the merged sorted words list. */
+export function transcriptWords(roots, opts = {}) {
+  return transcriptWordsReport(roots, opts).words;
 }
 
 const pendingDir = records => join(git(records, "rev-parse", "--absolute-git-dir"), "self-loop-owner-pending");
@@ -263,9 +204,10 @@ function savePending(path, value) {
 }
 
 export function queueOwnerPrompt(records, prompt) {
-  const key = prompt.event ? sha(JSON.stringify([prompt.session, prompt.event])) : randomUUID();
+  const key = prompt.pendingKey ?? (prompt.event ? sha(JSON.stringify([prompt.session, prompt.event])) : randomUUID());
+  const { pendingKey: _ignored, ...stored } = prompt;
   const path = join(pendingDir(records), `${key}.json`);
-  if (!existsSync(discardedPath(path))) savePending(path, prompt);
+  if (!existsSync(discardedPath(path))) savePending(path, stored);
   if (!existsSync(discardedPath(path))) return path;
   rmSync(path, { force: true });
   return null;
@@ -274,6 +216,18 @@ export function queueOwnerPrompt(records, prompt) {
 function readPending(path) {
   try { return JSON.parse(readFileSync(path, "utf8")); }
   catch (error) { if (error.code === "ENOENT") return null; throw error; }
+}
+
+export function hasPendingForSession(records, session) {
+  if (!session) return false;
+  const dir = pendingDir(records);
+  return entries(dir).some(f => {
+    if (!f.isFile() || !f.name.endsWith(".json")) return false;
+    const path = join(dir, f.name);
+    if (existsSync(discardedPath(path))) return false;
+    const prompt = readPending(path);
+    return Boolean(prompt && prompt.session === session);
+  });
 }
 
 function archivePending(path, prompt, note) {
@@ -308,19 +262,44 @@ export function pendingOwnerPrompts(records, session = null) {
   });
 }
 
+const stepIndexOf = event => {
+  const m = /^step-(\d+)$/.exec(String(event ?? ""));
+  return m ? Number(m[1]) : null;
+};
+
 export function reconcileOwnerPrompts(records, words, session = null, echoes = []) {
   const pending = pendingOwnerPrompts(records, session);
-  const candidates = pending.map(prompt => [...words, ...echoes].filter(word => {
-    if (word.source !== "claude" || word.session !== prompt.session) return false;
-    // Interpret a raw slash prompt only when Claude confirms the command in the transcript.
-    if (word.text !== prompt.text) {
-      const args = word.command && prompt.text.startsWith(word.command) && prompt.text.slice(word.command.length);
-      if (!args || !/^\s/.test(args) || args.trimStart() !== word.text.trimStart()) return false;
+  const pool = [...words, ...echoes];
+  const candidates = pending.map(prompt => {
+    const expectedSource = prompt.source ?? "claude";
+    const textMatches = pool.filter(word => {
+      if (word.source !== expectedSource || word.session !== prompt.session) return false;
+      // Interpret a raw slash prompt only when Claude confirms the command in the transcript.
+      if (word.text !== prompt.text) {
+        const args = word.command && prompt.text.startsWith(word.command) && prompt.text.slice(word.command.length);
+        if (!args || !/^\s/.test(args) || args.trimStart() !== word.text.trimStart()) return false;
+      }
+      return true;
+    });
+    if (prompt.event) {
+      const exact = textMatches.filter(word => word.event === prompt.event);
+      if (exact.length || !Number.isInteger(prompt.anchorStep)) return exact;
     }
-    if (prompt.event) return word.event === prompt.event;
-    const afterHook = Date.parse(word.time) - Date.parse(prompt.time);
-    return afterHook >= 0 && afterHook <= 2_000;
-  }));
+    if (expectedSource === "antigravity") {
+      return textMatches.filter(word => {
+        if (Number.isInteger(prompt.anchorStep)) {
+          const step = stepIndexOf(word.event);
+          if (step === null || step < prompt.anchorStep) return false;
+        }
+        const diff = Math.abs(Date.parse(word.time) - Date.parse(prompt.time));
+        return Number.isFinite(diff) && diff <= 10_000;
+      });
+    }
+    return textMatches.filter(word => {
+      const afterHook = Date.parse(word.time) - Date.parse(prompt.time);
+      return afterHook >= 0 && afterHook <= 2_000;
+    });
+  });
   const counts = new Map();
   for (const matches of candidates) for (const w of matches) counts.set(w, (counts.get(w) ?? 0) + 1);
   const unresolved = [];
@@ -332,12 +311,32 @@ export function reconcileOwnerPrompts(records, words, session = null, echoes = [
   return unresolved;
 }
 
-export function syncClaudePromptSession(records, projects, input) {
-  const session = input?.session_id;
-  const { words, echoes } = input.transcript_path
-    ? claudeTranscript(input.transcript_path, projects, session) : { words: [], echoes: [] };
+const HARNESS_ADAPTERS = {
+  claude: {
+    sessionId: input => input?.session_id,
+    transcriptPath: input => input?.transcript_path,
+    hookSession: (...a) => claudeHookSession(...a),
+    transcript: (file, projects, session) => claudeTranscript(file, projects, session),
+  },
+  antigravity: {
+    sessionId: input => input?.conversationId,
+    transcriptPath: input => input?.transcriptPath,
+    hookSession: (...a) => antigravityHookSession(...a),
+    transcript: (file, projects, session) => antigravityTranscript(file, projects, session),
+  },
+};
+
+export function syncPromptSession(harness, records, projects, input) {
+  const adapter = HARNESS_ADAPTERS[harness];
+  const session = adapter.sessionId(input);
+  const path = adapter.transcriptPath(input);
+  const { words, echoes } = path ? adapter.transcript(path, projects, session) : { words: [], echoes: [] };
   if (words.length) appendWords(records, words);
-  return { pending: reconcileOwnerPrompts(records, words, session, echoes), words };
+  return { pending: reconcileOwnerPrompts(records, words, session, echoes), words, echoes };
+}
+
+export function syncClaudePromptSession(records, projects, input) {
+  return syncPromptSession("claude", records, projects, input);
 }
 
 export const parseWords = text => text.split("\n").filter(Boolean).map(l => JSON.parse(l));

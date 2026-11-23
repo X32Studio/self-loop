@@ -62,7 +62,7 @@ export const BRIEFS = { shared: "engines/shared.md", critic: "engines/critic.md"
 export const green = (name = "verify", app = "github-actions", conclusion = "success", started_at = "2026-11-20T00:00:00Z") => ({ app, name, status: "completed", conclusion, started_at });
 
 /**
- * A stand-in `gh` for the CI gate (lib/ci.mjs `fetchCheckRuns`), first on `env.PATH`: `gh api
+ * A stand-in `gh` for the CI gate (lib/ci.mjs `FORGES.github.fetchRuns`), first on `env.PATH`: `gh api
  * repos/<owner/name>/commits/<sha>/check-runs…` logs the query and prints the runs `serve` holds for that repository
  * and commit, one JSON object per line as `--jq` does. A repository and commit it holds nothing for exits 1: the checks
  * cannot be read. No network.
@@ -84,7 +84,142 @@ if (!Array.isArray(runs)) process.exit(1);
 for (const run of runs) console.log(JSON.stringify(run));
 `, { mode: 0o755 });
   const queries = () => existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
-  return { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, serve, queries };
+  return { bin, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, serve, queries };
+}
+
+/**
+ * A stand-in `aws` CLI v2 on `env.PATH` for AWS CodeCommit/CodeBuild tests (single AWS test seam mirroring `fakeGh`).
+ * Enforces real AWS CLI v2 semantics: auto-pagination without `--max-items`/`--no-paginate`, error on `--sort-order`
+ * when holding >100 builds, strict unknown-flag rejection (including `--next-token`), mutual exclusion of
+ * `--no-paginate` with `--max-items`/`--starting-token`, and `--cli-input-json` support. Logs exact argv and AWS env.
+ */
+export function fakeAws(initialState = {}) {
+  const bin = temp("self-loop-aws-");
+  const data = join(bin, "state.json"), log = join(bin, "calls.jsonl");
+  const serve = nextState => writeFileSync(data, JSON.stringify(nextState));
+  serve(initialState);
+  writeFileSync(join(bin, "aws"), `#!/usr/bin/env node
+const { appendFileSync, readFileSync } = require("node:fs");
+const argv = process.argv.slice(2);
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({
+  argv,
+  env: {
+    AWS_REGION: process.env.AWS_REGION,
+    AWS_DEFAULT_REGION: process.env.AWS_DEFAULT_REGION,
+    AWS_PROFILE: process.env.AWS_PROFILE,
+    AWS_IGNORE_CONFIGURED_ENDPOINT_URLS: process.env.AWS_IGNORE_CONFIGURED_ENDPOINT_URLS,
+    AWS_CLI_AUTO_PROMPT: process.env.AWS_CLI_AUTO_PROMPT,
+    AWS_PAGER: process.env.AWS_PAGER,
+    endpointKeys: Object.keys(process.env).filter(k => /^AWS_ENDPOINT_URL/i.test(k)),
+  },
+}) + "\\n");
+const state = JSON.parse(readFileSync(${JSON.stringify(data)}, "utf8"));
+const fail = (status, msg) => { process.stderr.write(msg + "\\n"); process.exit(status); };
+function parseFlags(tokens, allowed) {
+  const flags = {};
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (!t.startsWith("--")) fail(252, "Unknown positional argument: " + t);
+    const eq = t.indexOf("=");
+    const name = eq >= 0 ? t.slice(0, eq) : t;
+    if (!allowed.has(name)) fail(252, "Unknown options: " + name);
+    if (name === "--no-paginate") {
+      if (eq >= 0) fail(252, "Flag takes no value: " + name);
+      flags[name] = true;
+    } else if (eq >= 0) {
+      flags[name] = t.slice(eq + 1);
+    } else {
+      if (i + 1 >= tokens.length) fail(252, "Missing value for " + name);
+      flags[name] = tokens[++i];
+    }
+  }
+  return flags;
+}
+function maybeFail(err) {
+  if (!err) return;
+  fail(err.status ?? 254, err.stderr ?? "ServiceException");
+}
+if (argv[0] === "configure" && argv[1] === "get" && argv[2] === "region") {
+  const flags = parseFlags(argv.slice(3), new Set(["--profile"]));
+  const profile = flags["--profile"] ?? process.env.AWS_PROFILE ?? "default";
+  const region = state.profiles?.[profile]?.region;
+  if (!region) process.exit(1);
+  process.stdout.write(region + "\\n");
+  process.exit(0);
+}
+if (argv[0] === "sts" && argv[1] === "get-caller-identity") {
+  parseFlags(argv.slice(2), new Set(["--region", "--profile", "--output"]));
+  maybeFail(state.stsError);
+  if (state.stsRaw !== undefined) { process.stdout.write(String(state.stsRaw)); process.exit(0); }
+  const account = state.account ?? "123456789012";
+  process.stdout.write(JSON.stringify({ UserId: "AIDAEXAMPLE0000000000", Account: account, Arn: "arn:aws:iam::" + account + ":user/ci" }) + "\\n");
+  process.exit(0);
+}
+if (argv[0] === "codebuild" && argv[1] === "list-builds-for-project") {
+  const flags = parseFlags(argv.slice(2), new Set(["--project-name", "--max-items", "--starting-token", "--no-paginate", "--sort-order", "--region", "--profile", "--output"]));
+  if (flags["--no-paginate"] && (flags["--max-items"] !== undefined || flags["--starting-token"] !== undefined)) {
+    fail(252, "Cannot specify --no-paginate with --max-items or --starting-token");
+  }
+  const project = flags["--project-name"];
+  if (!project) fail(252, "Missing --project-name");
+  const proj = state.projects?.[project];
+  maybeFail(state.listError);
+  if (proj?.listRaw !== undefined) { process.stdout.write(String(proj.listRaw)); process.exit(0); }
+  if (proj === null) fail(254, "An error occurred (ResourceNotFoundException) when calling the ListBuildsForProject operation");
+  if (!proj) { process.stdout.write(JSON.stringify({ ids: [] }) + "\\n"); process.exit(0); }
+  const totalCount = proj.pages ? proj.pages.reduce((n, p) => n + (p.ids?.length ?? 0), 0) : (proj.ids?.length ?? 0);
+  if (flags["--sort-order"] !== undefined && totalCount > 100) {
+    fail(254, "An error occurred (InvalidInputException) when calling the ListBuildsForProject operation: --sort-order is not supported for >100 builds");
+  }
+  if (proj.pages) {
+    const idx = flags["--starting-token"] ? Number(String(flags["--starting-token"]).replace(/^page_/, "")) : 0;
+    const page = proj.pages[idx] ?? { ids: [] };
+    process.stdout.write(JSON.stringify(page) + "\\n");
+    process.exit(0);
+  }
+  const allIds = proj.ids ?? [];
+  if (flags["--max-items"] === undefined && !flags["--no-paginate"]) {
+    process.stdout.write(JSON.stringify({ ids: allIds }) + "\\n");
+    process.exit(0);
+  }
+  if (flags["--no-paginate"]) {
+    const slice = allIds.slice(0, 100);
+    const out = { ids: slice, ...(allIds.length > 100 ? { NextToken: "tok_100" } : {}) };
+    process.stdout.write(JSON.stringify(out) + "\\n");
+    process.exit(0);
+  }
+  const maxItems = Number(flags["--max-items"]);
+  if (!Number.isInteger(maxItems) || maxItems <= 0) fail(252, "Invalid --max-items");
+  const offset = flags["--starting-token"] ? Number(String(flags["--starting-token"]).replace(/^tok_/, "")) : 0;
+  if (!Number.isInteger(offset) || offset < 0) fail(252, "Invalid --starting-token");
+  const ids = allIds.slice(offset, offset + maxItems);
+  const out = { ids, ...(offset + maxItems < allIds.length ? { NextToken: "tok_" + (offset + maxItems) } : {}) };
+  process.stdout.write(JSON.stringify(out) + "\\n");
+  process.exit(0);
+}
+if (argv[0] === "codebuild" && argv[1] === "batch-get-builds") {
+  const flags = parseFlags(argv.slice(2), new Set(["--cli-input-json", "--region", "--profile", "--output"]));
+  if (!flags["--cli-input-json"]) fail(252, "Missing --cli-input-json");
+  let input;
+  try { input = JSON.parse(flags["--cli-input-json"]); } catch { fail(252, "Invalid JSON for --cli-input-json"); }
+  if (!Array.isArray(input?.ids) || input.ids.length === 0 || input.ids.length > 100) fail(252, "Invalid ids in --cli-input-json");
+  const allBuilds = state.builds ?? {};
+  const omit = new Set(state.omitIds ?? []);
+  const builds = [], buildsNotFound = [];
+  for (const id of input.ids) {
+    if (omit.has(id)) continue;
+    if (Object.prototype.hasOwnProperty.call(allBuilds, id)) builds.push(allBuilds[id]);
+    else buildsNotFound.push(id);
+  }
+  if (Array.isArray(state.extraBuilds)) builds.push(...state.extraBuilds);
+  process.stdout.write(JSON.stringify({ builds, buildsNotFound }) + "\\n");
+  process.exit(0);
+}
+fail(252, "Unsupported aws command: " + argv.join(" "));
+`, { mode: 0o755 });
+  const calls = () => existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
+  const clearCalls = () => writeFileSync(log, "");
+  return { bin, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, serve, calls, clearCalls };
 }
 
 /** Red evidence: the line of fixtures/v0.2-red/probes.log for a case, run on a4db050 (probes.mjs.txt there). */
@@ -147,7 +282,11 @@ export async function setup(scenario = {}, overrides = {}) {
 /** Environment for a child self-loop command: a private HOME and no inherited owner store or configuration. */
 export function isolatedEnv(extra = {}) {
   const env = { ...process.env, HOME: temp("self-loop-home-") };
-  for (const key of ["SELF_LOOP_OWNER_STORE", "SELF_LOOP_CONFIG", "NODE_TEST_CONTEXT"]) delete env[key];
+  for (const key of [
+    "SELF_LOOP_OWNER_STORE", "SELF_LOOP_CONFIG", "NODE_TEST_CONTEXT",
+    "GEMINI_HOME", "ANTIGRAVITY_APP_DATA_DIR", "T3CODE_HOME", "ANTIGRAVITY_LS_VERSION",
+    "CLAUDE_CONFIG_DIR", "CODEX_HOME", "T3CODE_THREAD_ID",
+  ]) delete env[key];
   return { ...env, ...extra };
 }
 

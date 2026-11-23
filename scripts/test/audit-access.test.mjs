@@ -98,3 +98,61 @@ test("a relative path resolves against the call's working directory; a symlink i
   assert.equal(auditAccess([ws, wt], [read("../../" + outside.split("/").pop() + "/keys.md")], { cwd: wt, tools: null, forbidden: [outside] }).violations.length, 1);
   assert.equal(auditAccess([ws], [read(join(ws, "escape/keys.md"))]).violations.length, 1, "lexically inside, really outside");
 });
+
+test("confined mode reports unparsedCalls/toolEvents and blocks non-file, MCP, and implicit-cwd tools", () => {
+  const ws = temp("audit-confined-ws-"), outside = temp("audit-confined-out-");
+  writeFileSync(join(ws, "brief.md"), "brief\n");
+  writeFileSync(join(outside, "secret.md"), "secret\n");
+  symlinkSync(outside, join(ws, "link-out"));
+
+  // Clean confined Antigravity file calls
+  const cleanAg = auditAccess([ws], [
+    { id: "ag", event: { type: "PLANNER_RESPONSE", status: "DONE", tool_calls: [
+      { name: "read_file", args: { Path: join(ws, "brief.md") } },
+      { name: "write_file", args: { Path: join(ws, "out/report.md"), Content: "ok" } },
+    ] } },
+    { id: "ag", event: { type: "GENERIC", status: "DONE" } },
+    { id: "ag", event: { type: "GENERIC", status: "DONE" } },
+    { id: "ag", event: { type: "PLANNER_RESPONSE", status: "DONE" } },
+  ], { cwd: outside });
+  assert.deepEqual(cleanAg.violations, []);
+  assert.equal(cleanAg.unparsedCalls, 0);
+  assert.equal(cleanAg.toolEvents, 2);
+
+  // Disallowed non-file and read-only MCP tools in confined mode (Antigravity + Claude)
+  for (const name of ["run_command", "shell_exec", "search_web", "invoke_subagent", "mcp_t3-code_delegate_task", "mcp_t3-code_t3_thread_read"]) {
+    const res = auditAccess([ws], [
+      { id: "ag", event: { type: "PLANNER_RESPONSE", status: "DONE", tool_calls: [{ name, args: {} }] } },
+      { id: "ag", event: { type: "GENERIC", status: "DONE" } },
+      { id: "ag", event: { type: "PLANNER_RESPONSE", status: "DONE" } },
+    ], { cwd: ws });
+    assert.ok(res.violations.some(v => v.tool === name), `confined Antigravity must block ${name}`);
+  }
+  for (const name of ["Bash", "WebSearch", "mcp__t3-code__t3_thread_read", "mcp_t3-code_t3_thread_read"]) {
+    const res = auditAccess([ws], [{ id: "cl", event: tool(name, {}) }], { cwd: ws });
+    assert.ok(res.violations.some(v => v.tool === name), `confined Claude must block ${name}`);
+  }
+
+  // Symlink escape and relative path against outside cwd, plus Claude Glob/Grep without path when cwd is outside ws
+  const relAndLink = auditAccess([ws], [
+    { id: "ag", event: { type: "PLANNER_RESPONSE", status: "DONE", tool_calls: [
+      { name: "read_file", args: { Path: "secret.md" } },
+      { name: "read_file", args: { Path: join(ws, "link-out/secret.md") } },
+    ] } },
+    { id: "ag", event: { type: "GENERIC", status: "DONE" } },
+    { id: "ag", event: { type: "GENERIC", status: "DONE" } },
+    { id: "ag", event: { type: "PLANNER_RESPONSE", status: "DONE" } },
+  ], { cwd: outside });
+  assert.equal(relAndLink.violations.length, 2);
+  assert.equal(auditAccess([ws], [{ id: "cl", event: tool("Glob", { pattern: "*.md" }) }], { cwd: outside }).violations.length, 1);
+  assert.equal(auditAccess([ws], [{ id: "cl", event: tool("Glob", { pattern: "*.md" }) }], { cwd: ws }).violations.length, 0);
+
+  // Unpaired / unparsed tool calls and unrecognized-only transcripts expose exact counts
+  const unpaired = auditAccess([ws], [
+    { id: "ag", event: { type: "PLANNER_RESPONSE", status: "DONE", tool_calls: [{ name: "read_file", args: { Path: join(ws, "brief.md") } }] } },
+  ], { cwd: ws });
+  assert.ok(unpaired.unparsedCalls > 0);
+  const unknownOnly = auditAccess([ws], [{ id: "u", event: { type: "OPAQUE_UNKNOWN" } }], { cwd: ws });
+  assert.equal(unknownOnly.unrecognized, 1);
+  assert.equal(unknownOnly.toolEvents, 0);
+});

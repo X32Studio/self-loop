@@ -255,3 +255,55 @@ test("record is never refused by an alarm: a child prepared before the row is re
   const result = recordCall(s.cfg, p.ws, { transcript, session: p.id });
   assert.equal(result.code, EXIT.done, result.message);
 });
+
+test("alarm-deadlock regression: ci-absent blocks judge --prepare with reviewer --prepare guidance, and t3:antigravity reviewer-diagnosis unblocks it", async () => {
+  const s = await setup({}, {
+    agents: {
+      reviewer: { runner: "t3", provider: "antigravity", model: "gemini-4-neon" },
+      judge: { runner: "t3", provider: "codex", model: "gpt-5.4" },
+      critic: { runner: "t3", provider: "codex", model: "gpt-5.4" },
+      actor: { runner: "t3", provider: "antigravity", model: "gemini-4-neon" },
+    },
+  });
+  append(s.records, row(30, { ci: "absent" }));
+  const blocked = s.run("judge", { round: 31, prepare: true });
+  assert.equal(blocked.code, EXIT.records, blocked.message);
+  assert.match(blocked.message, /ci-absent:S5:30/);
+  assert.match(blocked.message, /call\.mjs .* reviewer --round 31 --step reviewer-diagnosis --task .* --prepare/);
+
+  const prep = s.run("reviewer", { round: 31, step: "reviewer-diagnosis", task: diagnosis("ci-absent:S5:30"), prepare: true });
+  assert.equal(prep.code, EXIT.done, prep.message);
+  const { ws, wt, prompt } = prep.prepared;
+  assert.equal(wt, null);
+  put(ws, "out/report.md", "VERDICT: CONTINUE\nPREMISE: ci was absent in round 30.\n");
+
+  const agHome = temp("ag-diag-home-"), convId = "diag-ag-session";
+  const prevAg = process.env.ANTIGRAVITY_APP_DATA_DIR, prevGem = process.env.GEMINI_HOME, prevT3 = process.env.T3CODE_HOME;
+  process.env.ANTIGRAVITY_APP_DATA_DIR = agHome;
+  process.env.GEMINI_HOME = temp("gemini-diag-home-");
+  process.env.T3CODE_HOME = "";
+  try {
+    const ts = new Date().toISOString();
+    const transcript = join(agHome, "brain", convId, ".system_generated", "logs", "transcript_full.jsonl");
+    put(dirname(transcript), "transcript_full.jsonl", [
+      { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: ts, content: prompt },
+      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: ts, model: "gemini-4-neon",
+        tool_calls: [{ name: "read_file", args: { Path: join(ws, "records/INDEX.md") } }, { name: "write_file", args: { Path: join(ws, "out/report.md"), Content: "VERDICT: CONTINUE\n" } }] },
+      { step_index: 2, source: "MODEL", type: "GENERIC", status: "DONE", created_at: ts },
+      { step_index: 3, source: "MODEL", type: "GENERIC", status: "DONE", created_at: ts },
+      { step_index: 4, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: ts, model: "gemini-4-neon" },
+    ].map(r => JSON.stringify(r)).join("\n") + "\n");
+    const rec = recordCall(s.cfg, ws, { session: convId });
+    assert.equal(rec.code, EXIT.done, rec.message);
+    assert.equal(rec.handoff.id, "R-0031-reviewer-diagnosis");
+    assert.equal(rec.handoff.agent.runner, "t3:antigravity");
+  } finally {
+    if (prevAg === undefined) delete process.env.ANTIGRAVITY_APP_DATA_DIR; else process.env.ANTIGRAVITY_APP_DATA_DIR = prevAg;
+    if (prevGem === undefined) delete process.env.GEMINI_HOME; else process.env.GEMINI_HOME = prevGem;
+    if (prevT3 === undefined) delete process.env.T3CODE_HOME; else process.env.T3CODE_HOME = prevT3;
+  }
+
+  const unblocked = s.run("judge", { round: 31, prepare: true });
+  assert.equal(unblocked.code, EXIT.done, unblocked.message);
+  assert.ok(unblocked.prepared.wt);
+});

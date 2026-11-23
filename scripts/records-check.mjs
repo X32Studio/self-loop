@@ -38,6 +38,7 @@ import { rowReceiptProblem } from "./lib/ci-receipt.mjs";
 import { blobs, regularFiles } from "./lib/git-plumbing.mjs";
 import { BAR, judgeBarFindings } from "./lib/judge-bar.mjs";
 import { MARKS, parseWords, wordClasses, WORDS } from "./lib/owner-words.mjs";
+import { ssotRecordsFindings } from "./lib/ssot.mjs";
 import { parseRows, TRAJECTORY } from "./trajectory.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -493,6 +494,9 @@ export function inspect(repo, { layoutText, config = {}, files, own, screenOnly,
         }
       }
     }
+    const ssotRec = ssotRecordsFindings(repo, { has, read, given });
+    failures.push(...ssotRec.failures);
+    screening.push(...ssotRec.screening);
   }
   return { repo, layout, files, records, ids, supersededBy, failures, screening, sealedRoots, answered, replaced, read, blueprint };
 }
@@ -516,7 +520,9 @@ function screenChanged(repo, records, screening) {
 
 const SECRET = [
   /gh[pousr]_[A-Za-z0-9]{30,}/, /github_pat_[A-Za-z0-9_]{40,}/, /sk-ant-[A-Za-z0-9_-]{20,}/, /\bsk-[A-Za-z0-9]{32,}/,
-  /\bAKIA[0-9A-Z]{16}\b/, /-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\bxox[abpr]-[A-Za-z0-9-]{10,}/,
+  /\bAKIA[0-9A-Z]{16}\b/, /\bASIA[0-9A-Z]{16}\b/,
+  /["']?(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY|SecretAccessKey)["']?\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\bxox[abpr]-[A-Za-z0-9-]{10,}/,
 ];
 const SCRATCH = /(?:^|[\s(\[`'"])((?:\/private)?\/tmp\/[^\s)\]`'"]+|\/var\/folders\/[^\s)\]`'"]+)/g;
 

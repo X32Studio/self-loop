@@ -74,7 +74,8 @@ test("Stop counts this session's pending captures even before the transcript exi
 });
 
 const ownerWords = (r, ...args) => spawnSync(process.execPath, [join(scripts, "owner-words.mjs"), ...args, "--records", r], {
-  encoding: "utf8", env: { ...process.env, CLAUDE_CONFIG_DIR: join(r, ".git", "claude"), CODEX_HOME: join(r, ".git", "codex") },
+  encoding: "utf8", env: { ...process.env, CLAUDE_CONFIG_DIR: join(r, ".git", "claude"), CODEX_HOME: join(r, ".git", "codex"),
+    GEMINI_HOME: join(r, ".git", "gemini"), ANTIGRAVITY_APP_DATA_DIR: "", T3CODE_HOME: "" },
 });
 const archivedPrompt = path => JSON.parse(readFileSync(join(dirname(path), "discarded", basename(path)), "utf8"));
 

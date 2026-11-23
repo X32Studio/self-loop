@@ -31,5 +31,37 @@
     "suite": "npm test",
     "require": ["github-actions/verify"],
     "remote": "origin"
+  },
+  "ssot": {
+    "repos": {
+      "design": "../product-design"
+    },
+    "entries": [
+      {
+        "id": "contracts-index",
+        "doc": "docs/CONTRACTS.md",
+        "repo": "product",
+        "watch": ["src/**"],
+        "ignore": ["**/*.test.*"],
+        "anchors": [
+          {
+            "name": "protocol-pin",
+            "docPattern": "Protocol Pin:\\s*`([0-9a-f]{8,64})`",
+            "source": "src/protocol-pin.json",
+            "jsonPointer": "/pin"
+          }
+        ],
+        "mode": "same-batch"
+      },
+      {
+        "id": "top-level-architecture",
+        "doc": "architecture/OVERVIEW.md",
+        "repo": "design",
+        "watch": ["src/**"],
+        "ignore": ["**/*.test.*"],
+        "check": "node scripts/check-architecture-ssot.mjs \"$SELF_LOOP_SSOT_DOC_REPO/$SELF_LOOP_SSOT_DOC\"",
+        "mode": "phase-close"
+      }
+    ]
   }
 }

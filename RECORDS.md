@@ -15,8 +15,14 @@ Without structured, versioned records, autonomous loops fail in predictable ways
 
 ## Layout
 
-One records repository per product loop, versioned, outside scratch space, created before round 1. Bulky working
-state (worktrees, dependencies, builds, temporary directories) never lives in it and is never cited.
+One records repository per product loop, versioned, outside scratch space, created before round 1. By default,
+`self-loop.mjs init` creates it as a nested, Git-ignored repository at `<product>/.self-loop/` (ignored via the parent
+repository's `.gitignore`, or `--local-exclude` in `.git/info/exclude` for a zero-diff parent working tree; a path
+already tracked by the parent repository is refused fail-closed). An explicit external `--records <dir>` uses the same
+repository layout and rules without touching the parent repository's ignore files. Because role calls run in detached
+product worktrees created from committed product trees, nested `.self-loop/` records never appear in role worktrees and
+remain forbidden to non-lead roles under `audit-access.mjs`. Bulky working state (worktrees, dependencies, builds,
+temporary directories) never lives in the records repository and is never cited.
 
 | Kind | Path | Writer | Changes | Cited as |
 |---|---|---|---|---|
@@ -31,6 +37,7 @@ state (worktrees, dependencies, builds, temporary directories) never lives in it
 | Hand-offs | `metrics/handoffs.jsonl` | `call.mjs`, one line per successful role call | append-only | line, by its record ID |
 | Trajectory | `metrics/trajectory.jsonl` | lead (`trajectory.mjs append`), one row per ruling: area, verdict, blockers opened, closed, shelved and carried, the CI word and receipt of the append's own reading, and the pushed tip when it is a VERSION-only descendant of the ruled commit | append-only | line, by round |
 | Alarms | `metrics/alarms.jsonl` | `self-loop.mjs tick`, through the records commit helper: one line per stall (one idle period), with the action taken | append-only | line, by its key |
+| SSOT sync | `metrics/ssot-sync.jsonl` | `ssot-check.mjs attest`, one line per authority doc sync or no-contract-change attestation | append-only | line, by entry ID |
 | Continuation delivery | `metrics/continuations.jsonl` | continuation-store.mjs | append-only | records commit + row ID |
 | Owner batches | `owner/B-NNNN.md` | `decisions.mjs send`, from validated questions only | immutable | `B-NNNN` |
 | Owner answers | `owner/answers.jsonl` | `decisions.mjs answer`: the owner's words verbatim, one event per answer; `decisions.mjs replace`: one event per replaced batch, with no words | append-only | line, by batch |

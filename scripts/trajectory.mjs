@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // D-0015, D-0024, D-0026, design/trajectory.md#the-row
+import "./lib/unbind-git.mjs";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -9,6 +10,7 @@ import { CI_WORDS } from "./lib/check-runs.mjs";
 import { ledgerRecords, notGreen, readCi, readingCause, recordsLoop, saveReceipt } from "./lib/ci-receipt.mjs";
 import { admit, blockerState, dispositions, FIELDS as LISTS, isKey, isRuling, readRuling, rulingRows, transition, withStatus } from "./lib/blockers.mjs";
 import { JUDGE_RECORD } from "./lib/judge-bar.mjs";
+import { checkSsot, defaultShaFor, formatSsotRefusal, ssotDriftAlarms } from "./lib/ssot.mjs";
 import { tipProblem } from "./lib/tip.mjs";
 
 export const TRAJECTORY = "metrics/trajectory.jsonl";
@@ -187,6 +189,10 @@ export function closeRow(row, records) {
   const pushed = row.tip ?? row.commit;
   const problem = row.tip && tipProblem(loop.product, row.commit, row.tip);
   if (problem) return problem;
+  if (row.verdict === "CONVERGED" && Object.hasOwn(loop, "ssot")) {
+    const ssot = checkSsot({ product: loop.product, records, configFile: loop.config, ssot: loop.ssot, sha: pushed, strict: true, runChecks: true });
+    if (!ssot.ok) return formatSsotRefusal(ssot);
+  }
   const reading = readCi(loop, pushed);
   if (row.verdict === "CONVERGED" && reading.ci !== "success") return notGreen("CONVERGED", loop, pushed, reading);
   if (reading.ci === "unknown") console.error(`CI of ${pushed} unreadable, written as unknown: ${readingCause(reading)}`);
@@ -292,8 +298,24 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) cli(() => {
     }).filter(([, v]) => v !== undefined));
     const sizes = args.sizes ? JSON.parse(readFileSync(args.sizes, "utf8")) : {};
     const found = alarms(rows, { sizes, ...options });
+    let recordsDir = null, rawLoop = null;
+    try {
+      recordsDir = ledgerRecords(args.file, TRAJECTORY).records;
+      const cfgPath = recordsDir ? join(recordsDir, "loop.json") : null;
+      if (cfgPath && existsSync(cfgPath)) rawLoop = JSON.parse(readFileSync(cfgPath, "utf8"));
+    } catch { rawLoop = null; }
+    if (rawLoop !== null && typeof rawLoop === "object" && !Array.isArray(rawLoop) && Object.hasOwn(rawLoop, "ssot")) {
+      try {
+        const loop = recordsLoop(recordsDir);
+        const sha = defaultShaFor(loop);
+        found.push(...ssotDriftAlarms({ product: loop.product, records: recordsDir, configFile: loop.config, ssot: loop.ssot, sha, at: rows.at(-1)?.round ?? 0 }));
+      } catch (e) {
+        found.push({ type: "ssot-error", key: "ssot-error:read", count: 1, at: rows.at(-1)?.round ?? 0,
+          message: `SSOT screening failed: ${e.message}`, evidence: { error: e.message } });
+      }
+    }
     if ("json" in args) console.log(JSON.stringify(found, null, 2));
-    else for (const a of found) console.log(`ALARM ${a.type}  ${a.message}`);
+    else for (const a of found) console.log(`ALARM ${a.type}  ${a.message}${a.evidence?.command ? `\n  run: ${a.evidence.command}` : ""}`);
     if (!found.length && !("json" in args)) console.log("no alarms");
     return 0; // screening: never blocks
   }

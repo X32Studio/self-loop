@@ -7,10 +7,10 @@
 ### 把混乱的 Agent 乌合之众，整编为可信赖、能直接交付的 Agent 组织——把注意力还给人，让你在街边喝咖啡时它们照常交付。
 
 <p>
-  <b>中文</b> · <a href="README.md">English</a> · <a href="docs/METHODOLOGY.md">Methodology</a> · <a href="SKILL.md">Skill Spec</a>
+  <b>中文</b> · <a href="README.md">English</a> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/METHODOLOGY.md">Methodology</a> · <a href="SKILL.md">Skill Spec</a>
 </p>
 
-<sub>作者：<a href="https://github.com/k-r33">Ruiyuan Kang (k-r33)</a> @ <a href="https://x32studio.com">X32 Studio</a>（Kang 和他的 Agent 团队） · MIT 协议</sub>
+<sub>作者：<a href="https://github.com/k-r33">Ruiyuan Kang (k-r33)</a> @ <a href="https://x32studio.com">X32 Studio</a>（Kang 和他的 Agent 团队） · MIT 协议 · v0.6.0</sub>
 
 </div>
 
@@ -20,7 +20,7 @@
 >
 > 能否管控好自己的 Agent Swarm、把它们整编成真正可信赖的交付组织，直接决定了不同人的能力上限：
 > - **没有 `self-loop`：** 一群缺乏治理的 Agent 只是混乱的**乌合之众**——自己给自己批作业、在错误前提上死打补丁、上下文腐败；你被迫全程盯盘、在混乱中疲于奔命直到精疲力尽。
-> - **有了 `self-loop`：** 你可以直接坐在**街边喝咖啡**，让你的 Agent 组织（第一性帧评审 + 跨厂商 Critic / Actor / Judge 独立验收 + 前提审计硬门禁）自主推进并直接交付——只在真正需要人类战略拍板时，才把带推荐答案的选项打包交给你。
+> - **有了 `self-loop`：** 你可以直接坐在**街边喝咖啡**，让你的 Agent 组织（第一性帧评审 + 跨厂商 Critic / Actor / Judge 独立验收 + SSOT 权威文档门禁 + 前提审计硬门禁）自主推进并直接交付——只在真正需要人类战略拍板时，才把带推荐答案的选项打包交给你。
 
 2026 年市面上的大多数 "agent loop"，本质上都是一个 `while true` 外壳：让模型改代码、跑单测、把报错塞回上下文，直到返回 0。
 
@@ -31,7 +31,18 @@
 3. **文档与上下文腐败**：架构设计、历史轮次记录和临时结论混在一起，几轮之后没人知道系统到底保证了什么。
 4. **提示词约束必然衰减**：只写在 Prompt 里的规矩过几轮就会被遗忘，最后还是把人绑回屏幕前当全职监工。
 
-**`self-loop` 把混乱的 Coding Agent 群落（Claude Code / Codex / T3 等）整编成可信赖、能直接交付的 Agent 组织**：它把**第一性帧评审**、**跨厂商对抗裁判**、**轨迹报警前提审计**与 **Git 代码门禁**拧成闭环。
+**`self-loop` 把混乱的 Coding Agent 群落（Claude Code / Codex / Antigravity / T3 Code）整编成可信赖、能直接交付的 Agent 组织**：它把**第一性帧评审**、**跨厂商对抗裁判**、**SSOT 权威文档校验**、**轨迹报警前提审计**与 **Git/CI 硬门禁**拧成闭环。
+
+---
+
+## v0.6.0 核心新特性
+
+- **开箱即用的仓内 `.self-loop/` 记录初始化与零配置自动发现**：运行 `self-loop.mjs init [--local-exclude] [--register]` 即可在项目根目录自动初始化受 Git 忽略的嵌套记录仓 `.self-loop/`，无需额外路径配置即可直接 `start` / `next` / `stall`。
+- **一等公民 Antigravity Harness 与 T3 Code Runner（`F-0009`）**：原生支持 `hooks install|check|uninstall --harness antigravity`、Antigravity 会话与 Owner 原话同步，以及 T3 Code 子线程执行（`t3:claude`、`t3:codex`、`t3:antigravity`）。
+- **`t3:antigravity` 与 `t3:claude` 受限 `reviewer` 支持**：Frame Reviewer 除 Claude CLI `--restricted` 外，现支持在 T3 Code（`t3:antigravity` / `t3:claude`）中以无产品工作树受限模式运行，并由 fail-closed 审计校验工具与相对路径边界。
+- **AWS CodeCommit + CodeBuild CI Forge（`F-0013`）**：统一 `FORGES` 调度层，同时支持 GitHub Actions（`github-actions/*`）与 AWS CodeCommit / CodeBuild（`codebuild/*`），强制 STS 账号绑定、规范化端点解析、GRC `CODE_COMMIT_ENDPOINT` fail-closed 防护及凭据脱敏。
+- **SSOT 权威文档校验、漂移门禁与角色视图注入（`F-0014`）**：`ssot-check.mjs`（`check` / `attest`）对绑定的权威文档执行 Rung-2 锚点与干净工作树脚本校验、Rung-3 `ssot-drift` 漂移筛查与受保护分支严格阻断，并在 `actor` / `judge` 工作区注入只读 `ssot-status.md`。
+- **全新 6 篇 `docs/` 完整文档体系**：涵盖快速入门、架构原理、概念与记录、Harness 接入、代码托管与 CI、发布与版本门禁。
 
 ---
 
@@ -42,17 +53,18 @@
 | **谁来质疑方向？** | 只能靠人 | **`Frame Reviewer`（第一性评审员）**：每阶段开始与报警触发时，从目的、轨迹与 Git 事实推导方案，可直接给出 `REFRAME` |
 | **谁来裁定完成？** | 自己判自己 | **跨厂商独立裁判（`Judge`）**：强制与 `Actor` 使用不同厂商模型，在干净检出上复跑全套测试并封存完整裁定 |
 | **连续失败怎么处理？** | 继续打补丁直到超时 | **前提审计门禁**：`trajectory.mjs alarms` 触发后，`call.mjs` 直接**拒绝**后续修复调用，直到记录 `PREMISE` + 可证伪的 `OBSERVATION` |
+| **权威文档防腐败** | 文档静默过时、与代码脱节 | **SSOT 门禁（`ssot-check.mjs`）**：Rung-2 锚点与校验脚本守住每次推送；Rung-3 漂移跟踪契约变更并守住受保护晋升 |
 | **规矩靠什么保证？** | Prompt 叮嘱 | **5 级机械化阶梯**：物理构造隔离 → 硬门禁 → 轨迹筛查 → 模型判断 → `DEBT.md` 显式欠账 |
-| **何时算真正关闭？** | 模型口头汇报 "All green" | **精确树证明**：`suite-green.mjs` 精确 Git 树回执 + `ci-green.mjs` 远端推送目标真实 CI `success` + `gated-push.mjs` |
+| **何时算真正关闭？** | 模型口头汇报 "All green" | **精确树证明**：`suite-green.mjs` 精确 Git 树回执 + `ci-green.mjs` 远端推送目标真实 CI `success`（GitHub / AWS CodeBuild）+ `gated-push.mjs` |
 | **人的注意力花在哪？** | 全程盯着防止跑偏 | **带推荐答案的小批次决策**：以「每个经核实任务消耗的人工分钟数」为核心指标 |
 
 ---
 
 ## 5 级机械化阶梯（能用代码约束的，绝不靠模型自觉）
 
-1. **构造隔离（做不到）**：每个角色的工作视图由 `call.mjs` 从某个精确提交按白名单导出，Critic/Actor 物理上根本看不到 `sealed/`；Claude 角色以 `--restricted` 运行，不加载项目记忆。
-2. **硬门禁（确定性拒绝）**：`gated-push.mjs` 在推送前核对精确 Git 树测试回执、已提交的裁判 `CONVERGED` 与推送目的仓库的实时 CI，任一缺失直接退出码 `2`。
-3. **筛查报警（路由诊断）**：`trajectory.mjs alarms` 监控同一区域多轮停滞、同类阻断反复、CI 缺失与模块膨胀，只报事实与证据，不无故误杀。
+1. **构造隔离（做不到）**：每个角色的工作视图由 `call.mjs` 从某个精确提交按白名单导出，Critic/Actor 物理上根本看不到 `sealed/`；Frame Reviewer 通过 Claude `--restricted` 或 fail-closed 审计的 `t3:antigravity` / `t3:claude` 受限执行。
+2. **硬门禁（确定性拒绝）**：`gated-push.mjs` 在推送前核对精确 Git 树测试回执、SSOT 门禁、已提交的裁判 `CONVERGED` 与推送目的仓库的实时 CI，任一缺失直接退出码 `2`。
+3. **筛查报警（路由诊断）**：`trajectory.mjs alarms` 与 `ssot-check.mjs` 监控同一区域多轮停滞、同类阻断反复、CI 缺失、模块膨胀与文档漂移，只报事实与证据，不无故误杀。
 4. **模型判断**：由带工具的 Lead 模型结合门禁证据做决策。
 5. **文字欠账（`DEBT.md`）**：所有暂未代码化的规则公开登记在 [`DEBT.md`](DEBT.md)，每个阶段持续向高阶梯迁移。
 
@@ -67,6 +79,8 @@
 
 ## 5 分钟快速上手
 
+> 环境要求：**Node.js >= 22**（Antigravity 会话读取需要 `>= 22.13` 内置 `node:sqlite`）与 **Git**；零外部依赖，无需 `npm install`。
+
 ```bash
 # 1. 克隆并运行完整单元测试
 git clone https://github.com/X32Studio/self-loop.git
@@ -76,6 +90,10 @@ npm test
 # 2. 运行 5 秒门禁体验 Demo（无需 API Key / 联网）
 # 直观体验：记录校验 → 触发报警后 call.mjs 拒绝继续打补丁（exit 7）→ 精确树测试回执 → 受保护推送拒绝（exit 2）
 npm run demo
+
+# 3. 在你的项目里一键初始化仓内 .self-loop/ 记录并注册
+cd /path/to/your-project
+node /path/to/self-loop/scripts/self-loop.mjs init --register
 ```
 
 安装为 Claude Code / Agent 技能：
@@ -84,7 +102,12 @@ mkdir -p ~/.claude/skills
 cp -r . ~/.claude/skills/self-loop
 ```
 
-详细操作协议见 [`SKILL.md`](SKILL.md)，记录规范见 [`RECORDS.md`](RECORDS.md)，方法论深挖见 [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md)。
+---
+
+## 完整文档导航
+
+- **入门与操作指南**：[`docs/getting-started.md`](docs/getting-started.md) · [`docs/architecture.md`](docs/architecture.md) · [`docs/concepts-and-records.md`](docs/concepts-and-records.md) · [`docs/harnesses.md`](docs/harnesses.md) · [`docs/forges-and-ci.md`](docs/forges-and-ci.md) · [`docs/release-and-versioning.md`](docs/release-and-versioning.md) · [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md)
+- **运行时规范契约**：[`SKILL.md`](SKILL.md) · [`RECORDS.md`](RECORDS.md) · [`REQUIREMENTS.md`](REQUIREMENTS.md) · [`DEBT.md`](DEBT.md)
 
 ---
 

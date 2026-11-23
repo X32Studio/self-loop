@@ -9,6 +9,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
 import { DestinationError, ORIGINAL_OBJECTS, pushDestination, receiptProblem, shownTree } from "./lib/ci.mjs";
+import { grcEndpointProblem } from "./lib/ci-destination.mjs";
 import { closeReleaseFinding, observeReleaseTips, rememberGatedPush, rememberReleaseTips } from "./lib/release-receipts.mjs";
 import { compareVersions, FORMS, parseVersion } from "./lib/version.mjs";
 import { suiteGreen, withVersion } from "./suite-green.mjs";
@@ -201,6 +202,8 @@ function prePush(repo, rest) {
   const [name, url] = rest;
   if (!url) throw new UsageError("pre-push needs the destination URL from Git");
   if (name !== url && isRemote(repo, name)) pushDestination(repo, name);
+  const epProblem = grcEndpointProblem(url, process.env);
+  if (epProblem) throw new DestinationError(epProblem);
   const updates = readFileSync(0, "utf8").trim().split("\n").filter(Boolean).map(line => {
     const [, sha, ref, before] = line.trim().split(/\s+/);
     return { sha, ref, before };

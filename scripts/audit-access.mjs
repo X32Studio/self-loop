@@ -12,26 +12,26 @@
 // yet (a file about to be written) appended to its deepest existing folder. So the same approved file is never a
 // violation however it is spelled, and a symlink inside a visible root that leads outside it is.
 // Module: auditAccess(visible, [{ id, event }], options). CLI: node audit-access.mjs <work-dir> (reads logs/*.jsonl).
-import { readFileSync, readdirSync, realpathSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { readFileSync, readdirSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  ANTIGRAVITY_ARRAY_PATH_KEYS,
+  ANTIGRAVITY_FILE_TOOL_MAP,
+  ANTIGRAVITY_SCALAR_PATH_KEYS,
+  ANTIGRAVITY_SHELL_TOOLS,
+  ANTIGRAVITY_STEP_TYPES,
+  decodeCompactArg,
+  extractToolPaths,
+  isDisallowedRoleTool,
+} from "./lib/antigravity.mjs";
+import { canonical } from "./lib/path-canonical.mjs";
+
+export { canonical };
 
 const system = /^\/(bin|usr|dev\/null|opt\/homebrew|System|Library\/Developer)(\/|$)/;
 export const FILE_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep"];
 const SHELL_TOOLS = ["Bash"];
-
-/** The canonical absolute form of a path: real folders, the not-yet-existing rest appended. */
-export function canonical(path) {
-  let head = resolve(path);
-  const rest = [];
-  for (;;) {
-    try { return join(realpathSync(head), ...rest); } catch {}
-    const parent = dirname(head);
-    if (parent === head) return resolve(path);
-    rest.unshift(basename(head));
-    head = parent;
-  }
-}
 
 /**
  * @param visible one root or several
@@ -39,19 +39,25 @@ export function canonical(path) {
  * @param options.forbidden roots whose access is a violation; when given, other outside paths are only flagged
  * @param options.cwd the call's working directory, for relative paths (default: the first visible root)
  */
-export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = null, cwd = null } = {}) {
+export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = null, cwd = undefined } = {}) {
   const roots = [visible].flat().map(canonical);
   const banned = forbidden ? [forbidden].flat().map(canonical) : [];
-  const base = cwd ?? [visible].flat()[0];
+  const unknownCwd = cwd === null;
+  const base = cwd === undefined ? [visible].flat()[0] : cwd;
+  const isAbsOrHome = p => { const s = String(p); return isAbsolute(s) || s.startsWith("~/"); };
   const where = p => canonical(resolve(base, String(p).replace(/^~\//, `${process.env.HOME}/`)));
-  const within = (list, p) => { const abs = where(p); return list.some(r => abs === r || abs.startsWith(`${r}/`)); };
+  const within = (list, p) => {
+    if (unknownCwd && !isAbsOrHome(p)) return false;
+    const abs = unknownCwd ? canonical(String(p).replace(/^~\//, `${process.env.HOME}/`)) : where(p);
+    return list.some(r => abs === r || abs.startsWith(`${r}/`));
+  };
   const violations = [];
   const denied = [];
   const flags = [];
   const refused = new Set();
   for (const { event } of events)
     if (event.type === "user") for (const part of event.message?.content ?? []) if (part.type === "tool_result" && part.is_error) refused.add(part.tool_use_id);
-  const KNOWN = new Set(["assistant", "user", "system", "result", "rate_limit_event", "stream_event", "thread.started", "turn.started", "turn.completed", "turn.failed", "item.started", "item.updated", "item.completed", "error"]);
+  const KNOWN = new Set(["assistant", "user", "system", "result", "rate_limit_event", "stream_event", "thread.started", "turn.started", "turn.completed", "turn.failed", "item.started", "item.updated", "item.completed", "error", ...ANTIGRAVITY_STEP_TYPES]);
   let unrecognized = 0, toolEvents = 0, unparsedCalls = 0;
   const screenCommand = (id, command) => {
     for (const match of command.matchAll(/(?:^|[\s'"=])((?:\/|~\/)[^\s'"]*)/g)) {
@@ -68,20 +74,90 @@ export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = n
       else if (!within(roots, path)) flags.push({ id, tool, path });
     } else if (!within(roots, path)) record.push({ id, tool, path });
   };
-  for (const { id, event } of events) {
+  for (let i = 0; i < events.length; i++) {
+    const { id, event } = events[i];
     if (!KNOWN.has(event.type)) unrecognized++;
     if (event.type === "unparsed_tool_call") unparsedCalls++;
     if (event.type === "assistant") {
       for (const part of event.message?.content ?? []) {
         if (part.type !== "tool_use") continue;
         toolEvents++;
-        const record = refused.has(part.id) ? denied : violations;
+        const rejected = refused.has(part.id);
+        const record = rejected ? denied : violations;
+        if (isDisallowedRoleTool(part.name)) record.push({ id, tool: part.name, path: "(delegation/disallowed tool not allowed in role audit)" });
         if (tools && !tools.includes(part.name)) record.push({ id, tool: part.name, path: "(tool not allowed)" });
         if (SHELL_TOOLS.includes(part.name) && typeof part.input?.command === "string") screenCommand(id, part.input.command);
-        for (const key of ["file_path", "path", "notebook_path"]) {
-          const value = part.input?.[key];
-          if (!value) continue;
-          filePath(id, part.name, value, refused.has(part.id));
+        const paths = extractToolPaths(part.input);
+        for (const value of paths) filePath(id, part.name, value, rejected);
+        if (tools && !forbidden && FILE_TOOLS.includes(part.name) && paths.length === 0) filePath(id, part.name, ".", rejected);
+      }
+    }
+    if (event.type === "PLANNER_RESPONSE" && Array.isArray(event.tool_calls)) {
+      const stepTruncated = Array.isArray(event.truncated_fields) && event.truncated_fields.includes("tool_calls");
+      if (stepTruncated) unparsedCalls++;
+      const generics = [];
+      let hasFollowingTurnStep = false;
+      for (let j = i + 1; j < events.length && events[j].id === id; j++) {
+        const nextType = events[j].event?.type;
+        if (nextType === "GENERIC") { generics.push(events[j].event); continue; }
+        if (nextType === "SYSTEM_MESSAGE" || nextType === "CHECKPOINT") continue;
+        if (nextType === "PLANNER_RESPONSE" || nextType === "USER_INPUT") hasFollowingTurnStep = true;
+        break;
+      }
+      const canCreditDenied = generics.length === event.tool_calls.length && hasFollowingTurnStep;
+      if (!canCreditDenied && event.tool_calls.length > 0) unparsedCalls++;
+      for (const [k, tc] of event.tool_calls.entries()) {
+        if (!tc || typeof tc.name !== "string" || !tc.name || !tc.args || typeof tc.args !== "object" || Array.isArray(tc.args)) {
+          unparsedCalls++;
+          if (stepTruncated) violations.push({ id, tool: tc?.name ?? "(unknown)", path: "(truncated/unparseable tool argument)" });
+          continue;
+        }
+        toolEvents++;
+        const outcome = canCreditDenied ? generics[k] : null;
+        // CANCELED and RUNNING count as executed (rejected === false).
+        const rejected = outcome?.status === "ERROR";
+        const record = rejected ? denied : violations;
+        let decodedArgs = tc.args;
+        let pathOrUrlDecodeFailed = false;
+        let shellDecodeFailed = false;
+        if (stepTruncated) {
+          decodedArgs = {};
+          for (const [key, val] of Object.entries(tc.args)) {
+            if (typeof val === "string") {
+              const decoded = decodeCompactArg(val);
+              if (decoded.ok) decodedArgs[key] = decoded.value;
+              else if (ANTIGRAVITY_SCALAR_PATH_KEYS.includes(key) || ANTIGRAVITY_ARRAY_PATH_KEYS.includes(key) || /file:\/\//i.test(val)) {
+                pathOrUrlDecodeFailed = true;
+              } else if (key === "CommandLine" || key === "command") {
+                shellDecodeFailed = true;
+              }
+            } else {
+              decodedArgs[key] = val;
+            }
+          }
+        }
+        if (isDisallowedRoleTool(tc.name)) record.push({ id, tool: tc.name, path: "(delegation/disallowed tool not allowed in role audit)" });
+        const fileSpec = ANTIGRAVITY_FILE_TOOL_MAP[tc.name];
+        if (tools && !tools.includes(tc.name) && !(fileSpec && tools.includes(fileSpec.canonical))) {
+          record.push({ id, tool: tc.name, path: "(tool not allowed)" });
+        }
+        const paths = extractToolPaths(decodedArgs);
+        for (const p of paths) filePath(id, tc.name, p, rejected);
+        if (pathOrUrlDecodeFailed) {
+          unparsedCalls++;
+          record.push({ id, tool: tc.name, path: "(truncated/unparseable tool argument)" });
+        } else if (fileSpec && paths.length === 0) {
+          unparsedCalls++;
+          if (stepTruncated) record.push({ id, tool: tc.name, path: "(truncated/unparseable tool argument)" });
+        }
+        if (ANTIGRAVITY_SHELL_TOOLS.has(tc.name)) {
+          const cmd = decodedArgs.CommandLine ?? decodedArgs.command;
+          if (shellDecodeFailed || typeof cmd !== "string" || !cmd) {
+            unparsedCalls++;
+            if (stepTruncated) record.push({ id, tool: tc.name, path: "(truncated/unparseable tool argument)" });
+          } else {
+            screenCommand(id, cmd);
+          }
         }
       }
     }
@@ -103,7 +179,7 @@ export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = n
   }
   if (unparsedCalls) flags.push({ id: events[0]?.id ?? "-", path: "(insufficient evidence)", detail: `${unparsedCalls} tool call record(s) could not be audited` });
   else if (unrecognized && !toolEvents) flags.push({ id: events[0]?.id ?? "-", path: "(insufficient evidence)", detail: `${unrecognized} event(s) of an unknown shape and no recognised tool event` });
-  return { violations, denied, flags, unrecognized };
+  return { violations, denied, flags, unrecognized, unparsedCalls, toolEvents };
 }
 
 /** JSON events from a CLI's stream output (Claude stream-json or Codex --json); other lines are ignored. */

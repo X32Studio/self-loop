@@ -45,14 +45,15 @@ function loopOf(repo, store) {
     return { refused: `${repo} (Git common directory ${common}) is the product of ${matches.length} registered loops: ${named(matches)}. Register it once` };
   const [state] = matches;
   if (state.error) return { refused: `${state.name} (${state.records}): ${state.error}` };
-  const policy = policyOf(JSON.parse(readFileSync(state.loop, "utf8")));
+  const raw = JSON.parse(readFileSync(state.loop, "utf8"));
+  const policy = policyOf(raw);
   if (policy.refused) return { refused: `${state.name} (${state.loop}): ${policy.refused}` };
-  return { loop: { name: state.name, records: state.records, ...policy } };
+  return { loop: { name: state.name, records: state.records, configFile: resolve(state.loop), ...(Object.hasOwn(raw, "ssot") ? { ssot: raw.ssot } : {}), ...policy } };
 }
 
 // design/version-tip.md#protection-is-never-retired-by-omission
 const MIGRATION = `add both keys to the loop.json: "protected": the branches only a judged, CI-green commit may reach, and "gates": { "require": the app/name checks they need }, `
-  + `for example "protected": ["main"] and "gates": { "require": ["github-actions/verify"] }; an explicit [] is allowed ("protected": [] protects no branch, "require": [] requires no check). `
+  + `for example "protected": ["main"] and "gates": { "require": ["github-actions/verify"] } (or ["codebuild/verify"] for AWS CodeCommit); an explicit [] is allowed ("protected": [] protects no branch, "require": [] requires no check). `
   + `gated-push.mjs no longer takes --protected or --require, so a loop that left them out is unconfigured, not unprotected`;
 
 export function policyOf(raw) {
@@ -88,11 +89,13 @@ if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToP
   }
   const { loop } = found;
   const result = pushCommit({ repo: args.repo, records: loop.records, remote: loop.remote, sha: args.sha || "HEAD", branch: args.branch, suite,
-    protectedBranches: loop.protected, require: loop.require, dry: "dry-run" in args });
+    protectedBranches: loop.protected, require: loop.require, dry: "dry-run" in args,
+    ...(Object.hasOwn(loop, "ssot") ? { ssot: loop.ssot, configFile: loop.configFile } : {}) });
   if (result.refused) {
     console.error(`Refused: ${result.refused}\nRun suite-green.mjs on the commit; for a protected branch of ${loop.name}, record the judge convergence, push the candidate to a working branch and wait for its checks to pass.`);
     return 2;
   }
+  for (const warning of result.warnings ?? []) console.error(warning);
   const checks = result.verdict ? `, checks green in ${result.verdict.host}/${result.verdict.repository}` : loop.protected.includes(args.branch) ? ", no check required" : "";
   console.log(`${result.pushed ? "pushed" : "would push"} ${result.sha.slice(0, 7)} to ${loop.remote}/${args.branch} (${shownUrl(result.destination)}${checks})`);
   return 0;

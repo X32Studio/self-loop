@@ -1,16 +1,27 @@
 #!/usr/bin/env node
 import "./lib/unbind-git.mjs";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { appendJsonLines, commitRecords, recordsSnapshot } from "./lib/records-commit.mjs";
 import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
-import { appendWords, captureOwnerText, claudeHookSession, CLASSES, committedWords, discardOwnerPrompt, LINKS, MARKS, markProblem,
-  parseWords, projectRoots, queueOwnerPrompt, reconcileOwnerPrompts, sameClass, syncClaudePromptSession, transcriptWords, wordClasses,
-  WORDS } from "./lib/owner-words.mjs";
+import { isAntigravityHook, resolveAuthoritativeTranscript, unwrapAntigravityUserText } from "./lib/antigravity.mjs";
+import { antigravityHookSession, checkAntigravityTurnConfirmation } from "./lib/antigravity-words.mjs";
+import { appendWords, captureOwnerText, claudeHookSession, CLASSES, committedWords, discardOwnerPrompt, hasPendingForSession, LINKS, MARKS,
+  markProblem, parseWords, projectRoots, queueOwnerPrompt, reconcileOwnerPrompts, sameClass, sha, syncPromptSession, transcriptWordsReport,
+  wordClasses, WORDS } from "./lib/owner-words.mjs";
 import { openWords } from "./records-check.mjs";
 
+const agInject = message => JSON.stringify({ injectSteps: [{ systemMessage: { systemMessage: message } }] });
+
 /** Validate the raw hook payload. The hook does not guess its ordinal from words already committed. */
-export function hookWord(input, projects, _records, env = process.env) {
+export function hookWord(input, projects, _records, env = process.env, harness = null) {
+  if (isAntigravityHook(input, harness)) {
+    if (typeof input?.lastUserInput !== "string" || !antigravityHookSession(input, projects, env)) return null;
+    const unwrapped = unwrapAntigravityUserText(input.lastUserInput);
+    const text = unwrapped === null ? null : captureOwnerText(unwrapped);
+    if (text === null) return null;
+    return { source: "antigravity", session: input.conversationId, time: new Date().toISOString(), text, event: null };
+  }
   if (typeof input?.prompt !== "string" || !claudeHookSession(input, projects, env)) return null;
   if (input.promptSource === "system" || input.origin?.kind) return null;
   const text = captureOwnerText(input.prompt);
@@ -19,33 +30,83 @@ export function hookWord(input, projects, _records, env = process.env) {
     event: input.prompt_id ?? input.promptId ?? input.message_id ?? input.uuid ?? null };
 }
 
+function captureAntigravity(input, projects, records, env = process.env) {
+  // Probed cli-1.5.14: invocationNum is 0-based (0 on initial user turn, 1..N on post-tool re-invocations).
+  const invocationNum = typeof input?.invocationNum === "number" ? input.invocationNum : null;
+  if (invocationNum !== null && invocationNum > 0) {
+    if (!hasPendingForSession(records, input?.conversationId)) return "{}";
+    if (!antigravityHookSession(input, projects, env)) return "{}";
+    const actual = input.transcriptPath ? resolveAuthoritativeTranscript(input.transcriptPath) : null;
+    if (actual && existsSync(actual)) syncPromptSession("antigravity", records, projects, input);
+    return "{}";
+  }
+  const prompt = hookWord(input, projects, records, env, "antigravity");
+  if (!prompt) return "{}";
+  const actual = input.transcriptPath ? resolveAuthoritativeTranscript(input.transcriptPath) : null;
+  const synced = actual && existsSync(actual)
+    ? syncPromptSession("antigravity", records, projects, input)
+    : { words: [], echoes: [] };
+  const { confirmed, event } = checkAntigravityTurnConfirmation({
+    transcriptPath: actual,
+    text: prompt.text,
+    initialNumSteps: input.initialNumSteps,
+    words: synced.words,
+    echoes: synced.echoes,
+  });
+  if (confirmed) return "{}";
+  const anchorStep = Number.isInteger(input.initialNumSteps) && input.initialNumSteps >= 1
+    ? input.initialNumSteps - 1 : null;
+  const pendingEvent = event ?? (anchorStep !== null ? `step-${anchorStep}` : null);
+  const key = sha(JSON.stringify(["antigravity", prompt.session, input.initialNumSteps ?? "turn", sha(prompt.text)]));
+  queueOwnerPrompt(records, { ...prompt, event: pendingEvent, ...(anchorStep !== null ? { anchorStep } : {}), pendingKey: key });
+  return agInject("owner-words: prompt saved pending transcript confirmation; run owner-words.mjs sync if it is still pending after the turn");
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [command, ...rest] = process.argv.slice(2);
   const args = parseArgs(rest);
   if (command === "capture") {
+    const harnessFlag = args.harness || null;
+    let isAg = harnessFlag === "antigravity";
     try {
       need(args, "records", "project");
       const input = JSON.parse(readFileSync(0, "utf8") || "{}");
+      isAg = isAntigravityHook(input, harnessFlag);
       const projects = projectRoots(args.project);
-      const prompt = hookWord(input, projects, args.records);
-      if (prompt) {
-        const queued = queueOwnerPrompt(args.records, { ...prompt, text: input.prompt });
-        const { pending, words } = input.transcript_path
-          ? syncClaudePromptSession(args.records, projects, input) : { pending: [queued], words: [] };
-        if (queued && pending.includes(queued) && !words.some(word => word.text === prompt.text)) console.log("owner-words: prompt saved pending transcript confirmation; run owner-words.mjs sync if it is still pending after the turn");
+      if (isAg) {
+        console.log(captureAntigravity(input, projects, args.records));
+      } else {
+        const prompt = hookWord(input, projects, args.records);
+        if (prompt) {
+          const queued = queueOwnerPrompt(args.records, { ...prompt, text: input.prompt });
+          const { pending, words } = input.transcript_path
+            ? syncPromptSession("claude", args.records, projects, input) : { pending: [queued], words: [] };
+          if (queued && pending.includes(queued) && !words.some(word => word.text === prompt.text)) console.log("owner-words: prompt saved pending transcript confirmation; run owner-words.mjs sync if it is still pending after the turn");
+        }
       }
     } catch (e) {
-      console.log(`owner-words: the owner's message was NOT recorded (${e.message.split("\n")[0]}); run owner-words.mjs sync`);
+      const firstLine = String(e?.message ?? e).split("\n")[0];
+      const msg = `owner-words: the owner's message was NOT recorded (${firstLine}); run owner-words.mjs sync`;
+      if (isAg) {
+        console.error(msg);
+        console.log(agInject(msg));
+      } else {
+        console.log(msg);
+      }
     }
     process.exitCode = 0;
   } else cli(async () => {
     need(args, "records");
     if (command === "sync") {
       need(args, "project");
-      const words = transcriptWords(projectRoots(args.project));
+      const { words, antigravity } = transcriptWordsReport(projectRoots(args.project));
       const { added, commit } = appendWords(args.records, words, { message: "owner: record the owner's words from the session transcripts" });
       const pending = reconcileOwnerPrompts(args.records, words);
-      console.log(JSON.stringify({ found: words.length, added, recorded: committedWords(args.records).length, commit, pending }));
+      console.log(JSON.stringify({ found: words.length, added, recorded: committedWords(args.records).length, commit, pending, antigravity }));
+      if (antigravity.skipped > 0) {
+        console.error(`owner-words: skipped ${antigravity.skipped} Antigravity item(s): ${antigravity.reason}`);
+        return 1;
+      }
       return 0;
     }
     if (command === "open") {

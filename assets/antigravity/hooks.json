@@ -1,0 +1,38 @@
+{
+  "self-loop": {
+    "enabled": true,
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "node '<SELF_LOOP_SCRIPTS>/self-loop.mjs' start --hook antigravity",
+        "timeout": 15
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node '<SELF_LOOP_SCRIPTS>/owner-words.mjs' capture --harness antigravity --records '<RECORDS>' --project '<PROJECTS>'",
+        "timeout": 10
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node '<SELF_LOOP_SCRIPTS>/lead-guard.mjs' --harness antigravity --product '<PRODUCT>' --workspaces '<WORKSPACES>'",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node '<SELF_LOOP_SCRIPTS>/word-gate.mjs' --harness antigravity --records '<RECORDS>' --project '<PROJECTS>'",
+        "timeout": 15
+      }
+    ]
+  }
+}

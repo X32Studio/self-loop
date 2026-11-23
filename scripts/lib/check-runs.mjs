@@ -1,7 +1,8 @@
 // The CI gate's rule over the check runs of one commit in one repository, defined once. `ci-green.mjs`, the protected
-// push and the closing writers (lib/ci-receipt.mjs) apply it to the runs they read from GitHub (lib/ci.mjs).
+// push and the closing writers (lib/ci-receipt.mjs) apply it to the runs they read from the push destination's forge
+// (GitHub check runs or AWS CodeBuild builds via lib/ci.mjs).
 //
-// - A required check is `app/name` (GitHub Actions: `github-actions/verify`): only that source counts.
+// - A required check is `app/name` (e.g. `github-actions/verify` or `codebuild/my-project`): only that source counts.
 // - Among the runs of one app and name the latest wins: the highest check-run id (ids only grow), or, without ids, the
 //   latest `started_at`, a run not started yet (queued) being the latest of all. So a re-run replaces an earlier result,
 //   a re-run that failed is a failure, and a queued re-run is pending, never the earlier success. On a tie the run that
@@ -11,10 +12,10 @@
 /** The CI words a reading can carry; `success` exactly when every required check passed. */
 export const CI_WORDS = ["success", "failure", "pending", "unknown", "absent"];
 
-/** "github-actions/verify" -> { app, name }. A bare name is refused: the source must be stated. */
+/** "github-actions/verify" or "codebuild/my-project" -> { app, name }. A bare name is refused: the source must be stated. */
 export function parseRequired(spec) {
   const i = typeof spec === "string" ? spec.indexOf("/") : -1;
-  if (i <= 0 || i === spec.length - 1) throw new Error(`required check "${spec}" must be app/name (e.g. github-actions/verify)`);
+  if (i <= 0 || i === spec.length - 1) throw new Error(`required check "${spec}" must be app/name (e.g. github-actions/verify or codebuild/my-project)`);
   return { app: spec.slice(0, i), name: spec.slice(i + 1) };
 }
 

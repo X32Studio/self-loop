@@ -1,50 +1,55 @@
-// Remote CI facts for one exact commit in one exact repository, read from GitHub's structured check runs (never from an
-// agent's report), and the protected-branch push built on them. One rule for `ci-green.mjs` and `gated-push.mjs`:
-// lib/check-runs.mjs (checks by app/name, the latest run of each wins).
-// design/version-tip.md#one-push-destination
+// Remote CI facts for one exact commit in one exact repository, read from the push destination's own forge
+// (GitHub check runs or AWS CodeBuild builds — never from an agent's report), and the protected-branch push built on
+// them. One rule for `ci-green.mjs` and `gated-push.mjs`: lib/check-runs.mjs (checks by app/name, latest run wins).
+// design/codecommit-forge-ci.md
 import "./unbind-git.mjs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { parseRows, TRAJECTORY } from "../trajectory.mjs";
 import { ciWord, parseRequired, requiredChecks } from "./check-runs.mjs";
+import { fetchCodeBuildRuns, resolveAwsRegion } from "./ci-codebuild.mjs";
+import {
+  checkAppProblem, CODEBUILD_APP, codecommitHost, DestinationError, grcEndpointProblem, isGrcUrl,
+  parseDestination, redactDestinationOutput, shownUrl, validateCodeBuildSpec,
+} from "./ci-destination.mjs";
 import { gitOk } from "./git-plumbing.mjs";
 import { HANDOFFS, parseHandoffs } from "./handoff.mjs";
 import { recordsSnapshot } from "./records-commit.mjs";
+import { checkSsot, formatSsotRefusal, ssotDriftWarnings } from "./ssot.mjs";
 import { tipCovers, tipProblem } from "./tip.mjs";
 
-// design/version-tip.md#ci-identity
-export const CI_HOSTS = ["github.com"];
+export { DestinationError, parseDestination, shownUrl };
 
-export function destinationIdentity(url) {
-  const text = String(url).trim();
-  let host, pathname;
+/**
+ * Every check run of one commit through `gh api` (all runs, every page; GH_TOKEN from the caller's environment).
+ * Returns { runs: null } when they cannot be read (network, auth, unknown commit): "could not read" is not "never ran".
+ */
+function fetchGitHubRuns(destination, sha) {
   try {
-    if (text.includes("://")) {
-      const parsed = new URL(text);
-      if (!["https:", "ssh:"].includes(parsed.protocol) || parsed.search || parsed.hash) return null;
-      const port = parsed.port === ({ "https:": "443", "ssh:": "22" })[parsed.protocol] ? "" : parsed.port;
-      host = parsed.hostname.toLowerCase().replace(/\.$/, "") + (port ? `:${port}` : "");
-      pathname = decodeURIComponent(parsed.pathname).replace(/^\//, "");
-    } else {
-      const m = /^(?:[^@/:]+@)?([^/:@]+):(?!\/)(.+)$/.exec(text);
-      if (!m) return null;
-      host = m[1].toLowerCase().replace(/\.$/, "");
-      pathname = m[2];
-    }
-  } catch { return null; }
-  const path = /^([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(pathname);
-  return path ? { host, repository: `${path[1]}/${path[2]}`.toLowerCase() } : null;
+    const out = execFileSync("gh", ["api", "--hostname", destination.host, "--paginate",
+      `repos/${destination.repository}/commits/${sha}/check-runs?per_page=100&filter=all`,
+      "--jq", ".check_runs[] | {id, app: .app.slug, name, status, conclusion, started_at}"],
+    { encoding: "utf8", env: { ...process.env, GH_HOST: destination.host }, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 26 });
+    return { runs: out.split("\n").filter(Boolean).map(line => JSON.parse(line)) };
+  } catch { return { runs: null }; }
 }
 
-/** "https://github.com/o/r.git" or "git@github.com:o/r.git" -> "o/r"; null for other hosts. */
-export function repoSlug(url) {
-  const identity = destinationIdentity(url);
-  return identity && CI_HOSTS.includes(identity.host) ? identity.repository : null;
-}
-
-export const shownUrl = url => String(url).replace(/^(https?:\/\/)[^@/]*@/i, "$1***@");
-
-export class DestinationError extends Error {}
+// design/codecommit-forge-ci.md#forges-registry-contract
+export const FORGES = Object.freeze({
+  github: Object.freeze({
+    id: "github",
+    label: "GitHub (github.com)",
+    apps: null,
+    fetchRuns: fetchGitHubRuns,
+  }),
+  codecommit: Object.freeze({
+    id: "codecommit",
+    label: "AWS CodeCommit",
+    apps: Object.freeze([CODEBUILD_APP]),
+    validateSpec: validateCodeBuildSpec,
+    fetchRuns: fetchCodeBuildRuns,
+  }),
+});
 
 // design/version-tip.md#git-names-the-remote
 function pushUrls(repo, remote) {
@@ -56,33 +61,46 @@ function pushUrls(repo, remote) {
 
 export function pushDestination(repo, remote = "origin") {
   const urls = pushUrls(repo, remote);
-  if (urls.length === 1) return urls[0];
+  if (urls.length === 1) {
+    const epProblem = grcEndpointProblem(urls[0], process.env);
+    if (epProblem) throw new DestinationError(epProblem);
+    return urls[0];
+  }
   if (!urls.length) throw new DestinationError(`${remote} of ${repo} has no push URL`);
   throw new DestinationError(`${remote} of ${repo} has ${urls.length} push URLs: ${urls.map(shownUrl).join(", ")}. A gate reads CI in one destination and publishes to that one only, so none of them is read. `
     + `Give each destination its own remote and promote through each one separately (git remote add <name> <url>; gates.remote names the remote a loop promotes through), `
     + `or remove the extra push URL (git remote set-url --delete --push ${remote} <url>).`);
 }
 
-export function ciDestination(repo, remote = "origin") {
+function parsePushDestination(repo, remote = "origin") {
   const url = pushDestination(repo, remote);
-  const identity = destinationIdentity(url);
-  if (!identity || !CI_HOSTS.includes(identity.host))
-    throw new DestinationError(`a push to ${remote} of ${repo} goes to ${shownUrl(url)}, not a GitHub repository on ${CI_HOSTS.join(" or ")}${identity ? ` (its host is ${identity.host})` : ""}: `
-      + `check runs are read only from the destination's own host, so no checks can be read for it`);
-  return { url, ...identity };
+  const parsed = parseDestination(url);
+  if (!parsed || !parsed.forge) {
+    throw new DestinationError(`a push to ${remote} of ${repo} goes to ${shownUrl(url)}, not a supported CI forge repository (github.com or AWS CodeCommit)${parsed?.host ? ` (its host is ${parsed.host})` : ""}: `
+      + `check runs are read only from the destination's own forge, so no checks can be read for it`);
+  }
+  return { url, parsed };
 }
 
-/**
- * Every check run of one commit through `gh api` (all runs, every page; GH_TOKEN from the caller's environment).
- * Returns null when they cannot be read (network, auth, unknown commit): "could not read" is not "never ran".
- */
-export function fetchCheckRuns(slug, sha, host = CI_HOSTS[0]) {
-  try {
-    const out = execFileSync("gh", ["api", "--hostname", host, "--paginate", `repos/${slug}/commits/${sha}/check-runs?per_page=100&filter=all`,
-      "--jq", ".check_runs[] | {id, app: .app.slug, name, status, conclusion, started_at}"],
-    { encoding: "utf8", env: { ...process.env, GH_HOST: host }, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 26 });
-    return out.split("\n").filter(Boolean).map(line => JSON.parse(line));
-  } catch { return null; }
+function finalizeDestination(url, parsed) {
+  let { host, region } = parsed;
+  if (parsed.forge === "codecommit" && !region) {
+    region = resolveAwsRegion(parsed.profile, url);
+    host = codecommitHost(region);
+  }
+  return {
+    url,
+    forge: parsed.forge,
+    host,
+    ...(region ? { region } : {}),
+    repository: parsed.repository,
+    ...(parsed.profile ? { profile: parsed.profile } : {}),
+  };
+}
+
+export function ciDestination(repo, remote = "origin") {
+  const { url, parsed } = parsePushDestination(repo, remote);
+  return finalizeDestination(url, parsed);
 }
 
 // design/version-tip.md#the-tree-git-publishes
@@ -106,26 +124,68 @@ export function fullSha(repo, rev) {
   catch { throw new Error(`${rev} does not name one commit in ${repo}`); }
 }
 
-const RUN_FIELDS = ["id", "status", "conclusion", "started_at"];
+const RUN_FIELDS = ["id", "build_id", "status", "conclusion", "started_at"];
 /** The fields of a run a receipt keeps: enough to order it against any other run of the same check. */
 const kept = run => Object.fromEntries(RUN_FIELDS.filter(key => run[key] !== undefined).map(key => [key, run[key]]));
+const allUnknown = require => Object.fromEntries(require.map(spec => [spec, "unknown"]));
 
-// design/version-tip.md#ci-identity
-export function ciGreen({ repo, remote = "origin", sha, require, fetchRuns = fetchCheckRuns }) {
+// design/codecommit-forge-ci.md#unified-cigreen-and-pushcommit-execution-flow
+export function ciGreen({ repo, remote = "origin", sha, require, fetchRuns }) {
   if (!require?.length) throw new Error("no required checks: with no app/name list there is no verdict");
-  require.forEach(parseRequired);
+  const parsed = require.map(parseRequired);
   const full = fullSha(repo, sha);
-  let destination;
-  try { destination = ciDestination(repo, remote); }
+  const source = fetchRuns ? "injected" : "live";
+  let url, parsedDest;
+  try { ({ url, parsed: parsedDest } = parsePushDestination(repo, remote)); }
   catch (e) {
     if (!(e instanceof DestinationError)) throw e;
-    const conclusions = Object.fromEntries(require.map(spec => [spec, "unknown"]));
-    return { host: null, repository: null, sha: full, ci: "unknown", ok: false, missing: [e.message], conclusions, runs: null, error: e.message };
+    return { forge: null, host: null, repository: null, sha: full, ci: "unknown", ok: false, missing: [e.message], conclusions: allUnknown(require), runs: null, error: e.message, source };
   }
-  const { host, repository } = destination;
-  const verdict = requiredChecks(fetchRuns(repository, full, host), require, full);
+  const problem = checkAppProblem(parsedDest, parsed, FORGES);
+  if (problem) {
+    return {
+      forge: parsedDest.forge,
+      host: parsedDest.host,
+      ...(parsedDest.region ? { region: parsedDest.region } : {}),
+      ...(parsedDest.forge === "codecommit" ? { account: null } : {}),
+      repository: parsedDest.repository,
+      sha: full,
+      ci: "unknown",
+      ok: false,
+      missing: [problem],
+      conclusions: allUnknown(require),
+      runs: null,
+      error: problem,
+      source,
+    };
+  }
+  let destination;
+  try { destination = finalizeDestination(url, parsedDest); }
+  catch (e) {
+    if (!(e instanceof DestinationError)) throw e;
+    return { forge: null, host: null, repository: null, sha: full, ci: "unknown", ok: false, missing: [e.message], conclusions: allUnknown(require), runs: null, error: e.message, source };
+  }
+  const reader = fetchRuns ?? FORGES[destination.forge].fetchRuns;
+  const raw = reader(destination, full, parsed);
+  const { runs: rawRuns, error: readError = null, account = null } = (raw === null || Array.isArray(raw)) ? { runs: raw } : raw;
+  const verdict = requiredChecks(rawRuns, require, full);
+  if (rawRuns === null && readError) {
+    verdict.missing = require.map(spec => `${spec}: check runs could not be read (${readError})`);
+  }
   const runs = verdict.runs && Object.fromEntries(Object.entries(verdict.runs).map(([spec, run]) => [spec, kept(run)]));
-  return { host, repository, sha: full, ci: ciWord(verdict), ...verdict, runs };
+  return {
+    forge: destination.forge,
+    host: destination.host,
+    ...(destination.region ? { region: destination.region } : {}),
+    ...(destination.forge === "codecommit" ? { account } : {}),
+    repository: destination.repository,
+    sha: full,
+    ci: ciWord(verdict),
+    ...verdict,
+    ...(readError ? { error: readError } : {}),
+    runs,
+    source,
+  };
 }
 
 const real = p => { try { return realpathSync(p); } catch { return null; } };
@@ -203,7 +263,7 @@ function hasConvergence(repo, records, full) {
 }
 
 // design/version-tip.md#the-protected-push
-export function pushCommit({ repo, records, remote = "origin", sha, branch, suite, protectedBranches = [], require = null, fetchRuns = fetchCheckRuns, dry = false }) {
+export function pushCommit({ repo, records, remote = "origin", sha, branch, suite, protectedBranches = [], require = null, fetchRuns, dry = false, ssot, configFile }) {
   const full = fullSha(repo, sha);
   const problem = receiptProblem(suite, repo, full);
   if (problem) return { pushed: false, refused: problem };
@@ -213,20 +273,41 @@ export function pushCommit({ repo, records, remote = "origin", sha, branch, suit
     if (e instanceof DestinationError) return { pushed: false, refused: e.message };
     throw e;
   }
+  const isProtected = protectedBranches.includes(branch);
+  let ssotResult, warnings;
+  if (ssot !== undefined) {
+    ssotResult = checkSsot({ product: repo, records, configFile, ssot, sha: full, strict: isProtected, runChecks: true });
+    if (!ssotResult.ok) return { pushed: false, ssot: ssotResult, refused: formatSsotRefusal(ssotResult) };
+    if (!isProtected && ssotResult.drift.length) warnings = ssotDriftWarnings(ssotResult);
+  }
   let verdict;
-  if (protectedBranches.includes(branch)) {
+  if (isProtected) {
     if (!Array.isArray(require)) return { pushed: false, refused: `${branch} is protected and the loop does not configure gates.require (a list of app/name checks; [] requires none)` };
     if (!records) return { pushed: false, refused: `${branch} is protected and no records repository holds the judge's ruling` };
     try {
       if (!originalObjects(() => hasConvergence(repo, records, full)))
         return { pushed: false, refused: `${branch} is protected: no judge CONVERGED ruling and acceptance in ${records} HEAD matching a hand-off and ${TRAJECTORY} row for ${full} or its same-tree second parent` };
-      if (require.length) verdict = ciGreen({ repo, remote, sha: full, require, fetchRuns });
+      if (require.length) verdict = ciGreen({ repo, remote, sha: full, require, ...(fetchRuns ? { fetchRuns } : {}) });
     }
     catch (e) { return { pushed: false, refused: `${branch} is protected: ${e.message}` }; }
     if (verdict?.error) return { pushed: false, verdict, refused: `${branch} is protected and the CI of ${full.slice(0, 7)} cannot be read: ${verdict.error}` };
     if (verdict && !verdict.ok) return { pushed: false, verdict, refused: `${branch} is protected and ${full.slice(0, 7)} has not passed every required check in ${verdict.host}/${verdict.repository}:\n  ${verdict.missing.join("\n  ")}` };
   }
-  if (dry) return { pushed: false, sha: full, destination, verdict };
-  execFileSync("git", ["-C", repo, "push", "-q", "--", remote, `${full}:refs/heads/${branch}`], { stdio: ["ignore", "inherit", "inherit"] });
-  return { pushed: true, sha: full, destination, verdict };
+  if (dry) return { pushed: false, sha: full, destination, verdict, ...(ssotResult ? { ssot: ssotResult } : {}), ...(warnings ? { warnings } : {}) };
+  const pushEnv = { ...process.env };
+  if (isGrcUrl(destination)) delete pushEnv.CODE_COMMIT_ENDPOINT;
+  const pushed = spawnSync("git", ["-C", repo, "push", "-q", "--", remote, `${full}:refs/heads/${branch}`], {
+    encoding: "utf8",
+    env: pushEnv,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const out = redactDestinationOutput(pushed.stdout ?? "", destination);
+  const err = redactDestinationOutput(pushed.stderr ?? "", destination);
+  if (out) process.stdout.write(out);
+  if (pushed.error || pushed.status !== 0) {
+    const detail = err.trim() || redactDestinationOutput(pushed.error?.message ?? "", destination);
+    throw new Error(`git push to ${shownUrl(destination)} failed${pushed.status !== null ? ` (exit ${pushed.status})` : ""}${detail ? `: ${detail}` : ""}`);
+  }
+  if (err) process.stderr.write(err);
+  return { pushed: true, sha: full, destination, verdict, ...(ssotResult ? { ssot: ssotResult } : {}), ...(warnings ? { warnings } : {}) };
 }

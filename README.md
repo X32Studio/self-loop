@@ -7,10 +7,10 @@
 ### Turn a chaotic agent mob into a trustworthy delivery organization — so you can drink coffee at a street-side café while they ship.
 
 <p>
-  <a href="README.zh-CN.md">中文</a> · <b>English</b> · <a href="docs/METHODOLOGY.md">Methodology</a> · <a href="SKILL.md">Skill Spec</a>
+  <a href="README.zh-CN.md">中文</a> · <b>English</b> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/METHODOLOGY.md">Methodology</a> · <a href="SKILL.md">Skill Spec</a>
 </p>
 
-<sub>By <a href="https://github.com/k-r33">Ruiyuan Kang (k-r33)</a> @ <a href="https://x32studio.com">X32 Studio</a> (Kang &amp; his Agent Team) · MIT Licensed</sub>
+<sub>By <a href="https://github.com/k-r33">Ruiyuan Kang (k-r33)</a> @ <a href="https://x32studio.com">X32 Studio</a> (Kang &amp; his Agent Team) · MIT Licensed · v0.6.0</sub>
 
 </div>
 
@@ -31,7 +31,18 @@ On toy tasks, that works. On real software, an ungoverned agent mob fails in fou
 3. **Context & document rot** — architecture notes, rationale, and "Round N" logs blur together until nobody knows what the system actually guarantees.
 4. **Prose rules decay under load** — instructions written only in prompts get skipped after a few turns, dragging you back into full-time babysitting.
 
-**`self-loop` turns chaotic coding-agent swarms (Claude Code, Codex, and T3/Antigravity harnesses) into a trustworthy delivery organization.** It pairs a first-principles **Frame Reviewer** with a **cross-vendor Critic / Actor / Judge** hardening loop, trajectory-driven premise tests, and Git-backed mechanical gates.
+**`self-loop` turns chaotic coding-agent swarms (Claude Code, Codex, Antigravity, and T3 Code harnesses) into a trustworthy delivery organization.** It pairs a first-principles **Frame Reviewer** with a **cross-vendor Critic / Actor / Judge** hardening loop, trajectory-driven premise tests, SSOT authority verification, and Git-backed mechanical gates.
+
+---
+
+## What's New in v0.6.0
+
+- **Zero-config in-repo `.self-loop/` records (`self-loop.mjs init`)** — Initializes a nested, Git-ignored `.self-loop/` records repository inside your project (or `--local-exclude` for zero-diff `.git/info/exclude`, or external `--records <dir>`), with automatic discovery on `start`, `next`, and `stall`.
+- **First-class Antigravity harness & T3 Code runner (`F-0009`)** — Full `hooks install|check|uninstall --harness antigravity`, Antigravity transcript & owner-word sync, and T3 Code child execution (`t3:claude`, `t3:codex`, `t3:antigravity`).
+- **Confined `reviewer` on `t3:antigravity` & `t3:claude`** — Frame Reviewer runs natively on T3 Code (`t3:antigravity` and `t3:claude`) in addition to `claude --restricted`, backed by fail-closed transcript and relative-path confinement audits.
+- **AWS CodeCommit + CodeBuild CI forge (`F-0013`)** — Unified `FORGES` dispatcher supporting both GitHub Actions (`github-actions/*`) and AWS CodeCommit / CodeBuild (`codebuild/*`) with STS caller-account binding, canonical endpoints, GRC `CODE_COMMIT_ENDPOINT` fail-closed guard, and credential redaction.
+- **SSOT authority doc verification & drift gates (`F-0014`)** — `ssot-check.mjs` (`check` / `attest`) verifies bound authority documents (Rung-2 `anchors` + clean-worktree `check` scripts, Rung-3 `ssot-drift` screening & strict promotion gates) and injects a read-only `ssot-status.md` role view into `actor` and `judge` workspaces.
+- **Complete `docs/` documentation suite** — Six focused guides covering Getting Started, Architecture, Concepts & Records, Harnesses, Forges & CI, and Release & Versioning.
 
 ---
 
@@ -42,8 +53,9 @@ On toy tasks, that works. On real software, an ungoverned agent mob fails in fou
 | **Who challenges the direction?** | Only the human owner | **`Frame Reviewer`** derives architecture from purpose, trajectory & Git facts at every phase start and on alarms (`CONTINUE` or `REFRAME`) |
 | **Who grades the work?** | The same model that wrote it | **Cross-vendor `Judge`** (different model vendor from `Actor`) re-runs the full suite in a clean checkout and seals its private ruling |
 | **Repeated failures** | Keep patching until timeout | **Premise Gate**: `trajectory.mjs alarms` fires and `call.mjs` mechanically **refuses** new patches until `reviewer-diagnosis` tests the shared premise |
+| **Authority doc drift** | Docs rot silently out of sync | **SSOT Gates (`ssot-check.mjs`)**: Rung-2 anchor & clean-worktree checks gate every push; Rung-3 drift tracks contract changes and gates promotion |
 | **Rule enforcement** | Prompt instructions ("please follow...") | **5-Rung Mechanization Ladder**: construction isolation → hard Git/CI gates → screening alarms → model judgment → explicit `DEBT.md` |
-| **When is a round "done"?** | Agent says "all tests pass" | **Exact-tree proof**: `suite-green.mjs` receipt for the exact Git tree + live remote `ci-green.mjs` `success` on the pushed SHA + `gated-push.mjs` |
+| **When is a round "done"?** | Agent says "all tests pass" | **Exact-tree proof**: `suite-green.mjs` receipt for the exact Git tree + live destination `ci-green.mjs` `success` (GitHub or AWS CodeBuild) + `gated-push.mjs` |
 | **Human involvement** | Continuous babysitting | **Batched owner decisions** (`decisions.mjs`) with ≥2 options & a recommendation; **human attention per verified task is the metric** |
 
 ---
@@ -62,7 +74,7 @@ flowchart TD
     JG -->|"CONVERGED / CONTINUE"| TR["Trajectory & Alarms<br/>(trajectory.mjs)"]
     TR -->|"Alarm (≥3 rounds / recurring blocker / missing CI)"| DG["Diagnosis Gate<br/>call.mjs refuses patches until<br/>reviewer-diagnosis tests the premise"]
     DG --> FR
-    JG -->|"CONVERGED + ACCEPTANCE: pass"| GT["Mechanical Landing Gates<br/>suite-green.mjs → gated-push.mjs → ci-green.mjs"]
+    JG -->|"CONVERGED + ACCEPTANCE: pass"| GT["Mechanical Landing Gates<br/>suite-green.mjs → ssot-check.mjs → gated-push.mjs → ci-green.mjs"]
 ```
 
 ---
@@ -71,9 +83,9 @@ flowchart TD
 
 > **Code gates over prompt obedience.** Every rule sits on the highest rung it can reach.
 
-1. **Prevention by construction** — Role views are exported from a single records commit via allow-list (`call.mjs`). Critic and Actor physically cannot read `sealed/` or other roles' private evidence; Claude roles run `--restricted` with no workspace auto-memory.
-2. **Hard gates** — Deterministic scripts refuse invalid transitions (exit `2` or `7`): `gated-push.mjs` blocks pushes without an exact-tree `suite-green.mjs` receipt, committed Judge `CONVERGED`, and live remote CI `success` on that exact SHA (`git --no-replace-objects`).
-3. **Screening predicates** — `trajectory.mjs alarms` and `records-check.mjs` detect anomalies (`area-rounds`, `blocker-recurring`, `partly-closed`, `ci-absent`, `ci-not-green`, `module-growth`) and route them to diagnosis without brittle false kills.
+1. **Prevention by construction** — Role views are exported from a single records commit via allow-list (`call.mjs`). Critic and Actor physically cannot read `sealed/` or other roles' private evidence; Frame Reviewer runs confined via Claude CLI `--restricted` or audited `t3:antigravity` / `t3:claude`.
+2. **Hard gates** — Deterministic scripts refuse invalid transitions (exit `2`, `6`, or `7`): `gated-push.mjs` blocks pushes without an exact-tree `suite-green.mjs` receipt, Rung-2/strict `ssot-check.mjs`, committed Judge `CONVERGED`, and live destination CI `success` on that exact SHA (`git --no-replace-objects`).
+3. **Screening predicates** — `trajectory.mjs alarms`, `records-check.mjs`, and `ssot-check.mjs` detect anomalies (`area-rounds`, `blocker-recurring`, `partly-closed`, `ci-absent`, `ci-not-green`, `module-growth`, `ssot-drift`) and route them to diagnosis without brittle false kills.
 4. **Model judgment** — The tool-equipped Lead model evaluates diagnoses, rulings, and next steps using verified gate outputs.
 5. **Prose debt (`DEBT.md`)** — Any rule still relying on prose is logged explicitly in [`DEBT.md`](DEBT.md) and systematically moved up the ladder—every hard gate requires two-way admission evidence (turns a real defect red, keeps legitimate history green).
 
@@ -91,9 +103,9 @@ We build in the open and document what broke—not just what worked:
 ## 5-Minute Quick Start
 
 ### 1. Prerequisites
-- **Node.js >= 20** (tested on Node 24 / 26)
+- **Node.js >= 22** (`>= 22.13` for built-in `node:sqlite` used by Antigravity session reads; CI runs on Node 24)
 - **Git**
-- Optional for live CI checks & agent runs: **GitHub CLI (`gh`)** and **Claude Code** / **Codex** CLI
+- Optional for live CI checks & agent runs: **GitHub CLI (`gh`)**, **AWS CLI (`aws`)** (for CodeCommit + CodeBuild), and **Claude Code** / **Codex** / **Antigravity** (or **T3 Code**)
 
 ### 2. Clone & Verify the Suite
 ```bash
@@ -109,7 +121,25 @@ No API keys or network calls needed—see records validation, trajectory alarm r
 npm run demo
 ```
 
-### 4. Install as a Coding-Agent Skill
+### 4. Bootstrap a Product Loop in One Command
+Initialize a nested, Git-ignored `.self-loop/` records repository inside your project (zero-config auto-discovery for `start`, `next`, and `stall`; add `--register` to register in your owner store for `gated-push.mjs` and multi-repo `tick`):
+
+```bash
+cd /path/to/your-project
+
+# Recommended: initializes .self-loop/, updates .gitignore, and registers in ~/.self-loop/owner-store
+node /path/to/self-loop/scripts/self-loop.mjs init --register
+
+# Zero-diff option: writes .self-loop/ to .git/info/exclude instead of .gitignore
+node /path/to/self-loop/scripts/self-loop.mjs init --local-exclude --register
+
+# External records repository option
+node /path/to/self-loop/scripts/self-loop.mjs init --records ../my-project-records --register
+```
+
+Then configure `.self-loop/loop.json` (see [`assets/self-loop.example.json`](assets/self-loop.example.json)), distill your requirements into `.self-loop/purpose/P-0001.md`, and run `node /path/to/self-loop/scripts/self-loop.mjs start`. See [`docs/getting-started.md`](docs/getting-started.md) for the full walkthrough.
+
+### 5. Install as a Coding-Agent Skill
 Copy the repository into your agent skills directory so Claude Code / Codex / Antigravity can run `self-loop`:
 
 ```bash
@@ -122,16 +152,28 @@ Configure Git hooks on any clone where you develop `self-loop`:
 git config core.hooksPath .githooks
 ```
 
-### 5. Bootstrap a Product Loop
-1. Create a dedicated Git records repository outside scratch space (`git init`) with `README.md` and `records.json` (see [`assets/records.example.json`](assets/records.example.json)).
-2. Distill requirements into `purpose/P-0001.md`.
-3. Copy [`assets/brief-*.md`](assets/) into `engines/` and configure `loop.json` from [`assets/self-loop.example.json`](assets/self-loop.example.json) (set different vendors for `judge` and `actor`).
-4. Register the product and start:
-   ```bash
-   node scripts/self-loop.mjs registry init
-   node scripts/self-loop.mjs registry add --name my-app --records /abs/path/to/my-app-records
-   node scripts/self-loop.mjs start
-   ```
+---
+
+## Documentation
+
+### Guides (`docs/`)
+
+| Document | Contents |
+|---|---|
+| [`docs/getting-started.md`](docs/getting-started.md) | Prerequisites, installation, `self-loop.mjs init` (in-repo `.self-loop/`, `--local-exclude`, external `--records`), owner store registration, harness hooks, and your first full round |
+| [`docs/architecture.md`](docs/architecture.md) | The 5-rung Enforcement Ladder, why v0.3 deleted the outer orchestrator, cross-vendor transcript independence, nested `.self-loop/` & `sealed/` isolation, and host capacity bounds |
+| [`docs/concepts-and-records.md`](docs/concepts-and-records.md) | Tour of the records layout (`purpose`, `decisions`, `blueprint`, `design`, `plans`, `rounds`, `evidence`, `sealed`, `owner/words.jsonl`, `metrics/ssot-sync.jsonl`) and CLI reference |
+| [`docs/harnesses.md`](docs/harnesses.md) | Claude Code, Codex, Antigravity, and T3 Code integration, `hooks install\|check\|uninstall`, owner-word capture/sync, confined T3 `reviewer`, and cross-vendor `observedModels` enforcement |
+| [`docs/forges-and-ci.md`](docs/forges-and-ci.md) | GitHub Actions, AWS CodeCommit + CodeBuild (`F-0013`), and other Git hosts; `ci-green.mjs`, `gated-push.mjs`, GRC `CODE_COMMIT_ENDPOINT` guard, and credential redaction |
+| [`docs/release-and-versioning.md`](docs/release-and-versioning.md) | `version-gate.mjs` (`tip`, `release`, `reconcile`, Git hooks), prerelease CI tips vs plain `X.Y.Z` releases, exact-tree suite caching, and multi-host release pinning |
+| [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) | Deep-dive into the two engines, 5-rung ladder & Lesson `L-0002` |
+
+### Normative Runtime Contracts
+
+- [`SKILL.md`](SKILL.md) — Operational protocol for Lead & roles
+- [`RECORDS.md`](RECORDS.md) — Managed records specification (parsed directly by `records-check.mjs`)
+- [`REQUIREMENTS.md`](REQUIREMENTS.md) — Core architectural requirements
+- [`DEBT.md`](DEBT.md) — Explicit register of rules not yet mechanized
 
 ---
 
@@ -140,23 +182,24 @@ git config core.hooksPath .githooks
 ```text
 self-loop/
 ├── SKILL.md                 # Operational protocol for Lead & roles
-├── docs/METHODOLOGY.md      # Deep-dive into the two engines, 5-rung ladder & L-0002
 ├── RECORDS.md               # Managed records specification (parsed by records-check.mjs)
 ├── REQUIREMENTS.md          # Core architectural requirements
 ├── DEBT.md                  # Explicit register of rules not yet mechanized
-├── assets/                  # Role brief templates, owner batch templates & example configs
+├── docs/                    # Getting Started, Architecture, Harnesses, Forges/CI, Release, Concepts & Methodology
+├── assets/                  # Role brief templates, Antigravity hooks template & example configs
 ├── examples/minimal-loop/   # Runnable 5-second demo of records, alarm & push gates
 ├── scripts/
-│   ├── self-loop.mjs        # Unified entry: start, next, stall, tick, registry, heartbeat
-│   ├── call.mjs             # Isolated role execution, access audit & hand-off commits
+│   ├── self-loop.mjs        # Unified entry: init, start, next, stall, tick, ssot, hooks, registry, heartbeat
+│   ├── call.mjs             # Isolated role execution, SSOT view injection, access audit & hand-off commits
+│   ├── ssot-check.mjs       # SSOT authority doc verification (Rung-2 anchors/check + Rung-3 drift & attest)
 │   ├── suite-green.mjs      # Clean-worktree, exact-tree cached test receipts
-│   ├── ci-green.mjs         # Live GitHub check-run verification on exact push destination
-│   ├── gated-push.mjs       # Protected branch push gate (suite + judge + live CI)
+│   ├── ci-green.mjs         # Live GitHub & AWS CodeBuild verification on exact push destination
+│   ├── gated-push.mjs       # Protected branch push gate (suite + SSOT + judge + live destination CI)
 │   ├── version-gate.mjs     # SemVer tip, pre-commit, pre-push & atomic release gates
 │   ├── trajectory.mjs       # Append-only trajectory ledger & supervision alarms
 │   ├── records-check.mjs    # Records layout enforcement & generated INDEX/BLUEPRINT views
 │   ├── decisions.mjs        # Batched owner questions & verbatim answer events
-│   ├── owner-words.mjs      # Verbatim owner directive capture, classification & metrics
+│   ├── owner-words.mjs      # Verbatim owner directive capture (Claude/Codex/Antigravity), classification & metrics
 │   ├── plan.mjs             # Parallel package validation, readiness & measurements
 │   └── test/                # Deterministic unit & gate admission tests
 └── acceptance/              # End-to-end process & regression acceptance suite

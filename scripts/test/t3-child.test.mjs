@@ -2,19 +2,21 @@
 // model runs; `record` finds the child's transcript by the nonce in its first prompt, audits it and records the same
 // hand-off. Transcripts here are written in the shapes Codex and Claude Code write (lib/t3-child.mjs).
 import assert from "node:assert/strict";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import test from "node:test";
-import { EXIT, recordCall } from "../call.mjs";
+import { EXIT, preparedIn, recordCall } from "../call.mjs";
 import { transcriptEvents } from "../lib/t3-child.mjs";
 import { parseHandoffs } from "../lib/handoff.mjs";
 import { git, setup, temp } from "./helpers.mjs";
 
 process.env.SELF_LOOP_LOAD_DIR = temp("self-loop-load-");
 
-const codexId = "fixture-codex", claudeId = "fixture-claude";
+const codexId = "fixture-codex", claudeId = "fixture-claude", agId = "fixture-antigravity";
 const t3 = provider => ({ runner: "t3", provider, model: "m", effort: "high" });
 const handoffs = records => parseHandoffs(git(records, "show", "HEAD:metrics/handoffs.jsonl")).filter(h => h.step !== "reviewer-frame");
+const allHandoffs = records => existsSync(join(records, "metrics/handoffs.jsonl"))
+  ? parseHandoffs(git(records, "show", "HEAD:metrics/handoffs.jsonl")) : [];
 
 /** A Codex rollout of a child whose first prompt is `prompt` and which ran `commands` (shell strings) in `cwd`. */
 function codexRollout(home, prompt, commands, cwd) {
@@ -50,12 +52,36 @@ function claudeSession(home, prompt, tools, cwd) {
   return file;
 }
 
-async function prepared(provider = "codex", role = "critic") {
-  const s = await setup({}, { agents: { critic: t3(provider), actor: t3(provider), judge: t3(provider), reviewer: { runner: "cmd", cmd: ["true"] } } });
-  const homes = { codex: temp("codex-home-"), claude: temp("claude-home-") };
+/** An Antigravity session (untruncated transcript_full.jsonl) whose first prompt is `prompt` with batches of tool_calls. */
+function antigravitySession(appDir, convId, prompt, toolBatches, { model = "gemini-4-neon", extraRows = [], completed = true } = {}) {
+  const logs = join(appDir, "brain", convId, ".system_generated", "logs");
+  mkdirSync(logs, { recursive: true });
+  const ts = new Date().toISOString();
+  const rows = [
+    { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: ts, content: prompt },
+  ];
+  let step = 1;
+  for (const batch of toolBatches) {
+    rows.push({ step_index: step++, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: ts, model, tool_calls: batch });
+    for (const _ of batch) rows.push({ step_index: step++, source: "MODEL", type: "GENERIC", status: "DONE", created_at: ts });
+  }
+  rows.push(...extraRows);
+  if (completed) rows.push({ step_index: step++, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: ts, model });
+  const file = join(logs, "transcript_full.jsonl");
+  writeFileSync(file, rows.map(r => JSON.stringify(r)).join("\n") + "\n");
+  return file;
+}
+
+async function prepared(provider = "codex", role = "critic", setupOpts = {}) {
+  const s = await setup({}, { agents: { critic: t3(provider), actor: t3(provider), judge: t3(provider), reviewer: role === "reviewer" ? t3(provider) : { runner: "cmd", cmd: ["true"] } }, ...setupOpts });
+  const homes = { codex: temp("codex-home-"), claude: temp("claude-home-"), antigravity: temp("ag-home-") };
   process.env.CODEX_HOME = homes.codex;
   process.env.CLAUDE_CONFIG_DIR = homes.claude;
-  const r = s.run(role, { prepare: true });
+  process.env.ANTIGRAVITY_APP_DATA_DIR = homes.antigravity;
+  process.env.GEMINI_HOME = temp("gemini-home-");
+  process.env.T3CODE_HOME = "";
+  const runOpts = role === "reviewer" ? { step: "reviewer-frame", prepare: true } : { prepare: true };
+  const r = s.run(role, runOpts);
   return { s, r, homes };
 }
 
@@ -82,13 +108,242 @@ test("--prepare builds the workspace and the worktree, writes the child's prompt
   assert.deepEqual(s.counts(), {});
 });
 
-test("a t3 role is refused without --prepare, --prepare is refused for a CLI role, and the frame reviewer never runs on t3", async () => {
+test("a t3 role is refused without --prepare, --prepare is refused for a CLI role, and t3:codex is refused for reviewer", async () => {
   const { s } = await prepared();
   assert.match(s.run("critic").message, /runs as a T3 child thread: prepare it with --prepare/);
   s.cfg.agents.reviewer = { runner: "cmd", cmd: ["true"] };
   assert.match(s.run("reviewer", { step: "reviewer-frame", prepare: true }).message, /--prepare is only for a role whose runner is t3/);
-  s.cfg.agents.reviewer = t3("claude");
-  assert.match(s.run("reviewer", { step: "reviewer-frame", prepare: true }).message, /frame reviewer stays on the claude CLI/);
+  s.cfg.agents.reviewer = t3("codex");
+  for (const opts of [{ step: "reviewer-frame", prepare: true }, { step: "reviewer-frame", dry: true }]) {
+    const refused = s.run("reviewer", opts);
+    assert.equal(refused.code, EXIT.usage, refused.message);
+    assert.match(refused.message, /cannot run on t3:codex/);
+  }
+});
+
+test("confined t3 reviewer on antigravity and claude: prepare, liveWorkspace, and record succeed with wt=null", async () => {
+  for (const provider of ["antigravity", "claude"]) {
+    const { s, r, homes } = await prepared(provider, "reviewer", { frame: false });
+    assert.equal(r.code, EXIT.done, `${provider}: ${r.message}`);
+    const p = r.prepared;
+    assert.equal(p.wt, null, `${provider}: reviewer has no product worktree`);
+    assert.match(p.prompt, /Confined reviewer mode: use file tools only/);
+    assert.ok(p.prompt.includes(`stay strictly inside ${p.ws}`), `${provider}: names ws boundary`);
+    assert.ok(p.prompt.includes(`write only under ${p.ws}/out`), `${provider}: names out/ boundary`);
+    assert.ok(!p.prompt.includes("cd null") && !p.prompt.includes("The product worktree is"), `${provider}: never prints null worktree`);
+    const listed = preparedIn(s.cfg);
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].id, "R-0001-reviewer-frame");
+    assert.equal(listed[0].wt, null);
+    assert.equal(listed[0].liveWorkspace, true, `${provider}: liveWorkspace is true before record`);
+
+    writeFileSync(join(p.ws, "out/report.md"), `# Frame (${provider})\n\nVERDICT: CONTINUE\n`);
+    const session = provider === "antigravity" ? agId : claudeId;
+    if (provider === "antigravity") {
+      // Pending transcript check: message says workspace, never worktree null.
+      const pendingFile = antigravitySession(homes.antigravity, agId, p.prompt, [
+        [{ name: "read_file", args: { Path: join(p.ws, "brief.md") } }],
+      ], { completed: false });
+      coarseMtime(pendingFile, p.ws);
+      const pending = recordCall(s.cfg, p.ws, { session });
+      assert.equal(pending.code, EXIT.failure);
+      assert.match(pending.message, /its workspace is still available/);
+      assert.doesNotMatch(pending.message, /worktree/);
+      const file = antigravitySession(homes.antigravity, agId, p.prompt, [
+        [{ name: "read_file", args: { Path: join(p.ws, "brief.md") } }, { name: "read_file", args: { Path: join(p.ws, "purpose/docs/PURPOSE.md") } }],
+        [{ name: "write_file", args: { Path: join(p.ws, "out/report.md"), Content: "ok" } }],
+      ]);
+      coarseMtime(file, p.ws);
+    } else {
+      const file = claudeSession(homes.claude, p.prompt, [
+        { name: "Read", input: { file_path: join(p.ws, "brief.md") } },
+        { name: "Write", input: { file_path: join(p.ws, "out/report.md"), content: "ok" } },
+      ], "/somewhere/else");
+      coarseMtime(file, p.ws);
+    }
+    const done = recordCall(s.cfg, p.ws, { session });
+    assert.equal(done.code, EXIT.done, `${provider}: ${done.message}`);
+    const [h] = allHandoffs(s.records);
+    assert.equal(h.id, "R-0001-reviewer-frame");
+    assert.equal(h.agent.runner, `t3:${provider}`);
+    assert.equal(h.audit.violations, 0);
+    assert.match(git(s.records, "show", "HEAD:rounds/0001-reviewer-frame.md"), new RegExp(`Frame \\(${provider}\\)`));
+    const audit = JSON.parse(git(s.records, "show", `HEAD:${h.audit.file}`));
+    assert.equal(audit.unparsedCalls, 0);
+    assert.ok(audit.toolEvents >= 2);
+    assert.equal(recordCall(s.cfg, p.ws, { session }).code, EXIT.records, `${provider}: second record refused`);
+  }
+});
+
+test("confined t3 reviewer rejects outside file access, shell/MCP tools, and unparsed or insufficient audit evidence", async () => {
+  // 1. Outside file access (product, records, symlink escape) -> EXIT.violation
+  for (const kind of ["product", "records", "symlink"]) {
+    const { s, r, homes } = await prepared("antigravity", "reviewer", { frame: false });
+    const { ws, prompt } = r.prepared;
+    writeFileSync(join(ws, "out/report.md"), "frame\n");
+    let target;
+    if (kind === "product") target = join(s.product, "src/a.js");
+    else if (kind === "records") target = join(s.records, "README.md");
+    else {
+      symlinkSync(s.product, join(ws, "escape"));
+      target = join(ws, "escape/src/a.js");
+    }
+    const file = antigravitySession(homes.antigravity, agId, prompt, [
+      [{ name: "read_file", args: { Path: target } }],
+    ]);
+    coarseMtime(file, ws);
+    const res = recordCall(s.cfg, ws, { session: agId });
+    assert.equal(res.code, EXIT.violation, `${kind}: ${res.message}`);
+    assert.deepEqual(allHandoffs(s.records), [], `${kind}: no handoff`);
+  }
+
+  // 2. Shell tool (run_command on antigravity, Bash on claude) and read-only MCP tool -> EXIT.violation
+  for (const toolCall of [
+    { name: "run_command", args: { CommandLine: "ls" } },
+    { name: "mcp_t3-code_t3_thread_read", args: { threadId: "t1" } },
+  ]) {
+    const { s, r, homes } = await prepared("antigravity", "reviewer", { frame: false });
+    const { ws, prompt } = r.prepared;
+    writeFileSync(join(ws, "out/report.md"), "frame\n");
+    const file = antigravitySession(homes.antigravity, agId, prompt, [[toolCall]]);
+    coarseMtime(file, ws);
+    const res = recordCall(s.cfg, ws, { session: agId });
+    assert.equal(res.code, EXIT.violation, `${toolCall.name}: ${res.message}`);
+    assert.deepEqual(allHandoffs(s.records), [], `${toolCall.name}: no handoff`);
+  }
+  for (const tool of [
+    { name: "Bash", input: { command: "ls" } },
+    { name: "mcp__t3-code__t3_thread_read", input: { threadId: "t1" } },
+    { name: "Glob", input: { pattern: "**/*.js" } }, // no path with outside cwd
+  ]) {
+    const { s, r, homes } = await prepared("claude", "reviewer", { frame: false });
+    const { ws, prompt } = r.prepared;
+    writeFileSync(join(ws, "out/report.md"), "frame\n");
+    const file = claudeSession(homes.claude, prompt, [tool], s.product);
+    coarseMtime(file, ws);
+    const res = recordCall(s.cfg, ws, { session: claudeId });
+    assert.equal(res.code, EXIT.violation, `claude ${tool.name}: ${res.message}`);
+    assert.deepEqual(allHandoffs(s.records), [], `claude ${tool.name}: no handoff`);
+  }
+
+  // 3. Unparsed tool calls (missing GENERIC pairing or missing path) -> EXIT.violation
+  {
+    const { s, r, homes } = await prepared("antigravity", "reviewer", { frame: false });
+    const { ws, prompt } = r.prepared;
+    writeFileSync(join(ws, "out/report.md"), "frame\n");
+    const ts = new Date().toISOString();
+    const file = antigravitySession(homes.antigravity, agId, prompt, [], {
+      extraRows: [
+        { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: ts, model: "gemini-4-neon", tool_calls: [{ name: "read_file", args: { Path: join(ws, "brief.md") } }] },
+      ],
+    });
+    coarseMtime(file, ws);
+    const res = recordCall(s.cfg, ws, { session: agId });
+    assert.equal(res.code, EXIT.violation, res.message);
+    assert.match(res.message, /confinement could not be verified/);
+    assert.deepEqual(allHandoffs(s.records), []);
+  }
+
+  // 4. Unrecognized events with zero tool events -> EXIT.violation
+  {
+    const { s, r, homes } = await prepared("antigravity", "reviewer", { frame: false });
+    const { ws, prompt } = r.prepared;
+    writeFileSync(join(ws, "out/report.md"), "frame\n");
+    const ts = new Date().toISOString();
+    const file = antigravitySession(homes.antigravity, agId, prompt, [], {
+      extraRows: [{ step_index: 1, type: "UNKNOWN_OPAQUE_STEP", status: "DONE", created_at: ts }],
+    });
+    coarseMtime(file, ws);
+    const res = recordCall(s.cfg, ws, { session: agId });
+    assert.equal(res.code, EXIT.violation, res.message);
+    assert.match(res.message, /confinement could not be verified/);
+    assert.deepEqual(allHandoffs(s.records), []);
+  }
+});
+
+test("tampered call.json (non-null wt on prepared reviewer) is rejected with EXIT.records, and missing workspace dirs return EXIT.failure", async () => {
+  // Tampered with snapshot present
+  {
+    const { s, r, homes } = await prepared("antigravity", "reviewer", { frame: false });
+    const { ws, prompt } = r.prepared;
+    const callFile = join(ws, "call.json");
+    const raw = JSON.parse(readFileSync(callFile, "utf8"));
+    raw.wt = join(ws, "wt");
+    writeFileSync(callFile, JSON.stringify(raw));
+    writeFileSync(join(ws, "out/report.md"), "frame\n");
+    const file = antigravitySession(homes.antigravity, agId, prompt, [
+      [{ name: "write_file", args: { Path: join(ws, "out/report.md"), Content: "frame\n" } }],
+    ]);
+    coarseMtime(file, ws);
+    assert.equal(recordCall(s.cfg, ws, { session: agId }).code, EXIT.records);
+  }
+
+  // Tampered legacy v1 without snapshot (non-null wt still caught by reviewer wt === null check)
+  {
+    const { s, r, homes } = await prepared("antigravity", "reviewer", { frame: false });
+    const { ws, prompt } = r.prepared;
+    const callFile = join(ws, "call.json");
+    const raw = JSON.parse(readFileSync(callFile, "utf8"));
+    raw.version = 1;
+    raw.wt = join(ws, "wt");
+    rmSync(join(s.cfg.workDir, ".prepared", basename(ws) + ".json"));
+    writeFileSync(callFile, JSON.stringify(raw));
+    writeFileSync(join(ws, "out/report.md"), "frame\n");
+    const file = antigravitySession(homes.antigravity, agId, prompt, [
+      [{ name: "write_file", args: { Path: join(ws, "out/report.md"), Content: "frame\n" } }],
+    ]);
+    coarseMtime(file, ws);
+    assert.equal(recordCall(s.cfg, ws, { session: agId }).code, EXIT.records);
+    assert.equal(preparedIn(s.cfg)[0].liveWorkspace, false);
+  }
+
+  // Missing purpose/ or records/ directory -> EXIT.failure workspace gone, and liveWorkspace false when any required dir is gone
+  {
+    const { s, r, homes } = await prepared("antigravity", "reviewer", { frame: false });
+    const { ws, prompt } = r.prepared;
+    rmSync(join(ws, "purpose"), { recursive: true, force: true });
+    assert.equal(preparedIn(s.cfg)[0].liveWorkspace, false);
+    writeFileSync(join(ws, "out/report.md"), "frame\n");
+    const file = antigravitySession(homes.antigravity, agId, prompt, []);
+    coarseMtime(file, ws);
+    const missing = recordCall(s.cfg, ws, { session: agId });
+    assert.equal(missing.code, EXIT.failure);
+    assert.match(missing.message, /prepared workspace .* is gone/);
+  }
+
+  // Vector 5 fail-closed: when t.cwd is null (missing DB or omitted cwd), relative paths and implicit-cwd Glob fail closed with EXIT.violation while absolute ws paths still pass
+  {
+    const { s, r, homes } = await prepared("antigravity", "reviewer", { frame: false });
+    const { ws, prompt } = r.prepared;
+    writeFileSync(join(ws, "out/report.md"), "frame\n");
+    const file = antigravitySession(homes.antigravity, agId, prompt, [
+      [{ name: "read_file", args: { Path: "src/a.js" } }],
+      [{ name: "write_file", args: { Path: join(ws, "out/report.md"), Content: "frame\n" } }],
+    ]);
+    coarseMtime(file, ws);
+    const relDenied = recordCall(s.cfg, ws, { session: agId });
+    assert.equal(relDenied.code, EXIT.violation, relDenied.message);
+    assert.deepEqual(allHandoffs(s.records), []);
+  }
+  for (const tool of [{ name: "Read", input: { file_path: "src/a.js" } }, { name: "Glob", input: { pattern: "*.js" } }]) {
+    const { s, r, homes } = await prepared("claude", "reviewer", { frame: false });
+    const { ws, prompt } = r.prepared;
+    writeFileSync(join(ws, "out/report.md"), "frame\n");
+    const dir = join(homes.claude, "projects", "unknown-cwd");
+    mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString();
+    const rows = [
+      { type: "user", timestamp: ts, sessionId: claudeId, message: { role: "user", content: prompt } },
+      { type: "assistant", timestamp: ts, message: { model: "claude-test", content: [{ type: "tool_use", id: "tu0", ...tool }] } },
+      { type: "assistant", timestamp: ts, message: { model: "claude-test", stop_reason: "end_turn", content: [] } },
+    ];
+    const file = join(dir, `${Math.random().toString(16).slice(2)}.jsonl`);
+    writeFileSync(file, rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+    coarseMtime(file, ws);
+    const denied = recordCall(s.cfg, ws, { session: claudeId });
+    assert.equal(denied.code, EXIT.violation, `${tool.name}: ${denied.message}`);
+    assert.deepEqual(allHandoffs(s.records), []);
+  }
 });
 
 test("--prepare rejects missing or unknown feature IDs without a workspace", async () => {

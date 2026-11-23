@@ -123,12 +123,18 @@ test("a failing setup stops the call before the model runs: no hand-off", async 
   assert.equal(git(s.product, "worktree", "list").split("\n").length, 1);
 });
 
-test("usage refusals: codex frame reviewer, the cmd stand-in outside tests, protected base branch, a step of another role, an uncommitted brief", async () => {
+test("usage refusals: codex and t3:codex frame reviewer, the cmd stand-in outside tests, protected base branch, a step of another role, an uncommitted brief", async () => {
   const s = await setup({});
   delete process.env.SELF_LOOP_TEST;
   try { assert.match(s.run("critic").message, /cmd runner is a test stand-in.*SELF_LOOP_TEST=1/); } finally { process.env.SELF_LOOP_TEST = "1"; }
   s.cfg.agents.reviewer = { runner: "codex" };
-  assert.match(s.run("reviewer").message, /cannot run on codex/);
+  const cliCodex = s.run("reviewer");
+  assert.equal(cliCodex.code, EXIT.usage);
+  assert.match(cliCodex.message, /cannot run on codex/);
+  s.cfg.agents.reviewer = { runner: "t3", provider: "codex" };
+  const t3Codex = s.run("reviewer", { prepare: true });
+  assert.equal(t3Codex.code, EXIT.usage);
+  assert.match(t3Codex.message, /cannot run on t3:codex/);
   assert.equal(s.run("critic", { base: "main" }).code, EXIT.usage);
   assert.equal(s.run("critic", { step: "actor-x" }).code, EXIT.usage);
   writeFileSync(join(s.records, "engines/new.md"), "# new\n");

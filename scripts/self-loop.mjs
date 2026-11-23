@@ -3,31 +3,39 @@
 // the heartbeat's tick, the heartbeat itself and the registry. No harness or hook is needed for any of it; a session of
 // any agent, a terminal or the OS scheduler runs the same lines.
 //
+// node self-loop.mjs init  [--product <dir>] [--records <dir>] [--name <name>] [--branch <branch>] [--local-exclude] [--register] [--owner-store <dir>] [--json]
 // node self-loop.mjs start [--config <loop.json>] [--hours N] [--now <ISO time>] [--json] [--owner-store <dir>]
 // node self-loop.mjs start|next --parent-entry <public-input.json> [--owner-store <dir>]
 // node self-loop.mjs next  [--config <loop.json> | --all] [--owner-store <dir>]
 // node self-loop.mjs stall [--hours N] [--config <loop.json> | --all] [--now <ISO time>] [--json] [--owner-store <dir>]
 // node self-loop.mjs tick  [--hours N] [--now <ISO time>] [--json] [--owner-store <dir>]
+// node self-loop.mjs ssot  [check|attest] [--config <loop.json>] ... (see scripts/ssot-check.mjs)
 // node self-loop.mjs heartbeat install|uninstall [--dry-run] [--platform launchd|cron] [--release <dir>] [--owner-store <dir>]
 // node self-loop.mjs registry init [--roots <dir>,...] | add --name <name> --records <dir> [--aliases a,b] | list [--json]
 //
-// The configuration: --config, else SELF_LOOP_CONFIG, else the registered product whose folders hold the working
-// directory (lib/registry.mjs). The owner store: --owner-store, else SELF_LOOP_OWNER_STORE, else ~/.self-loop/owner-store.
+// The configuration: --config, else SELF_LOOP_CONFIG, else an in-repo .self-loop/loop.json at the working tree root
+// containing cwd, else the registered product whose folders hold the working directory (lib/registry.mjs). The owner
+// store: --owner-store, else SELF_LOOP_OWNER_STORE, else ~/.self-loop/owner-store.
 // design/continuation-entry.md
 import "./lib/unbind-git.mjs";
-import { realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load, Stop } from "./call.mjs";
 import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
+import { antigravityChildSession } from "./lib/antigravity-words.mjs";
 import { dryRun, heartbeatEntry, install, resolveRelease, uninstall } from "./lib/heartbeat.mjs";
+import { checkHooks, HooksError, installHooks, uninstallHooks } from "./lib/hooks.mjs";
+import { InitError, initLoop } from "./lib/init.mjs";
+import { delegatedThread } from "./lib/owner-words.mjs";
 import { addProduct, initStore, loadRegistry, loopSettings, productState, resolveConfig, resolveOwnerStore } from "./lib/registry.mjs";
 import { continuationText, parentEntryInput, reconcileParentEntry, startReport, startText } from "./lib/start.mjs";
 import { stallThreshold, tick, tickText } from "./lib/tick.mjs";
 import { cliClock, nextLines, recordsOf, stallState } from "./loop.mjs";
+import { main as runSsot } from "./ssot-check.mjs";
 
 const skill = join(dirname(fileURLToPath(import.meta.url)), "..");
-const USAGE = "self-loop.mjs start|next|stall|tick|heartbeat|registry ... (see the header of scripts/self-loop.mjs)";
+const USAGE = "self-loop.mjs init|start|next|stall|tick|ssot|heartbeat|hooks|registry ... (see the header of scripts/self-loop.mjs)";
 
 function hoursOf(args) {
   if (!("hours" in args)) return null;
@@ -165,6 +173,134 @@ async function runParentEntry(args, env, cwd) {
   return code || (continuation.failed ? 1 : 0);
 }
 
+function runStartAntigravityHook(args, env) {
+  try {
+    let input;
+    try { input = JSON.parse(readFileSync(0, "utf8") || "{}"); }
+    catch { console.log("{}"); return 0; }
+    if (delegatedThread(env)
+      || (typeof input?.parentConversationId === "string" && input.parentConversationId.length > 0)
+      || (input?.transcriptPath && antigravityChildSession(input.transcriptPath))) {
+      console.log("{}");
+      return 0;
+    }
+    const hookCwd = input?.cwd || (Array.isArray(input?.workspacePaths) ? input.workspacePaths[0] : null) || null;
+    if (!hookCwd) { console.log("{}"); return 0; }
+    const clock = cliClock(args), hours = hoursOf(args);
+    const report = startReport({ store: resolveOwnerStore({ flag: args["owner-store"], env }), config: args.config, env, cwd: hookCwd, ...clock, hours, skill });
+    const text = startText(report, { selfLoop: join(skill, "scripts", "self-loop.mjs") });
+    console.log(JSON.stringify({ injectSteps: [{ systemMessage: { systemMessage: text } }] }));
+  } catch (error) {
+    console.error(`self-loop start --hook antigravity: ${error?.message ?? error}`);
+    console.log("{}");
+  }
+  return 0;
+}
+
+function runHooks(args, env, cwd) {
+  const [, action] = args._;
+  if (!["install", "check", "uninstall"].includes(action)) {
+    throw new UsageError("hooks install|check|uninstall --harness antigravity [--scope workspace|global] [--target <hooks.json>] [--config <loop.json>] [--owner-store <dir>] [--release <dir>] [--dry-run] [--json]");
+  }
+  need(args, "harness");
+  const harness = args.harness;
+  const scope = args.scope || "workspace";
+  const target = args.target || null;
+  const dryRunFlag = "dry-run" in args;
+  const jsonFlag = "json" in args;
+  let cfg = null, settings = null;
+  const needConfig = action === "install" || (!target && scope === "workspace");
+  if (needConfig || "config" in args || env.SELF_LOOP_CONFIG) {
+    try {
+      const [selected] = selection(args, env, cwd);
+      cfg = selected.cfg;
+      settings = selected.settings;
+    } catch (error) {
+      if (needConfig) throw error;
+    }
+  }
+  try {
+    if (action === "install") {
+      const scriptsDir = args.release ? join(resolveRelease({ skill, release: args.release }), "scripts") : join(skill, "scripts");
+      const res = installHooks({ harness, scope, target, cfg, settings, scriptsDir, env, cwd, dryRun: dryRunFlag });
+      if (jsonFlag) console.log(JSON.stringify(res, null, 2));
+      else if (dryRunFlag) {
+        console.log(`# would write ${res.target}`);
+        console.log(res.content.trimEnd());
+        if (res.exclude?.needed) console.log(`# would append ${res.exclude.pattern} to ${res.exclude.excludeFile}`);
+      } else {
+        console.log(`installed ${harness} hooks to ${res.target}${res.exclude?.changed ? ` (excluded ${res.exclude.pattern} in ${res.exclude.excludeFile})` : ""}`);
+      }
+      return 0;
+    }
+    if (action === "check") {
+      const res = checkHooks({ harness, scope, target, cfg, env, cwd });
+      if (jsonFlag) console.log(JSON.stringify(res, null, 2));
+      else {
+        console.log(`${res.ok ? "ok" : "unhealthy"}: ${res.target} (${res.findings.length} finding(s))`);
+        for (const f of res.findings) console.log(`  finding: ${f}`);
+      }
+      return res.ok ? 0 : 2;
+    }
+    const res = uninstallHooks({ harness, scope, target, cfg, env, cwd, dryRun: dryRunFlag });
+    if (jsonFlag) console.log(JSON.stringify(res, null, 2));
+    else console.log(`${dryRunFlag ? "would remove" : "removed"} ${harness} hooks from ${res.target}${res.exclude?.changed ? ` (cleaned ${res.exclude.excludeFile})` : ""}`);
+    return 0;
+  } catch (error) {
+    if (error instanceof HooksError) {
+      console.error(error.message);
+      return error.code;
+    }
+    throw error;
+  }
+}
+
+const INIT_VALUE_FLAGS = new Set(["product", "records", "name", "branch", "owner-store"]);
+const INIT_BOOL_FLAGS = new Set(["local-exclude", "register", "json"]);
+
+function runInit(args, env, cwd) {
+  if (args._.length > 1) throw new UsageError(`init takes no positional argument, got ${args._[1]}`);
+  for (const key of Object.keys(args)) {
+    if (key === "_") continue;
+    if (INIT_VALUE_FLAGS.has(key)) {
+      if (!args[key]) throw new UsageError(`missing value for --${key}`);
+    } else if (INIT_BOOL_FLAGS.has(key)) {
+      if (args[key] !== "") throw new UsageError(`--${key} takes no value`);
+    } else {
+      throw new UsageError(`init takes no --${key}`);
+    }
+  }
+  try {
+    const res = initLoop({
+      product: args.product ?? null,
+      records: args.records ?? null,
+      name: args.name ?? null,
+      branch: args.branch ?? null,
+      localExclude: "local-exclude" in args,
+      register: "register" in args,
+      ownerStore: args["owner-store"] ?? null,
+      env,
+      cwd,
+    });
+    if ("json" in args) console.log(JSON.stringify(res, null, 2));
+    else {
+      const ignoreNote = res.ignore
+        ? ` (${res.ignore.changed ? "ignored" : "already ignored"} ${res.ignore.pattern} in ${res.ignore.file})`
+        : "";
+      const regNote = res.registered ? ` · registered in ${res.ownerStore}` : "";
+      console.log(`initialized ${res.name} records at ${res.records}${ignoreNote}${regNote}`);
+      console.log(`config: ${res.config}`);
+    }
+    return 0;
+  } catch (error) {
+    if (error instanceof InitError) {
+      console.error(error.message);
+      return error.code;
+    }
+    throw error;
+  }
+}
+
 export function main(argv, { env = process.env, cwd = process.cwd() } = {}) {
   const args = parseArgs(argv);
   const [command] = args._;
@@ -173,7 +309,12 @@ export function main(argv, { env = process.env, cwd = process.cwd() } = {}) {
     if (!["start", "next"].includes(command)) throw new UsageError("--parent-entry is only valid with start or next");
     return runParentEntry(args, env, cwd);
   }
+  if (command === "init") return runInit(args, env, cwd);
   if (command === "start") {
+    if ("hook" in args) {
+      if (args.hook !== "antigravity") throw new UsageError(`--hook must be antigravity, got ${JSON.stringify(args.hook)}`);
+      return runStartAntigravityHook(args, env);
+    }
     const clock = cliClock(args), hours = hoursOf(args);
     const report = startReport({ store: resolveOwnerStore({ flag: args["owner-store"], env }), config: args.config, env, cwd, ...clock, hours, skill });
     console.log("json" in args ? JSON.stringify(report, null, 2) : startText(report, { selfLoop: join(skill, "scripts", "self-loop.mjs") }));
@@ -189,7 +330,9 @@ export function main(argv, { env = process.env, cwd = process.cwd() } = {}) {
     console.log("json" in args ? JSON.stringify(report, null, 2) : tickText(report));
     return report.findings.length ? 2 : 0;
   }
+  if (command === "ssot") return runSsot(argv.slice(1), { env, cwd });
   if (command === "heartbeat") return runHeartbeat(args, env);
+  if (command === "hooks") return runHooks(args, env, cwd);
   if (command === "registry") return runRegistry(args, env);
   throw new UsageError(USAGE);
 }

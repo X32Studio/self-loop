@@ -10,14 +10,16 @@
 // - roots: absolute folders under which `tick` and `start` look for records repositories nobody registered.
 // Names and aliases share one namespace (case-insensitive); a records repository is registered once.
 //
-// A command finds its configuration by --config, else SELF_LOOP_CONFIG, else the registered product whose folders
-// contain the working directory: its records repository, the product checkout its loop.json names, and the folders its
-// loop.json lists under `projects`. None or several candidates is a usage error naming them, never a guess.
+// A command finds its configuration by --config, else SELF_LOOP_CONFIG, else an in-repo .self-loop/loop.json at the
+// working tree root containing cwd, else the registered product whose folders contain the working directory: its
+// records repository, the product checkout its loop.json names, and the folders its loop.json lists under `projects`.
+// None or several candidates is a usage error naming them, never a guess.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gitTopLevel, isGitIgnored, isPathTracked } from "./git-exclude.mjs";
 import { gitOk } from "./git-plumbing.mjs";
 import { HEAVY_ROLES, load, loadDir, preparedIn, Stop } from "../call.mjs";
 import { UsageError } from "./args.mjs";
@@ -27,18 +29,22 @@ import { MAX_LOAD_RATIO, MIN_AVAILABLE_MEMORY_GB, MIN_AVAILABLE_MEMORY_SHARE, ON
 
 export const REGISTRY = "products.json";
 export const LOOP = "loop.json";
+export const DEFAULT_RECORDS_DIR = ".self-loop";
 export const STORE_ENV = "SELF_LOOP_OWNER_STORE";
 export const CONFIG_ENV = "SELF_LOOP_CONFIG";
 export const HOST_BOUND = { maxLoadRatio: MAX_LOAD_RATIO, minAvailableMemoryGB: MIN_AVAILABLE_MEMORY_GB, minAvailableMemoryShare: MIN_AVAILABLE_MEMORY_SHARE };
 const BOUND_FIELDS = ["maxLoadRatio", "minAvailableMemoryGB"];
 const FIELDS = ["products", "roots", ...BOUND_FIELDS];
 const RETIRED = ["heavyBudget"];
-const NAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+export const PRODUCT_NAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const oneLine = value => typeof value === "string" && value.trim().length > 0 && !/[\n\r\t]/.test(value);
 
 /** A malformed registry: the command cannot know which products exist (exit 64). */
 export class RegistryError extends UsageError {}
+
+/** An untrusted or malformed in-repo .self-loop configuration (fail-closed, exit 64). */
+export class LocalLoopError extends UsageError {}
 
 /** The canonical form of a folder: its real path when it exists. */
 export const real = path => { try { return realpathSync(path); } catch { return resolve(path); } };
@@ -73,7 +79,7 @@ export function parseRegistry(text, source = REGISTRY) {
   const products = data.products.map((p, i) => {
     if (!object(p)) fail(`products[${i}] must be an object`);
     for (const key of Object.keys(p)) if (!["name", "records", "aliases"].includes(key)) fail(`products[${i}] has unknown field "${key}" (name, records, aliases)`);
-    if (typeof p.name !== "string" || !NAME.test(p.name)) fail(`products[${i}].name must be lower-case letters, digits and inner hyphens, got ${JSON.stringify(p.name)}`);
+    if (typeof p.name !== "string" || !PRODUCT_NAME.test(p.name)) fail(`products[${i}].name must be lower-case letters, digits and inner hyphens, got ${JSON.stringify(p.name)}`);
     if (data.products.findIndex(q => q?.name === p.name) !== i) fail(`${p.name} is registered twice`);
     claim(p.name, p.name, "name");
     if (typeof p.records !== "string" || !isAbsolute(p.records)) fail(`${p.name}: records must be an absolute path, got ${JSON.stringify(p.records)}`);
@@ -139,13 +145,75 @@ export function productState(entry) {
 
 const named = products => products.map(p => `${p.name} (${p.records})`).join(", ") || "none";
 
+const isRegularFile = file => {
+  try { return statSync(file).isFile(); } catch { return false; }
+};
+
+function validateLocalLoop(parentTop, recordsDir, loopFile) {
+  const reasons = [];
+  const stat = lstatSync(recordsDir, { throwIfNoEntry: false });
+  if (!stat || !stat.isDirectory()) {
+    reasons.push(`${recordsDir} is not a real directory (symlinks are refused)`);
+  } else {
+    const recordsTop = gitTopLevel(recordsDir);
+    const realRecords = real(recordsDir);
+    if (!recordsTop || recordsTop !== realRecords || recordsTop === parentTop) {
+      reasons.push(`${recordsDir} is not its own nested Git repository (rev-parse --show-toplevel resolved to ${recordsTop ?? "none"})`);
+    }
+  }
+  const tracked = isPathTracked(parentTop, DEFAULT_RECORDS_DIR);
+  if (tracked.error) {
+    reasons.push(tracked.error);
+  } else if (tracked.tracked) {
+    const sample = tracked.files.slice(0, 3).join(", ");
+    const more = tracked.files.length > 3 ? ` (+${tracked.files.length - 3} more)` : "";
+    reasons.push(`${DEFAULT_RECORDS_DIR} is tracked or staged in parent repository ${parentTop} (${sample}${more})`);
+  }
+  if (!isGitIgnored(parentTop, DEFAULT_RECORDS_DIR, { directory: true })
+    || !isGitIgnored(parentTop, `${DEFAULT_RECORDS_DIR}/${LOOP}`)) {
+    reasons.push(`${DEFAULT_RECORDS_DIR} is not git-ignored in parent repository ${parentTop}`);
+  }
+  if (reasons.length) {
+    throw new LocalLoopError(
+      `refusing untrusted in-repo config ${loopFile}: ${reasons.join("; ")}. `
+      + "Initialize records cleanly with `self-loop.mjs init` or pass --config explicitly",
+    );
+  }
+  return loopFile;
+}
+
+/**
+ * Auto-discover <toplevel>/.self-loop/loop.json for the Git working tree containing `cwd`.
+ * Uses `rev-parse --show-toplevel` so linked/detached role worktrees only see their own working tree root and never
+ * reach across into the primary checkout's .self-loop/. Fails closed if .self-loop/loop.json exists without meeting
+ * the nested-repo, untracked, and git-ignored invariants.
+ */
+export function discoverLocalLoop(cwd = process.cwd()) {
+  const top = gitTopLevel(cwd);
+  if (!top) return null;
+  const recordsDir = join(top, DEFAULT_RECORDS_DIR);
+  const candidate = join(recordsDir, LOOP);
+  if (isRegularFile(candidate)) return validateLocalLoop(top, recordsDir, candidate);
+  if (basename(top) === DEFAULT_RECORDS_DIR) {
+    const nested = join(top, LOOP);
+    const parentTop = gitTopLevel(dirname(top));
+    if (parentTop && real(join(parentTop, DEFAULT_RECORDS_DIR)) === top && isRegularFile(nested)) {
+      return validateLocalLoop(parentTop, join(parentTop, DEFAULT_RECORDS_DIR), nested);
+    }
+  }
+  return null;
+}
+
 /**
  * The configuration a command runs on: { config, product } where product is the registered entry (null for an
- * explicit --config or SELF_LOOP_CONFIG). `store` is a function returning the owner store, called only when needed.
+ * explicit --config, SELF_LOOP_CONFIG, or auto-discovered in-repo .self-loop/loop.json). `store` is a function
+ * returning the owner store, called only when needed.
  */
 export function resolveConfig({ config, env = process.env, cwd = process.cwd(), store }) {
   if (config) return { config: resolve(cwd, config), product: null, source: "--config" };
   if (env[CONFIG_ENV]) return { config: resolve(cwd, env[CONFIG_ENV]), product: null, source: CONFIG_ENV };
+  const local = discoverLocalLoop(cwd);
+  if (local) return { config: local, product: null, source: "in-repo" };
   const registry = loadRegistry(store());
   const here = real(cwd);
   const states = registry.products.map(productState);

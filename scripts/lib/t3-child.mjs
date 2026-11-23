@@ -6,7 +6,16 @@
 // nonce (in the call that started the child), but never in its first message.
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import {
+  antigravityAppDirs,
+  antigravityFirstPrompt,
+  antigravityStatus,
+  appDirFromTranscriptPath,
+  conversationIdFromPath,
+  readConversationSummaries,
+  resolveAuthoritativeTranscript,
+} from "./antigravity.mjs";
 
 /** Old prepared contexts carry the phase only in the generated role prompt. */
 export function preparedPhase(ctx, ws) {
@@ -50,6 +59,24 @@ function candidateFiles(runner, since) {
     return existsSync(projects) ? readdirSync(projects, { withFileTypes: true }).filter(p => p.isDirectory())
       .flatMap(p => recent(join(projects, p.name), since)) : [];
   }
+  if (runner === "antigravity") {
+    const files = [];
+    for (const appDir of antigravityAppDirs()) {
+      const brain = join(appDir, "brain");
+      let dirs;
+      try { dirs = readdirSync(brain, { withFileTypes: true }); } catch { continue; }
+      for (const d of dirs) {
+        if (!d.isDirectory()) continue;
+        const logs = join(brain, d.name, ".system_generated", "logs");
+        const full = join(logs, "transcript_full.jsonl");
+        const compact = join(logs, "transcript.jsonl");
+        const file = existsSync(full) ? full : existsSync(compact) ? compact : null;
+        if (!file) continue;
+        try { if (statSync(file).mtimeMs >= since) files.push(file); } catch { /* vanished */ }
+      }
+    }
+    return files;
+  }
   const files = recent(join(codexHome(), "archived_sessions"), since);
   const day = 86_400_000;
   for (let t = since - day; t <= Date.now() + day; t += day) {
@@ -61,10 +88,10 @@ function candidateFiles(runner, since) {
 }
 
 export function findTranscripts(runner, nonce, since, session = null) {
-  const first = runner === "codex" ? codexFirstPrompt : claudeFirstPrompt;
-  const identity = runner === "codex" ? codexSession : claudeSession;
+  const first = runner === "codex" ? codexFirstPrompt : runner === "antigravity" ? antigravityFirstPrompt : claudeFirstPrompt;
+  const identity = runner === "codex" ? codexSession : runner === "antigravity" ? ((_rows, file) => conversationIdFromPath(file)) : claudeSession;
   return [...new Set(candidateFiles(runner, since))].flatMap(file => {
-    const rows = lines(file), nativeId = identity(rows);
+    const rows = lines(file), nativeId = identity(rows, file);
     return (!session || session === nativeId) && first(rows).includes(nonce) ? [{ runner, file, session: nativeId }] : [];
   });
 }
@@ -141,9 +168,57 @@ function codexTools(rows) {
 }
 
 export function transcriptEvents(id, { runner, file }) {
-  const text = readFileSync(file, "utf8"), rows = lines(file);
-  const times = rows.map(r => Date.parse(r.timestamp ?? "")).filter(Number.isFinite);
+  const actualFile = runner === "antigravity" ? resolveAuthoritativeTranscript(file) : file;
+  const text = readFileSync(actualFile, "utf8"), rows = lines(actualFile);
+  const times = rows.map(r => Date.parse(r.timestamp ?? r.created_at ?? "")).filter(Number.isFinite);
   const seconds = times.length ? Math.round((Math.max(...times) - Math.min(...times)) / 100) / 10 : null;
+  if (runner === "antigravity") {
+    const session = conversationIdFromPath(actualFile);
+    const nonAuthoritative = basename(actualFile) !== "transcript_full.jsonl";
+    const truncated = rows.some(r => Array.isArray(r.truncated_fields) && r.truncated_fields.length > 0);
+    if (nonAuthoritative || truncated) {
+      return {
+        nonAuthoritative,
+        truncated,
+        refusalReason: "Antigravity child record requires an untruncated transcript_full.jsonl",
+        events: [],
+        session,
+        forked: false,
+        status: "failed",
+        firstPrompt: "",
+        observedModel: null,
+        observedModels: [],
+        seconds,
+        cwd: null,
+        text,
+      };
+    }
+    const appDir = appDirFromTranscriptPath(actualFile);
+    const db = appDir ? readConversationSummaries(appDir) : { state: "unavailable" };
+    const summary = db.state === "ok" && session ? (db.rows.get(session) ?? null) : null;
+    const firstPrompt = antigravityFirstPrompt(rows);
+    const forked = Boolean(summary?.parent_conversation_id)
+      || (summary?.nesting_depth ?? 0) > 0
+      || /^Context handoff \([a-z_]+\):/.test(firstPrompt.trimStart());
+    const observedModels = [...new Set(
+      rows
+        .filter(r => r?.type === "PLANNER_RESPONSE" && typeof r.model === "string" && r.model.trim())
+        .map(r => r.model.trim())
+    )];
+    const observedModel = observedModels[0] ?? null;
+    return {
+      events: rows.map(event => ({ id, event })),
+      session,
+      forked,
+      status: antigravityStatus(rows, summary),
+      firstPrompt,
+      observedModel,
+      observedModels,
+      seconds,
+      cwd: summary?.workspaces?.[0] ?? null,
+      text,
+    };
+  }
   if (runner === "claude") {
     const session = claudeSession(rows);
     const events = rows.filter(r => r.type === "assistant" || r.type === "user").map(event => ({ id, event }));
@@ -161,8 +236,10 @@ export function transcriptEvents(id, { runner, file }) {
 export function t3Prompt({ id, nonce, wt, ws, text }) {
   return [`self-loop call ${id} · nonce ${nonce}`, "",
     "You run as a T3 child thread whose session starts in another directory. Work only in the folders below, by absolute path.",
-    `- Your working folder: ${ws} (brief-shared.md, brief.md, task.md, records/; write under ${ws}/out).`,
-    wt ? `- The product worktree: ${wt}. Run every shell command as \`cd ${wt} && ...\`.` : null,
+    `- Your working folder: ${ws} (brief-shared.md, brief.md, task.md, records/${wt ? "" : ", purpose/"}; write under ${ws}/out).`,
+    wt
+      ? `- The product worktree: ${wt}. Run every shell command as \`cd ${wt} && ...\`.`
+      : `- Confined reviewer mode: use file tools only (no shell, web, delegation, or MCP tools) and stay strictly inside ${ws} (write only under ${ws}/out). Any disallowed tool call or path outside ${ws} fails the access audit.`,
     "- Do not commit, push, stash or switch branches: when you finish, the lead records your work from this folder and your transcript.",
     "", text].filter(line => line !== null).join("\n");
 }

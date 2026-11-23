@@ -16,21 +16,39 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/args.mjs";
-import { claudeHookSession, pendingKey, pendingOwnerPrompts, projectRoots, syncClaudePromptSession } from "./lib/owner-words.mjs";
+import { isAntigravityHook } from "./lib/antigravity.mjs";
+import { antigravityHookSession } from "./lib/antigravity-words.mjs";
+import { claudeHookSession, pendingKey, pendingOwnerPrompts, projectRoots, syncPromptSession } from "./lib/owner-words.mjs";
 import { openWords } from "./records-check.mjs";
 
 const ownerWordsPath = fileURLToPath(new URL("./owner-words.mjs", import.meta.url));
 const ownerWordsCommand = "node '" + ownerWordsPath.replaceAll("'", "'\"'\"'") + "'";
 
+function antigravityStopBlocked(input) {
+  if (input?.continuationActive === true) return true;
+  if (input?.fullyIdle === false) return true;
+  if (input?.terminationReason && input.terminationReason !== "NO_TOOL_CALL") return true;
+  return false;
+}
+
 /** Check the committed ledger and pending captures independently so a failed write cannot hide either. */
-export function sessionOpenWords(input, { records, projects, env, warn = console.error }) {
-  if (!claudeHookSession(input, projects, env)) return { open: [], pending: [] };
-  try { syncClaudePromptSession(records, projects, input); }
+export function sessionOpenWords(input, { records, projects, env, harness = null, warn = console.error }) {
+  const isAg = isAntigravityHook(input, harness);
+  const mode = isAg ? "antigravity" : "claude";
+  if (isAg) {
+    if (antigravityStopBlocked(input)) return { open: [], pending: [] };
+    if (!antigravityHookSession(input, projects, env)) return { open: [], pending: [] };
+  } else if (!claudeHookSession(input, projects, env)) {
+    return { open: [], pending: [] };
+  }
+  const sessionId = isAg ? input.conversationId : input.session_id;
+  if (typeof sessionId !== "string" || !sessionId) return { open: [], pending: [] };
+  try { syncPromptSession(mode, records, projects, input); }
   catch (error) { warn(`word-gate: sync failed: ${error.message}`); }
   let open = [], pending = [];
-  try { open = openWords(records).filter(w => w.session === input.session_id); }
+  try { open = openWords(records).filter(w => w.session === sessionId); }
   catch (error) { warn(`word-gate: could not read committed words: ${error.message}`); }
-  try { pending = pendingOwnerPrompts(records, input.session_id); }
+  try { pending = pendingOwnerPrompts(records, sessionId); }
   catch (error) { warn(`word-gate: could not read pending captures: ${error.message}`); }
   return { open, pending };
 }
@@ -43,14 +61,19 @@ export function reason(open, pending = []) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const args = parseArgs(process.argv.slice(2));
+  const harnessFlag = args.harness || null;
+  let isAg = harnessFlag === "antigravity";
   try {
-    const args = parseArgs(process.argv.slice(2));
     const input = JSON.parse(readFileSync(0, "utf8") || "{}");
-    const { open, pending } = sessionOpenWords(input, { records: resolve(args.records), projects: projectRoots(args.project) });
-    if (open.length || pending.length) {
+    isAg = isAntigravityHook(input, harnessFlag);
+    const { open, pending } = sessionOpenWords(input, { records: resolve(args.records), projects: projectRoots(args.project), harness: harnessFlag });
+    const sessionId = isAg ? input.conversationId : input.session_id;
+    let emitted = false;
+    if ((open.length || pending.length) && typeof sessionId === "string" && sessionId) {
       const dir = join(tmpdir(), "self-loop-word-gate");
       mkdirSync(dir, { recursive: true });
-      const file = join(dir, `${String(input.session_id).replace(/[^\w-]/g, "_")}.json`);
+      const file = join(dir, `${sessionId.replace(/[^\w-]/g, "_")}.json`);
       let state = {};
       try { state = JSON.parse(readFileSync(file, "utf8")); } catch { /* first block */ }
       const max = Number(args["max-blocks"] || 3);
@@ -69,9 +92,15 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         console.error(`word-gate: ${w.id} still open after ${max} refusals (${ownerWordsCommand} open --records <records> lists them)`);
       for (const p of pending.filter(p => pendingBlocks[pendingKey(p)] > max))
         console.error(`word-gate: pending:${pendingKey(p)} still open after ${max} refusals (${ownerWordsCommand} pending --discard <key> --records <records> --note "<why>" archives it)`);
-      if (blockingWords.length || blockingPending.length)
-        console.log(JSON.stringify({ decision: "block", reason: reason(blockingWords, blockingPending) }));
+      if (blockingWords.length || blockingPending.length) {
+        console.log(JSON.stringify({ decision: isAg ? "continue" : "block", reason: reason(blockingWords, blockingPending) }));
+        emitted = true;
+      }
     }
-  } catch (error) { console.error(`word-gate: ${error.message}`); }
+    if (isAg && !emitted) console.log("{}");
+  } catch (error) {
+    console.error(`word-gate: ${error.message}`);
+    if (isAg) console.log("{}");
+  }
   process.exitCode = 0;
 }

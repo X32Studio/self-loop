@@ -11,10 +11,13 @@
 //   from another commit; never a redaction of a larger copy. The view's INDEX.md lists exactly what it holds. Briefs
 //   and the lead's task are files of the same commit / given verbatim. The frame reviewer also gets the product's
 //   purpose documents at the base commit.
-// - Agent. Claude always runs `--restricted` (no project or session memory) with --strict-mcp-config; the frame reviewer
-//   gets file tools only and its folder as working directory (confined reads). Codex is refused for the frame reviewer:
-//   its sandbox confines writes, not reads; critic, actor and judge may run on it, their reads screened by the audit.
-//   The `cmd` runner is a test stand-in, refused unless SELF_LOOP_TEST=1.
+// - Agent. Claude CLI always runs `--restricted` (no project or session memory) with --strict-mcp-config; the frame
+//   reviewer gets file tools only and its folder as working directory (confined reads). On `t3`, the frame reviewer may
+//   also run on `antigravity` or `claude`, verified fail-closed by confined transcript auditing (`auditAccess([ws])`,
+//   file tools only, rejecting outside paths, disallowed tools, and unparsed/insufficient evidence). Codex (CLI and
+//   `t3:codex`) is refused for the frame reviewer: its sandbox confines writes, not reads, and its transcripts use shell
+//   `command_execution` rather than structured file-only tools; critic, actor and judge may run on it, their reads
+//   screened by the audit. The `cmd` runner is a test stand-in, refused unless SELF_LOOP_TEST=1.
 //   Critic, actor and judge work in a detached worktree of the product at the base commit (setup commands run first; a
 //   failing setup stops the call before any model runs). Only the judge is given the sealed roots.
 // - Audit. Afterwards, from the structured tool events, with canonical paths (audit-access.mjs). A certain violation
@@ -31,9 +34,11 @@
 //   included), an alarm of the phase in the view's trajectory that no reviewer-diagnosis hand-off recorded after it
 //   names (lib/diagnosis.mjs). The reviewer and `record` are never refused by an alarm.
 //
-// - T3 child threads (runner `t3`, never the frame reviewer): `--prepare` does everything up to the agent run and writes
-//   the child's prompt with a nonce; the lead starts the child; `record --ws` then audits the child's own transcript
-//   (bound to the supplied provider session ID, with the prepared prompt in its first submission) and records the hand-off.
+// - T3 child threads (runner `t3`; `codex`, `claude`, or `antigravity`, with `t3:codex` refused for the frame reviewer):
+//   `--prepare` does everything up to the agent run and writes the child's prompt with a nonce; the lead starts the
+//   child; `record --ws` then audits the child's own transcript (bound to the supplied provider session ID, with the
+//   prepared prompt in its first submission; confined mode for `reviewer` fails closed on disallowed tools, outside
+//   paths, or unparsed/insufficient audit evidence) and records the hand-off.
 //
 // node call.mjs <config.json> <role> --round N --task <file> [--step <role[-mode]>] [--view <records rev>]
 //   [--base <product rev or branch>] [--dry-run | --prepare]
@@ -42,7 +47,7 @@
 // 6 certain access violation, 7 refused by the records rules, 64 usage. Prints the hand-off line.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,6 +63,7 @@ import { parseArgs } from "./lib/args.mjs";
 import { node as nodeCommand } from "./lib/commands.mjs";
 import { undiagnosedAlarms } from "./lib/diagnosis.mjs";
 import { HANDOFFS, hasPhaseFrame, idOf, parseHandoffs, recordOf, ROLES, validateHandoff } from "./lib/handoff.mjs";
+import { DISPLAY_SHA_LEN, renderSsotStatusMarkdown } from "./lib/ssot.mjs";
 import { classify, DEFAULT_LAYOUT, inspect, isPublicKind, parseLayout, renderIndex } from "./records-check.mjs";
 import { parseRows, TRAJECTORY } from "./trajectory.mjs";
 
@@ -76,8 +82,9 @@ export class Stop extends Error { constructor(code, message) { super(message); t
 // ---------- config ----------
 
 export function load(configPath) {
-  const cfg = JSON.parse(readFileSync(configPath, "utf8"));
-  return { ...normalize(cfg, dirname(resolve(configPath))), configFile: resolve(configPath) };
+  const abs = resolve(configPath);
+  const raw = JSON.parse(readFileSync(abs, "utf8"));
+  return { ...normalize(raw, dirname(abs)), configFile: abs };
 }
 
 export function normalize(cfg, base = process.cwd()) {
@@ -147,7 +154,7 @@ export function argv(agent, { confined, cwd, addDirs }) {
     "-c", `sandbox_mode="${agent.sandbox ?? "workspace-write"}"`, ...addDirs.flatMap(d => ["--add-dir", d]),
     ...(agent.model ? ["-m", agent.model] : []), ...(agent.effort ? ["-c", `model_reasoning_effort="${agent.effort}"`] : []), "-"]];
   if (agent.runner === "t3") { // a T3 child thread the lead starts from --prepare's prompt; recorded by `record`
-    if (!["codex", "claude"].includes(agent.provider)) throw new Stop(EXIT.usage, "a t3 agent needs provider codex or claude");
+    if (!["codex", "claude", "antigravity"].includes(agent.provider)) throw new Stop(EXIT.usage, "a t3 agent needs provider codex, claude or antigravity");
     return null;
   }
   if (agent.runner === "cmd") { // a stand-in for tests: it confines nothing itself
@@ -157,7 +164,7 @@ export function argv(agent, { confined, cwd, addDirs }) {
   throw new Stop(EXIT.usage, `unknown runner ${agent.runner} (claude, codex, t3 or cmd)`);
 }
 
-function prompt({ role, round, phase, ws, view, base, owns, sealed, wt = null }) {
+function prompt({ role, round, phase, ws, view, base, owns, sealed, wt = null, ssotHint = null }) {
   return [
     `You are the ${role} of a self-loop, round ${round}, phase ${phase}. Your working folder is ${ws}.`,
     "Read brief-shared.md, brief.md and task.md there first and follow them. records/ is a read-only view of the loop's records at commit " +
@@ -167,6 +174,7 @@ function prompt({ role, round, phase, ws, view, base, owns, sealed, wt = null })
     "Write your report to out/report.md. Questions only the owner can decide go to out/decisions.json (see your brief).",
     role === "judge" ? "out/report.md is your full ruling and stays private to you and the lead. out/public.md is the only part the other roles read: properties broken, blockers by class and id, to-do lists; never held-out content, names or paths." : "",
     role === "judge" && sealed.length ? `Held-out cases (yours alone): ${sealed.join(", ")}.` : "",
+    ssotHint ?? "",
   ].filter(Boolean).join("\n");
 }
 
@@ -250,7 +258,8 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
   const agent = cfg.agents[role];
   if (!agent) throw new Stop(EXIT.usage, `config needs agents.${role}`);
   if (role === "reviewer" && agent.runner === "codex") throw new Stop(EXIT.usage, "the frame reviewer cannot run on codex: its sandbox does not confine reads (DEBT.md)");
-  if (role === "reviewer" && agent.runner === "t3") throw new Stop(EXIT.usage, "the frame reviewer stays on the claude CLI: a T3 child cannot be confined to its folder");
+  if (role === "reviewer" && agent.runner === "t3" && agent.provider === "codex")
+    throw new Stop(EXIT.usage, "the frame reviewer cannot run on t3:codex: Codex transcripts use shell command_execution rather than structured file-only tools and cannot be strictly file-confined");
   if ((agent.runner === "t3") !== Boolean(prepare) && !dry) throw new Stop(EXIT.usage, agent.runner === "t3"
     ? `agents.${role} runs as a T3 child thread: prepare it with --prepare, start the child with the printed prompt, then \`record --ws\``
     : "--prepare is only for a role whose runner is t3");
@@ -275,10 +284,10 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
   const viewFiles = regularFiles(cfg.records, view);
   const viewPaths = new Set(viewFiles.map(f => f.path));
   const missing = features.find(id => !viewPaths.has(`blueprint/${id}.md`));
-  if (missing) throw new Stop(EXIT.records, `features: ${missing} is not a regular blueprint record at view ${view.slice(0, 7)}`);
+  if (missing) throw new Stop(EXIT.records, `features: ${missing} is not a regular blueprint record at view ${view.slice(0, DISPLAY_SHA_LEN)}`);
   const briefs = [cfg.briefs.shared, cfg.briefs[role]].filter(Boolean);
   if (!cfg.briefs[role]) throw new Stop(EXIT.usage, `config needs briefs.${role}`);
-  for (const b of briefs) if (!gitOk(cfg.records, "cat-file", "-e", `${view}:${b}`)) throw new Stop(EXIT.usage, `brief ${b} is not committed in the records at ${view.slice(0, 7)}`);
+  for (const b of briefs) if (!gitOk(cfg.records, "cat-file", "-e", `${view}:${b}`)) throw new Stop(EXIT.usage, `brief ${b} is not committed in the records at ${view.slice(0, DISPLAY_SHA_LEN)}`);
   const baseName = baseRev ?? cfg.branch ?? "HEAD";
   let base;
   try { base = git(cfg.product, "rev-parse", "--verify", "--quiet", `${baseName}^{commit}`); } catch { throw new Stop(EXIT.usage, `--base ${baseName} is not a product commit`); }
@@ -304,6 +313,7 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
   try {
     if (role === "reviewer") {
       const purpose = regularFiles(cfg.product, base).filter(f => cfg.purpose.some(p => f.path === p || f.path.startsWith(`${p.replace(/\/$/, "")}/`)));
+      mkdirSync(join(ws, "purpose"), { recursive: true });
       writeFiles(join(ws, "purpose"), purpose, blobs(cfg.product, purpose.map(f => f.sha)));
     } else {
       wt = join(ws, "wt");
@@ -314,9 +324,19 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
       }
     }
     const owns = cfg.owns[role] ?? [];
-    const text = prompt({ role, round, phase: cfg.phase, ws, view, base, owns, sealed: cfg.sealed, wt: agent.runner === "t3" ? wt : null });
+    let ssotHint = null;
+    if ((role === "actor" || role === "judge") && Object.hasOwn(cfg, "ssot")) {
+      const status = renderSsotStatusMarkdown(cfg, { configFile: cfg.configFile, sha: base });
+      if (status) {
+        const statusFile = join(ws, "ssot-status.md");
+        writeFileSync(statusFile, status.markdown);
+        chmodSync(statusFile, 0o444);
+        ssotHint = `SSOT status at ${base.slice(0, DISPLAY_SHA_LEN)}: read ssot-status.md before ${role === "actor" ? "editing" : "ruling"} (${status.summary}).`;
+      }
+    }
+    const text = prompt({ role, round, phase: cfg.phase, ws, view, base, owns, sealed: cfg.sealed, wt: agent.runner === "t3" ? wt : null, ssotHint });
     writeFileSync(join(ws, "prompt.md"), text);
-    if (dry) return { code: EXIT.done, message: `dry run: ${ws} (view ${view.slice(0, 7)}, ${holds.length} records); nothing called or recorded`, ws };
+    if (dry) return { code: EXIT.done, message: `dry run: ${ws} (view ${view.slice(0, DISPLAY_SHA_LEN)}, ${holds.length} records); nothing called or recorded`, ws };
 
     const ctx = { role, round, step, phase: cfg.phase, task, features, id, record, view, briefs, base, branch, commits, extraKinds, ws, wt, owns, agent };
     if (prepare) {
@@ -363,24 +383,27 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
 function refuseUndiagnosed(cfg, view, round) {
   let open;
   try { open = undiagnosedAlarms(cfg.records, view, cfg.phase); }
-  catch (e) { throw new Stop(EXIT.records, `the trajectory or hand-offs at view ${view.slice(0, 7)} cannot be read for the alarm check: ${e.message}`); }
+  catch (e) { throw new Stop(EXIT.records, `the trajectory or hand-offs at view ${view.slice(0, DISPLAY_SHA_LEN)} cannot be read for the alarm check: ${e.message}`); }
   if (!open.length) return;
   const keys = open.map(a => a.key);
   const letters = "bcdefghijklmnopqrstuvwxyz";
   let step = "reviewer-diagnosis";
   for (let i = 0; gitOk(cfg.records, "cat-file", "-e", `HEAD:${recordOf(round, step)}`) && i < letters.length; i++) step = `reviewer-diagnosis-${letters[i]}`;
+  const prepareFlag = cfg.agents.reviewer?.runner === "t3" ? ["--prepare"] : [];
   throw new Stop(EXIT.records, [
-    `phase ${cfg.phase} has ${open.length} alarm(s) that no reviewer-diagnosis hand-off recorded after them names (records ${view.slice(0, 7)}; no model was called):`,
+    `phase ${cfg.phase} has ${open.length} alarm(s) that no reviewer-diagnosis hand-off recorded after them names (records ${view.slice(0, DISPLAY_SHA_LEN)}; no model was called):`,
     ...open.map(a => `  ${a.key}  (row of round ${a.round}: ${a.message})`),
     "Diagnose first: write a diagnosis task with the line",
     `  alarms: ${keys.join(", ")}`,
-    `then run ${nodeCommand("call.mjs", cfg.configFile ?? "<config.json>", "reviewer", "--round", round, "--step", step, "--task", "<diagnosis task file>")}`,
+    `then run ${nodeCommand("call.mjs", cfg.configFile ?? "<config.json>", "reviewer", "--round", round, "--step", step, "--task", "<diagnosis task file>", ...prepareFlag)}`,
   ].join("\n"));
 }
 
 const preparationFile = (cfg, ws) => join(cfg.workDir, ".prepared", `${basename(ws)}.json`);
 const preparationScope = cfg => [canonical(cfg.records), canonical(cfg.product), cfg.phase, ...cfg.sealed.map(canonical)];
 const commonDir = repo => canonical(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"));
+
+const hasReviewerWorkspace = ws => existsSync(join(ws, "purpose")) && existsSync(join(ws, "records")) && existsSync(join(ws, "out"));
 
 function readPreparation(cfg, ws) {
   const manifest = join(ws, "call.json");
@@ -398,9 +421,17 @@ function readPreparation(cfg, ws) {
     || !gitOk(cfg.records, "cat-file", "-e", `${ctx.view}^{commit}`)) {
     throw new Stop(EXIT.records, "the call has no matching preparation snapshot");
   }
-  if (ctx.ws !== ws || ctx.wt !== join(ws, "wt")) throw new Stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
-  if (ctx.wt && !existsSync(ctx.wt)) throw new Stop(EXIT.failure, `the worktree ${ctx.wt} is gone; prepare the call again`);
-  if (commonDir(ctx.wt) !== commonDir(cfg.product)) throw new Stop(EXIT.records, "the prepared worktree belongs to a different product repository");
+  if (ctx.ws !== ws) throw new Stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
+  if (ctx.role === "reviewer") {
+    if (ctx.agent?.provider === "codex") throw new Stop(EXIT.records, "the frame reviewer cannot run on t3:codex");
+    if (ctx.wt !== null) throw new Stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
+    if (!hasReviewerWorkspace(ws))
+      throw new Stop(EXIT.failure, `the prepared workspace ${ws} is gone; prepare the call again`);
+  } else {
+    if (ctx.wt !== join(ws, "wt")) throw new Stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
+    if (!existsSync(ctx.wt)) throw new Stop(EXIT.failure, `the worktree ${ctx.wt} is gone; prepare the call again`);
+    if (commonDir(ctx.wt) !== commonDir(cfg.product)) throw new Stop(EXIT.records, "the prepared worktree belongs to a different product repository");
+  }
   ctx.phase = preparedPhase(ctx, ws);
   return { ctx, expected, binding: snapshot + ".session" };
 }
@@ -417,7 +448,10 @@ export function preparedIn(cfg) {
     if (![1, 2].includes(ctx.version) || ctx.ws !== ws || !ctx.nonce || !ROLES.includes(ctx.role) || !Number.isInteger(ctx.round)
         || !/^[a-z]+(-[a-z]+)*$/.test(ctx.step) || ctx.record !== recordOf(ctx.round, ctx.step))
       throw new Error(`${file} is not a supported prepared call`);
-    found.push({ ...ctx, phase: preparedPhase(ctx, ws), ws, liveWorkspace: ctx.wt === join(ws, "wt") && existsSync(ctx.wt) });
+    const liveWorkspace = ctx.role === "reviewer"
+      ? ctx.wt === null && hasReviewerWorkspace(ws)
+      : ctx.wt === join(ws, "wt") && existsSync(ctx.wt);
+    found.push({ ...ctx, phase: preparedPhase(ctx, ws), ws, liveWorkspace });
   }
   return found.sort((a, b) => a.round - b.round || a.step.localeCompare(b.step) || a.ws.localeCompare(b.ws));
 }
@@ -489,6 +523,8 @@ export function recordCall(cfg, wsDir, { transcript = null, session = null, log 
       ? `${found.length} transcripts hold nonce ${ctx.nonce} (${found.map(f => `${f.file} [${f.session}]`).join(", ")}); pass --session and, if needed, --transcript`
       : `no transcript holds nonce ${ctx.nonce} for the prepared ${runner} child; check the provider session ID`);
     const t = transcriptEvents(ctx.id, found[0]);
+    if (t.nonAuthoritative || t.truncated)
+      throw new Stop(EXIT.records, t.refusalReason ?? `the transcript is not authoritative (${found[0].file})`);
     if (!t.firstPrompt.includes(expected)) throw new Stop(EXIT.records, `the child's first prompt does not hold t3-prompt.md verbatim: start the child with exactly that text (${found[0].file})`);
     if (!t.session || t.forked || session && session !== t.session)
       throw new Stop(EXIT.records, `the transcript is not from the prepared ${runner} child session (${found[0].file})`);
@@ -498,10 +534,11 @@ export function recordCall(cfg, wsDir, { transcript = null, session = null, log 
       try { writeFileSync(binding, session, { mode: 0o600, flag: "wx" }); }
       catch (error) { if (error.code !== "EEXIST" || readFileSync(binding, "utf8") !== session) throw error; }
     }
-    if (t.status === "pending") throw new Stop(EXIT.failure, "the child's transcript has no terminal event yet; its worktree is still available");
-    const run = { status: t.status === "failed" ? 1 : 0, error: null, log: t.text, events: t.events, cwd: t.cwd ?? ctx.wt,
+    if (t.status === "pending") throw new Stop(EXIT.failure, `the child's transcript has no terminal event yet; its ${ctx.wt ? "worktree" : "workspace"} is still available`);
+    const run = { status: t.status === "failed" ? 1 : 0, error: null, log: t.text, events: t.events, cwd: t.cwd ?? ctx.wt ?? null,
       facts: { runner: `t3:${runner}`, session, model: ctx.agent.model ?? null, effort: ctx.agent.effort ?? null,
-        observedModel: t.observedModel, costUsd: null, seconds: t.seconds } };
+        observedModel: t.observedModel, ...(t.observedModels ? { observedModels: t.observedModels } : {}),
+        costUsd: null, seconds: t.seconds } };
     log(`${ctx.id}: recording the T3 child's transcript ${found[0].file}`);
     return finish(cfg, ctx, run, { log, now });
   } catch (e) {
@@ -521,6 +558,8 @@ function finish(cfg, ctx, run, { log, now }) {
   const reportFile = join(ws, "out", "report.md");
   const report = existsSync(reportFile) ? readFileSync(reportFile, "utf8") : "";
   let failure = audit.violations.length ? [EXIT.violation, `${role} accessed what it may not see: ${audit.violations.slice(0, 3).map(v => `${v.tool} ${v.path}`).join("; ")}`]
+    : confined && agent.runner === "t3" && (audit.unparsedCalls > 0 || (audit.unrecognized > 0 && audit.toolEvents === 0))
+      ? [EXIT.violation, `${role} confinement could not be verified from structured transcript events (${audit.unparsedCalls} unparsed tool calls, ${audit.unrecognized} unrecognized events, ${audit.toolEvents} tool events)`]
     : run.error ? [EXIT.failure, `${role} could not run: ${run.error.message}`]
     : run.status !== 0 ? [EXIT.failure, `${role} exited ${run.status}`]
     : !report.trim() ? [EXIT.failure, `${role} wrote no out/report.md`] : null;
@@ -624,13 +663,13 @@ function finish(cfg, ctx, run, { log, now }) {
   if (product.commit !== base) {
     const integration = cfg.branch && !cfg.protected.includes(cfg.branch) && gitOk(cfg.product, "show-ref", "--verify", "--quiet", `refs/heads/${cfg.branch}`) ? cfg.branch : null;
     if (branch && branch !== integration)
-      moved.push(moveBranch(cfg, branch, base, product.commit) ? `${branch} moved to ${product.commit.slice(0, 7)}`
+      moved.push(moveBranch(cfg, branch, base, product.commit) ? `${branch} moved to ${product.commit.slice(0, DISPLAY_SHA_LEN)}`
         : `${branch} moved meanwhile, so it was not moved (the commit is ${product.commit})`);
     if (integration) {
       const head = git(cfg.product, "rev-parse", `refs/heads/${integration}`);
       moved.push(!gitOk(cfg.product, "merge-base", "--is-ancestor", head, product.commit)
-        ? `${integration} at ${head.slice(0, 7)} was not moved: ${product.commit.slice(0, 7)} does not descend from it (next names both heads)`
-        : moveBranch(cfg, integration, head, product.commit) ? `${integration} fast-forwarded to ${product.commit.slice(0, 7)}`
+        ? `${integration} at ${head.slice(0, DISPLAY_SHA_LEN)} was not moved: ${product.commit.slice(0, DISPLAY_SHA_LEN)} does not descend from it (next names both heads)`
+        : moveBranch(cfg, integration, head, product.commit) ? `${integration} fast-forwarded to ${product.commit.slice(0, DISPLAY_SHA_LEN)}`
         : `${integration} moved meanwhile, so it was not moved (the commit is ${product.commit})`);
     }
   }
@@ -640,7 +679,7 @@ function finish(cfg, ctx, run, { log, now }) {
       log(`warning: the base ${base} does not descend from the last judged commit ${judged.commit} (round ${judged.round}); the hand-off is recorded and ${cfg.branch ?? "the integration branch"} keeps the judged line (next lists the commit until it is merged)`);
   }
   removeWorktree(cfg, wt);
-  return { code: EXIT.done, message: `${id} recorded in records ${done.commit.slice(0, 7)}${moved.map(m => `; ${m}`).join("")}`, handoff, ws };
+  return { code: EXIT.done, message: `${id} recorded in records ${done.commit.slice(0, DISPLAY_SHA_LEN)}${moved.map(m => `; ${m}`).join("")}`, handoff, ws };
 }
 
 function removeWorktree(cfg, wt) {

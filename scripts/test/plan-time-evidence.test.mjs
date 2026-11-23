@@ -291,3 +291,99 @@ for (const scenario of [
   if(scenario.name==='smaller required closure')assert.equal(view.forecast.latestAt,'2026-11-22T10:40:00.000Z');
   assert.equal(view.progress.releaseEvidence.length,1);
 });
+
+test('AC-26: CodeCommit plan-time CI evidence accepts matching host/repository/account and refuses host, repository, or account drift', t => {
+  function codecommitEvidence({
+    candidateDest = { host: 'git-codecommit.us-east-1.amazonaws.com', repository: 'MyRepo', account: '123456789012' },
+    ciPatch = {},
+  } = {}) {
+    const f = fixture(t), product = fixture(t);
+    product.put('artifact.txt', 'usable artifact');
+    const sha = product.commit(), tree = product.git('rev-parse', `${sha}^{tree}`);
+    const ref = (path, commit = f.git('rev-parse', 'HEAD')) => ({ repository: f.repo, commit, path, sha256: hash(execFileSync('git', ['-C', f.repo, 'show', `${commit}:${path}`])) });
+    const authTokens = [];
+    for (const type of ['scope', 'release', 'event']) authTokens.push(`observer judge req-${type}-0 ${type === 'scope' ? 'scope-assess' : type === 'release' ? 'release-assess' : 'event-attest'}`);
+    f.put('decisions/D-0001.md', '# Authorization\n' + authTokens.join('\n') + '\n');
+    f.put('docs/criteria.md', '# Minimum\nA usable report\n');
+    f.put('evidence/0012/artifact.txt', 'usable artifact');
+    f.put('loop.json', JSON.stringify({ gates: { require: ['codebuild/verify'], suite: 'node --test synthetic.mjs' } }));
+    const log = '# tests 2\n# pass 2\n# fail 0\n# cancelled 0\n';
+    f.put('evidence/0012/suite.log', log);
+    f.put('evidence/0012/suite.json', JSON.stringify({ repository: product.repo, sha, tree, command: 'node --test synthetic.mjs', green: true, exit: 0, summary: { tests: 2, fail: 0, cancelled: 0 }, log: { sha256: hash(log), bytes: Buffer.byteLength(log) } }));
+    const liveReceipt = {
+      forge: 'codecommit',
+      host: 'git-codecommit.us-east-1.amazonaws.com',
+      region: 'us-east-1',
+      account: '123456789012',
+      repository: 'MyRepo',
+      sha,
+      ci: 'success',
+      ok: true,
+      missing: [],
+      conclusions: { 'codebuild/verify': 'success' },
+      runs: { 'codebuild/verify': { id: 7, build_id: 'verify:00000000-0000-0000-0000-000000000007', status: 'completed', conclusion: 'success', started_at: '2026-11-22T11:00:00.000Z' } },
+      source: 'live',
+      ...ciPatch,
+    };
+    f.put('evidence/0012/ci.json', JSON.stringify(liveReceipt));
+    const initial = f.commit(), authority = ref('decisions/D-0001.md', initial), criterion = ref('docs/criteria.md', initial), policy = ref('loop.json', initial), artifact = ref('evidence/0012/artifact.txt', initial);
+    const plan = { id: 'PL-0001', scope: 'synthetic', phase: 'test', packages: [{ id: 'core', needs: [], goal: 'usable', interface: 'report', acceptance: 'works', handoff: 'R-0001-actor', role: 'actor', authority: ['D-0001'], files: ['src/core.mjs'] }], time: { schema: 'plan-time/v2', rootPlan: 'PL-0001', baseline: { minimum: { outcome: 'usable report', criteriaRefs: [criterion] }, promises: [] } } };
+    f.put('plans/PL-0001.md', JSON.stringify(plan));
+    const basedOn = f.commit(), planRef = ref('plans/PL-0001.md', basedOn);
+    function bind(type, claim) {
+      const dir = `evidence/0012/archive-${type}-0`;
+      const b = { schema: 'plan-time-binding/v1', type, rootRef: planRef, planRef, basedOn, claim, authorizationRef: authority, authorizationSelector: '# Authorization', supersedes: [] };
+      const digest = hash(canonical({ type, rootRef: planRef, planRef, basedOn, claim }));
+      const source = { author: 'observer', role: 'judge', requestId: `req-${type}-0`, endorsesClaim: digest };
+      const platform = JSON.stringify({ taskId: source.requestId, childThreadId: source.author, childRunId: `run-${type}-0`, latestTerminalRunId: `run-${type}-0`, status: 'completed', latestTerminalStatus: 'completed', hasPendingChildRuns: false });
+      f.put(`${dir}/source.json`, JSON.stringify(source));
+      f.put(`${dir}/platform.json`, platform);
+      f.put(`${dir}/archive-hashes.json`, JSON.stringify({ 'source.json': hash(JSON.stringify(source)), 'platform.json': hash(platform) }));
+      const sourceCut = f.commit();
+      b.sourceRef = ref(`${dir}/source.json`, sourceCut);
+      b.provenanceRefs = [ref(`${dir}/platform.json`, sourceCut), ref(`${dir}/archive-hashes.json`, sourceCut)];
+      const bytes = JSON.stringify(b), path = `evidence/0012/time-binding/TB-${hash(bytes)}.json`;
+      f.put(path, bytes);
+      return ref(path, f.commit());
+    }
+    const scope = bind('scope', { criteria: [{ ref: criterion, selector: '# Minimum', purpose: 'minimum', promiseId: null, packages: ['core'] }], releasePackages: ['core'], deferred: [], gatePolicyRefs: [policy] });
+    const release = bind('release', {
+      scopeRef: scope,
+      candidate: { repository: product.repo, sha, tree, destination: candidateDest },
+      recipient: 'owner',
+      channel: 'public',
+      gateRefs: [{ kind: 'ci', ref: ref('evidence/0012/ci.json', initial) }, { kind: 'suite', ref: ref('evidence/0012/suite.json', initial) }],
+      criteriaResults: [{ criterion: { ref: criterion, selector: '# Minimum' }, evidenceRefs: [artifact], availability: { artifactSha256: artifact.sha256, recipient: 'owner', channel: 'public', usable: true }, result: 'pass' }],
+    });
+    bind('event', { event: 'release-available', subjectRef: release, at: '2026-11-22T11:50:00Z', basisRefs: [release] });
+    return evaluateTimeEvidence({ stateAtQ: { records: f.repo, revision: f.git('rev-parse', 'HEAD') }, plan, now: '2026-11-22T13:00:00Z', clockMode: 'simulation' });
+  }
+
+  const ok = codecommitEvidence();
+  assert.equal(ok.releaseEvidence.length, 1, ok.findings.join('\n'));
+  assert.equal(ok.releases[0].verification, 'verified', ok.findings.join('\n'));
+
+  const accountDrift = codecommitEvidence({ ciPatch: { account: '999999999999' } });
+  assert.equal(accountDrift.releaseEvidence.length, 0);
+  assert.match(accountDrift.findings.join('\n'), /account mismatch/);
+
+  const missingReceiptAccount = codecommitEvidence({ ciPatch: { account: null } });
+  assert.equal(missingReceiptAccount.releaseEvidence.length, 0);
+  assert.match(missingReceiptAccount.findings.join('\n'), /account mismatch/);
+
+  const missingCandidateAccount = codecommitEvidence({ candidateDest: { host: 'git-codecommit.us-east-1.amazonaws.com', repository: 'MyRepo' } });
+  assert.equal(missingCandidateAccount.releaseEvidence.length, 0);
+  assert.match(missingCandidateAccount.findings.join('\n'), /invalid candidate destination account/);
+
+  const badCandidateAccount = codecommitEvidence({ candidateDest: { host: 'git-codecommit.us-east-1.amazonaws.com', repository: 'MyRepo', account: '12345' } });
+  assert.equal(badCandidateAccount.releaseEvidence.length, 0);
+  assert.match(badCandidateAccount.findings.join('\n'), /invalid candidate destination account/);
+
+  const hostDrift = codecommitEvidence({ ciPatch: { host: 'git-codecommit.eu-west-1.amazonaws.com' } });
+  assert.equal(hostDrift.releaseEvidence.length, 0);
+  assert.match(hostDrift.findings.join('\n'), /candidate\/destination\/verdict mismatch/);
+
+  const repoDrift = codecommitEvidence({ ciPatch: { repository: 'myrepo' } });
+  assert.equal(repoDrift.releaseEvidence.length, 0);
+  assert.match(repoDrift.findings.join('\n'), /candidate\/destination\/verdict mismatch/);
+});

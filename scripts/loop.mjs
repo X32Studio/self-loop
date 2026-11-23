@@ -26,8 +26,10 @@ import { phaseMetrics, waitingText } from "./lib/owner-metrics.mjs";
 import { admitAcrossPlans, isIdle, LEAD_STEPS, planContext, plansFrom, readyPlan, snapshot, validatePlan } from "./lib/plan.mjs";
 import { measurePlan } from "./lib/plan-measures.mjs";
 import { hostLoad, REGISTRY, resolveOwnerStore } from "./lib/registry.mjs";
+import { ssotNextSummary } from "./lib/ssot.mjs";
 import { stallThreshold } from "./lib/thresholds.mjs";
 import { tipCovers } from "./lib/tip.mjs";
+import { independenceModel, modelVendor } from "./lib/vendor.mjs";
 import { check, openWords, RUNGS } from "./records-check.mjs";
 import { alarms, parseRows, TRAJECTORY } from "./trajectory.mjs";
 import { reconcileReleases } from "./version-gate.mjs";
@@ -157,7 +159,7 @@ export function integrationOf(cfg, state, handoffs, rows) {
   return { ...result, sha, source, tips, relation };
 }
 
-function convergence({ words, state, rows, cfg, target, integration, ci, suite, frame, ruling, judges, actors, pending, openAlarms, checkRecords, prose, cadence }) {
+function convergence({ words, state, rows, cfg, target, integration, ci, suite, frame, ruling, judges, actors, pending, openAlarms, checkRecords, prose, cadence, ssot }) {
   const reasons = [];
   if (!frame) reasons.push(`phase frame (${HANDOFFS})`);
   if (cadence.state.due) reasons.push(`${dueReason(cadence)} (${TRAJECTORY}, ${HANDOFFS})`);
@@ -179,16 +181,15 @@ function convergence({ words, state, rows, cfg, target, integration, ci, suite, 
     reasons.push(`records-check.mjs: ${checkRecords.failures.map(f => `${f.path} (${f.rule})`).join(", ")}`);
   if (prose.subtraction && (!prose.lines || prose.lines.length))
     reasons.push(`${prose.lines ? prose.lines.length : "unknown"} prose comment lines in the product tree at ${prose.sha ?? "the integration SHA"} (D-0016, since ${prose.subtraction.id})`);
+  if (ssot?.convergenceReason) reasons.push(ssot.convergenceReason);
 
   const judge = judges.findLast(h => h.round === ruling?.round && h.product?.base === ruling.commit);
   if (ruling?.verdict === "CONVERGED") {
     if (!judge || !judgeAccepted(judge, { has: path => state.files.includes(path), read: state.read }))
       reasons.push(`ACCEPTANCE: pass needs confirmation (${judge?.record ?? TRAJECTORY})`);
     const actor = actors.findLast(h => integration.ancestor(h.product.commit, target));
-    const vendor = agent => agent?.runner.replace(/^t3:/, "");
-    const model = agent => agent?.observedModel ?? agent?.model;
-    if (!vendor(judge?.agent) || !vendor(actor?.agent) || vendor(judge.agent) === vendor(actor.agent)
-        || !model(judge.agent) || !model(actor.agent) || model(judge.agent) === model(actor.agent))
+    if (!modelVendor(judge?.agent) || !modelVendor(actor?.agent) || modelVendor(judge.agent) === modelVendor(actor.agent)
+        || !independenceModel(judge.agent) || !independenceModel(actor.agent) || independenceModel(judge.agent) === independenceModel(actor.agent))
       reasons.push(`judge/actor independence needs confirmation (${HANDOFFS})`);
   }
   return reasons;
@@ -624,7 +625,7 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
       "Record after the child has finished. Use its provider-native session ID.",
       node("call.mjs", config, "record", "--ws", p.ws) + " --session " + env("PROVIDER_SESSION", "set the child provider session ID"));
   for (const p of abandoned)
-    action(`unrecorded prepared workspace ${p.id} lost its worktree`, join(p.ws, "call.json"),
+    action(`unrecorded prepared workspace ${p.id} lost its ${p.role === "reviewer" ? "workspace" : "worktree"}`, join(p.ws, "call.json"),
       "Review the attempt evidence before preparing a retry.", node("records-check.mjs", "--repo", records));
   if (reconciled?.idle.length) {
     const { title, steps } = idleAction(reconciled);
@@ -734,8 +735,10 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
       ...prose.lines.slice(0, SHOWN_PROSE).map(p => `${p.path}:${p.line}: ${p.text}`),
       ...(prose.lines.length > SHOWN_PROSE ? [`and ${prose.lines.length - SHOWN_PROSE} more`] : []),
       "An actor moves what they say into the records or design and leaves pointers; the judge confirms nothing is lost.");
+  const ssot = Object.hasOwn(cfg, "ssot") && target ? ssotNextSummary(cfg, resolve(config), target) : null;
+  if (ssot?.action) action(ssot.action.title, "loop.json (ssot), ssot-check.mjs", ...ssot.action.steps);
 
-  const reasons = convergence({ words, state, rows, cfg, target, integration, ci, suite, frame, ruling, judges, actors, pending, openAlarms, checkRecords: stateCheck, prose, cadence });
+  const reasons = convergence({ words, state, rows, cfg, target, integration, ci, suite, frame, ruling, judges, actors, pending, openAlarms, checkRecords: stateCheck, prose, cadence, ssot });
   if (stallError) lines.splice(header, 0, "", `- the alarm ledger cannot be read: ${stallError.message} [${ALARMS}]`, `  ${node("records-check.mjs", "--repo", records)}`);
   if (stalled)
     lines.splice(header, 0, "", `- stall alarm raised ${stalled.time}: no recorded phase activity since ${stalled.since} (${stalled.source}) [${ALARMS}]`,

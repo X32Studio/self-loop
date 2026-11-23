@@ -97,3 +97,40 @@ export function fileOverlap(left, right) {
   for (const a of left) for (const b of right) if (globOverlap(a, b)) return { left: a, right: b };
   return null;
 }
+
+const COMPILED = new Map();
+function compiled(pattern) {
+  if (!COMPILED.has(pattern)) COMPILED.set(pattern, compile(pattern));
+  return COMPILED.get(pattern);
+}
+
+function closure(states, seed) {
+  const out = new Set(seed);
+  const stack = [...out];
+  while (stack.length) {
+    const s = stack.pop();
+    for (const next of states[s].eps) if (!out.has(next)) { out.add(next); stack.push(next); }
+  }
+  return out;
+}
+
+export function validateGlob(pattern) {
+  compiled(pattern);
+}
+
+export function globMatch(pattern, path) {
+  const { states, end } = compiled(pattern);
+  let active = closure(states, [0]);
+  for (const ch of path) {
+    const cp = ch.codePointAt(0);
+    const next = new Set();
+    for (const s of active) {
+      for (const edge of states[s].edges) {
+        if (edge.chars.some(([lo, hi]) => lo <= cp && cp <= hi)) next.add(edge.to);
+      }
+    }
+    if (!next.size) return false;
+    active = closure(states, next);
+  }
+  return active.has(end);
+}

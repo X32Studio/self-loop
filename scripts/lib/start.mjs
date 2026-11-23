@@ -11,8 +11,10 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { load, Stop } from "../call.mjs";
+import { geminiHome, t3AntigravityInstances } from "./antigravity.mjs";
 import { UsageError } from "./args.mjs";
-import { loadRegistry, LOOP, productState, resolveConfig } from "./registry.mjs";
+import { checkHooks } from "./hooks.mjs";
+import { loadRegistry, LocalLoopError, LOOP, productState, resolveConfig } from "./registry.mjs";
 import { discoveryFindings, findingLine, idleFindings, uncheckedFindings, inspectProduct, liveStallFinding, quietCount } from "./tick.mjs";
 import { nextLines, queryClock, recordsOf } from "../loop.mjs";
 
@@ -29,6 +31,7 @@ function sessionOf({ config, env, cwd, store, inspected, clock }) {
   let resolved;
   try { resolved = resolveConfig({ config, env, cwd, store: () => store }); }
   catch (e) {
+    if (e instanceof LocalLoopError) throw e;
     if (e instanceof UsageError) return { product: null, problem: e.message };
     throw e;
   }
@@ -44,6 +47,19 @@ function sessionOf({ config, env, cwd, store, inspected, clock }) {
   const session = { product: resolved.product?.name ?? null, records: cfg.records, config: resolved.config, source: resolved.source, next: null, error: null };
   try { session.next = nextLines(cfg, resolved.config, state ?? recordsOf(cfg), { store, ...clock }); }
   catch (e) { session.error = `next failed: ${e.message}`; }
+  const wsHooks = join(cfg.product, ".agents", "hooks.json");
+  const hasAgHooks = existsSync(wsHooks)
+    || existsSync(join(geminiHome(env), "config", "hooks.json"))
+    || t3AntigravityInstances({ env }).length > 0;
+  if (hasAgHooks) {
+    const scope = existsSync(wsHooks) ? "workspace" : "global";
+    try {
+      const check = checkHooks({ harness: "antigravity", scope, cfg, env, cwd });
+      session.hooks = { harness: "antigravity", scope, ok: check.ok, findings: check.findings };
+    } catch (e) {
+      session.hooks = { harness: "antigravity", scope, ok: false, findings: [e.message] };
+    }
+  }
   return session;
 }
 
@@ -86,6 +102,9 @@ export function startText(report, { selfLoop = "self-loop.mjs" } = {}) {
   if (session.problem) lines.push(`This session: ${session.problem}`);
   else {
     lines.push(`This session: ${session.product ?? "configured product"} · ${session.records} · ${session.config} (${session.source})`);
+    if (session.hooks && !session.hooks.ok && session.hooks.findings.length) {
+      lines.push(`hooks (${session.hooks.harness}): ${session.hooks.findings.join("; ")}`);
+    }
     lines.push(session.next ?? session.error);
   }
   return lines.join("\n");

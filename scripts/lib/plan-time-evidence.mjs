@@ -6,6 +6,7 @@ import { isAbsolute, normalize, dirname, basename } from 'node:path';
 import { parsePlan, validatePlan } from './plan.mjs';
 import { gunzipSync } from 'node:zlib';
 import { ciWord } from './check-runs.mjs';
+import { AWS_ACCOUNT_RE, isCodeCommitHost } from './ci-destination.mjs';
 import { validateHandoff } from './handoff.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -285,6 +286,9 @@ function gateClaims(c, scope, r) {
     const ci = data.filter(item => item.kind === 'ci'); need(ci.length === 1, 'unique CI receipt required');
     const v = ci[0].value;
     need(v.sha === c.candidate.sha && v.host === c.candidate.destination.host && v.repository === c.candidate.destination.repository && Array.isArray(v.missing) && object(v.conclusions), 'CI receipt candidate/destination/verdict mismatch');
+    if (Object.hasOwn(c.candidate.destination, 'account')) {
+      need(typeof v.account === 'string' && AWS_ACCOUNT_RE.test(v.account) && v.account === c.candidate.destination.account, 'CI receipt candidate/destination account mismatch');
+    }
     const passed=v.ok===true && v.ci==='success' && !v.missing.length && Object.keys(v.conclusions).length && Object.entries(v.conclusions).every(([key, verdict]) => /^[^/]+\/.+$/.test(key) && verdict === 'success') && required.every(key => v.conclusions[key] === 'success');
     const failed=v.ok===false && v.ci==='failure' && required.every(key=>text(v.conclusions[key])) && ciWord({ok:false,conclusions:Object.fromEntries(required.map(key=>[key,v.conclusions[key]]))})==='failure';
     need(passed || failed,'required CI check status unknown or inconsistent');
@@ -319,6 +323,9 @@ function releaseClaim(row, scope, r) {
   need(object(c) && object(c.candidate), 'invalid release claim');
   const v = c.candidate;
   need(isAbsolute(v.repository ?? '') && normalize(v.repository) === v.repository && SHA.test(v.sha ?? '') && SHA.test(v.tree ?? '') && text(v.destination?.host) && text(v.destination?.repository), 'invalid candidate identity');
+  if (isCodeCommitHost(v.destination.host) || Object.hasOwn(v.destination, 'account')) {
+    need(typeof v.destination.account === 'string' && AWS_ACCOUNT_RE.test(v.destination.account), 'invalid candidate destination account');
+  }
   need(git(v.repository, 'rev-parse', `${v.sha}^{tree}`).toString().trim() === v.tree, 'candidate tree mismatch');
   need(text(c.recipient) && !/^(actor|lead|implementer)(?:-only)?$/i.test(c.recipient) && text(c.channel), 'intended recipient/channel unavailable');
   need(Array.isArray(c.criteriaResults), 'criteria results missing');

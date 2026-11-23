@@ -34,7 +34,14 @@ export function recordsLoop(records) {
   try { cfg = JSON.parse(readFileSync(config, "utf8")); } catch (e) { throw new Error(`${config}: ${e.message}`); }
   if (cfg === null || typeof cfg !== "object" || typeof cfg.product !== "string" || !cfg.product.trim())
     throw new Error(`${config} names no product, so no push destination to read CI in`);
-  return { config, product: resolve(records, cfg.product), phase: cfg.phase, ...gatesOf(cfg) };
+  return {
+    config,
+    product: resolve(records, cfg.product),
+    phase: cfg.phase,
+    branch: typeof cfg.branch === "string" && cfg.branch.trim() ? cfg.branch.trim() : null,
+    ...(Object.hasOwn(cfg, "ssot") ? { ssot: cfg.ssot } : {}),
+    ...gatesOf(cfg),
+  };
 }
 
 // The operating system's real path: symlinks resolved and, on a case-insensitive file system, the case on disk, as Git
@@ -65,7 +72,7 @@ export function ledgerRecords(file, ledger) {
 /** One reading of the loop's CI on `sha`: the CI gate's receipt, or `{ sha, ci: "unknown", ok: false, error }`. */
 export function readCi(loop, sha) {
   try { return ciGreen({ repo: loop.product, remote: loop.remote, sha, require: loop.require }); }
-  catch (e) { return { host: null, repository: null, sha, ci: "unknown", ok: false, error: e.message }; }
+  catch (e) { return { forge: null, host: null, repository: null, sha, ci: "unknown", ok: false, error: e.message }; }
 }
 
 /** Why a reading is not green, in words: its error, or each required check that did not pass. */
