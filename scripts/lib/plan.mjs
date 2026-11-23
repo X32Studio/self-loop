@@ -194,7 +194,7 @@ export function loadPlan(state, id) {
 export function planContext(state, plan, { live = true } = {}) {
   if (!state.files.has('loop.json')) throw new Error('missing committed loop.json');
   const cfg = { ...normalize(JSON.parse(state.read('loop.json')), state.records), configFile: join(state.records, 'loop.json') };
-  if (resolve(cfg.records) !== state.records || cfg.phase !== plan.phase) throw new Error('plan and loop.json must name the same records repository and phase');
+  if (realpathSync(resolve(cfg.records)) !== state.records || cfg.phase !== plan.phase) throw new Error('plan and loop.json must name the same records repository and phase');
   return { cfg, handoffs: parseHandoffs(state.read('metrics/handoffs.jsonl')),
     trajectory: parseRows(state.read('metrics/trajectory.jsonl')),
     batches: batchesFrom([...state.files], state.read), plans: plansFrom(state), prepared: live ? preparedIn(cfg) : [] };

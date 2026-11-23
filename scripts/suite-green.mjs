@@ -202,7 +202,7 @@ export function suiteGreen({ repo, sha, command, install = null, format = "auto"
   return { ...receipt, text: ran.log };
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) cli(() => {
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) cli(() => {
   const args = parseArgs(process.argv.slice(2));
   need(args, "repo", "sha", "command");
   const format = args.format || "auto";
