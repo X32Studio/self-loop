@@ -19,6 +19,7 @@ import { gatesOf } from "./lib/ci-receipt.mjs";
 import { command, env, evidencePrefix, gatherCommand, node, shell } from "./lib/commands.mjs";
 import { proseInTree } from "./lib/comments.mjs";
 import { firings, undiagnosedAlarms } from "./lib/diagnosis.mjs";
+import { computeDispatchPlan, renderDispatchLines } from "./lib/dispatch.mjs";
 import { blobs, git, gitOk, regularFiles, run } from "./lib/git-plumbing.mjs";
 import { HANDOFFS, hasPhaseFrame, idOf, parseHandoffs } from "./lib/handoff.mjs";
 import { isSubstantiveOwnerWord, MARKS, WORDS } from "./lib/owner-words.mjs";
@@ -681,8 +682,22 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
     const { title, steps } = wordedAction(reconciled);
     action(title, "plans/, R-0008-judge", ...steps);
   }
-  if (reconciled)
+  if (reconciled) {
     for (const { title, steps } of planActions(records, reconciled)) action(title, `plans/, ${HANDOFFS}, prepared call.json, D-0025`, ...steps);
+    for (const { plan, result } of reconciled.plans.filter(p => p.result)) {
+      try {
+        const dp = computeDispatchPlan({ state: reconciled.state, plan, ready: result, product, base: target, host, window: win, now: clock.now });
+        const hasBatch = dp.parallelBatch.actors.length >= 2 || dp.parallelBatch.critics.length >= 2;
+        if (hasBatch || dp.needsIntegration) {
+          action(
+            `Parallel wave (${plan.id}, topology: ${dp.coverage.topology}): ${dp.parallelBatch.actors.length} parallel actor(s), ${dp.parallelBatch.critics.length} ready critic(s)${dp.needsIntegration ? ", integration needed" : ""}`,
+            "plans/, D-0059, P-0012",
+            ...renderDispatchLines(dp),
+          );
+        }
+      } catch {}
+    }
+  }
   if (metrics?.interventions.some(i => !i.disposed)) {
     const { title, steps } = dispositionAction(metrics);
     action(title, "interventions/, RECORDS.md", ...steps);

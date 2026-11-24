@@ -81,6 +81,7 @@ export function parsePlan(source) {
   if (Array.isArray(plan.packages)) plan.packages = plan.packages.map(p => {
     if (!object(p)) throw new Error('package must be an object');
     return { ...p, files: list(p.files), needs: list(p.needs), authority: list(p.authority),
+      ...(p.reviews !== undefined ? { reviews: list(p.reviews) } : {}),
       settings: typeof p.settings === 'string' && p.settings.startsWith('{') ? JSON.parse(p.settings) : p.settings };
   });
   return plan;
@@ -102,7 +103,8 @@ export function plansFrom(state) {
 }
 
 const contract = p => JSON.stringify([p.authority?.toSorted(), p.goal, p.files?.toSorted(), p.interface, p.needs?.toSorted(), p.role,
-  object(p.settings) && Object.keys(p.settings).length ? Object.entries(p.settings).sort(([a], [b]) => a.localeCompare(b)) : 'current', p.acceptance]);
+  object(p.settings) && Object.keys(p.settings).length ? Object.entries(p.settings).sort(([a], [b]) => a.localeCompare(b)) : 'current', p.acceptance,
+  ...(Array.isArray(p.reviews) && p.reviews.length ? [p.reviews.toSorted()] : [])]);
 
 export function validatePlan(plan, state) {
   const errors = [], fail = message => errors.push(message);
@@ -128,6 +130,7 @@ export function validatePlan(plan, state) {
       reference(authority, `${p.id} authority`);
     }
     for (const field of ['files', 'needs']) if (!Array.isArray(p[field]) || !p[field].every(text)) fail(`${p.id}: ${field} must be a list (empty is allowed)`);
+    if (p.reviews !== undefined && (!Array.isArray(p.reviews) || !p.reviews.every(text))) fail(`${p.id}: reviews must be a list of package ids`);
     if (Array.isArray(p.files)) for (const path of p.files) {
       try { globOverlap(path, path); } catch (e) { fail(`${p.id}: ${e.message}`); }
     }
@@ -138,6 +141,10 @@ export function validatePlan(plan, state) {
     }
   }
   for (const p of plan.packages) for (const need of Array.isArray(p.needs) ? p.needs : []) if (!packages.has(need)) reference(need, `${p.id} needs`);
+  for (const p of plan.packages) for (const target of Array.isArray(p.reviews) ? p.reviews : []) {
+    if (target === p.id) fail(`${p.id}: reviews cannot reference itself`);
+    else if (!packages.has(target)) fail(`${p.id} reviews: unknown in-plan package ${target}`);
+  }
   const visiting = new Set(), visited = new Set();
   function visit(id) {
     if (visiting.has(id)) { fail(`needs cycle at ${id}`); return; }

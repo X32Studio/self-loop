@@ -96,7 +96,7 @@ unparsed/insufficient evidence); Codex (CLI and `t3:codex`) is refused.
 ## Commands
 
 ```
-node scripts/call.mjs <config.json> <role> --round N --task <file> [--step <role>-<mode>] [--view <records rev>] [--base <product rev>] [--dry-run | --prepare]
+node scripts/call.mjs <config.json> <role> --round N --task <file> [--step <role>-<mode>] [--view <records rev>] [--base <product rev>] [--plan PL-NNNN --package <id>] [--dry-run | --prepare]
 node scripts/call.mjs <config.json> record --ws <prepared workspace> --session <provider session ID> [--transcript <file>]
 node scripts/ci-green.mjs --repo <product> --sha <commit> --require app/name,... [--remote origin] [--out <records>/evidence/NNNN/ci-<k>]
 node scripts/suite-green.mjs --repo <product> --sha <commit> --command "<full suite>" [--install "<cmd>"] [--format node-test] [--vary-version <V>] --out <records>/evidence/NNNN/suite-<k>
@@ -112,6 +112,7 @@ node scripts/self-loop.mjs next [--config <loop.json> | --all] [--owner-store <d
 node scripts/self-loop.mjs stall [--hours N] [--config <loop.json> | --all] [--now <ISO time>] [--json] [--owner-store <dir>]
 node scripts/self-loop.mjs tick [--hours N] [--now <ISO time>] [--json] [--owner-store <dir>]
 node scripts/self-loop.mjs ssot [check|attest] [--config <loop.json>] ...
+node scripts/self-loop.mjs dispatch analyze|waves|integrate --records <dir> --plan PL-NNNN ...
 node scripts/self-loop.mjs window open|status|close --records <dir> ...
 node scripts/window.mjs open --records <dir> --phase <phase> --horizon <2..12> --goal "<text>" --invariant "<text>" [--invariant ...] [--start-round N] [--by <who>] [--json]
 node scripts/window.mjs status --records <dir> [--phase <phase>] [--json]
@@ -645,6 +646,13 @@ The work itself:
   (three packaging runs, both concurrencies, held-out) are for the closing round.
 
 ### 2b. Planning and dispatch (F-0012; P-0006)
+
+The **Generation Engine** commits the plan and its package contracts. The **Dispatch & Integration Engine** schedules and joins work for the **Adversarial Engine**, which reviews evidence and issues a cross-vendor ruling.
+
+- `dispatch analyze` combines the `arch-facts` import graph and symbolic file globs to classify write overlap and import coupling. It reports whether one unified Critic or multiple parallel Critics cover the Actor packages through `reviews:` or `needs:`.
+- `dispatch waves` prints ready Actor and Critic batches, plus the dependencies and review evidence that hold the Judge.
+- `dispatch integrate [--wave N] [--dry-run | --apply]` checks Actor diffs for overlap and computes the merge with `git merge-tree`. With `--apply`, it updates an eligible integration branch by compare-and-swap.
+- Bind calls with `--plan PL-NNNN --package <id>`. Gates G1–G7 check the plan and package contract, dependencies, live writer overlap, declared interfaces, package write scope, disjoint wave integration, and the Judge's integration and review prerequisites.
 
 Dependencies decide what runs in parallel; this section is the dispatch rule 2 and 2a point to, and their integration
 and verification steps still apply. From an admitted direction (an owner decision or an independent ruling), record

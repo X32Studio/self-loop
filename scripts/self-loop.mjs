@@ -33,11 +33,12 @@ import { addProduct, initStore, loadRegistry, loopSettings, productState, resolv
 import { continuationText, parentEntryInput, reconcileParentEntry, startReport, startText } from "./lib/start.mjs";
 import { stallThreshold, tick, tickText } from "./lib/tick.mjs";
 import { cliClock, nextLines, recordsOf, stallState } from "./loop.mjs";
+import { main as runDispatch } from "./dispatch.mjs";
 import { main as runSsot } from "./ssot-check.mjs";
 import { main as runWindow } from "./window.mjs";
 
 const skill = join(dirname(fileURLToPath(import.meta.url)), "..");
-const USAGE = "self-loop.mjs init|start|next|stall|tick|ssot|window|heartbeat|hooks|registry ... (see the header of scripts/self-loop.mjs)";
+const USAGE = "self-loop.mjs init|start|next|stall|tick|ssot|window|dispatch|heartbeat|hooks|registry ... (see the header of scripts/self-loop.mjs)";
 
 function hoursOf(args) {
   if (!("hours" in args)) return null;
@@ -334,6 +335,7 @@ export function main(argv, { env = process.env, cwd = process.cwd() } = {}) {
   }
   if (command === "ssot") return runSsot(argv.slice(1), { env, cwd });
   if (command === "window") return runWindow(argv.slice(1), { env, cwd });
+  if (command === "dispatch") return runDispatch(argv.slice(1));
   if (command === "heartbeat") return runHeartbeat(args, env);
   if (command === "hooks") return runHooks(args, env, cwd);
   if (command === "registry") return runRegistry(args, env);

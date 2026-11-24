@@ -34,6 +34,10 @@ export function validateHandoff(h) {
     !c || !/^design\/[^/]+\.md$/.test(c.path) || !(c.current === null || /^[0-9a-f]{64}$/.test(c.current))
     || !SHA.test(c.changed) || !h.files.includes(c.proposal))))
     fail("designConflicts must name the affected actor design, incumbent and proposal evidence");
+  if ("dispatch" in h && (!h.dispatch || typeof h.dispatch !== "object" || Array.isArray(h.dispatch)
+      || !/^PL-\d{4}$/.test(h.dispatch.plan ?? "") || !/^[\w.-]+$/.test(h.dispatch.package ?? "")
+      || !Array.isArray(h.dispatch.files) || !h.dispatch.files.every(f => typeof f === "string" && f.trim().length > 0)))
+    fail("dispatch must name plan PL-NNNN, package id, and files list");
   return h;
 }
 

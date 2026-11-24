@@ -1,4 +1,4 @@
-// P-0011, D-0058, design/two-loop-rhythm.md#3, design/two-loop-rhythm.md#6
+// SKILL.md#2b-planning-and-dispatch-f-0012-p-0006
 import { posix } from "node:path";
 import { ANTI_ROT_THRESHOLDS, antiRotBreaches, scanAntiRot } from "./anti-rot.mjs";
 import { blobs, gitOk, regularFiles, run } from "./git-plumbing.mjs";
@@ -102,7 +102,7 @@ function collectChurn(productRepo, baselineSha, sha, extSet, limits) {
     .map(([path, commits]) => ({ path, commits }));
 }
 
-function collectImportHubs(jsFiles, textsByPath, maxTop) {
+function computeImportGraph(jsFiles, textsByPath) {
   const known = new Set(jsFiles.map(f => f.path));
   const outEdges = new Map();
   const inEdges = new Map();
@@ -110,16 +110,35 @@ function collectImportHubs(jsFiles, textsByPath, maxTop) {
     outEdges.set(path, new Set());
     inEdges.set(path, new Set());
   }
-  for (const path of known) {
+  const files = [...known].sort();
+  const edges = [];
+  for (const path of files) {
     const text = textsByPath.get(path) ?? "";
     for (const spec of extractRelativeSpecifiers(text)) {
       const target = resolveImport(path, spec, known);
-      if (!target || target === path) continue;
+      if (!target || target === path || outEdges.get(path).has(target)) continue;
       outEdges.get(path).add(target);
       inEdges.get(target).add(path);
+      edges.push({ from: path, to: target });
     }
   }
-  return [...known]
+  edges.sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
+  return { files, outEdges, inEdges, edges };
+}
+
+// SKILL.md#2b-planning-and-dispatch-f-0012-p-0006
+export function buildImportGraph(productRepo, sha, { sourceExts = DEFAULT_EXTS } = {}) {
+  const extSet = new Set(sourceExts.map(e => e.toLowerCase()));
+  const jsFiles = regularFiles(productRepo, sha)
+    .filter(f => isSourcePath(f.path, extSet) && JS_TS_EXTS.has(posix.extname(f.path).toLowerCase()));
+  const contents = jsFiles.length ? blobs(productRepo, jsFiles.map(f => f.sha)) : [];
+  const textsByPath = new Map(jsFiles.map((entry, i) => [entry.path, contents[i].toString("utf8")]));
+  return computeImportGraph(jsFiles, textsByPath);
+}
+
+function collectImportHubs(jsFiles, textsByPath, maxTop) {
+  const { files, outEdges, inEdges } = computeImportGraph(jsFiles, textsByPath);
+  return files
     .map(path => ({ path, fanIn: inEdges.get(path).size, fanOut: outEdges.get(path).size }))
     .filter(h => h.fanIn > 0 || h.fanOut > 0)
     .sort((a, b) => (b.fanIn + b.fanOut) - (a.fanIn + a.fanOut) || b.fanIn - a.fanIn || a.path.localeCompare(b.path))

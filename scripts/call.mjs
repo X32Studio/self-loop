@@ -64,8 +64,11 @@ import { parseArgs } from "./lib/args.mjs";
 import { ARCH_STEP, outerCadenceOf, outerLoopState } from "./lib/cadence.mjs";
 import { node as nodeCommand } from "./lib/commands.mjs";
 import { undiagnosedAlarms } from "./lib/diagnosis.mjs";
+import { checkLiveDispatchedOverlap, validateDispatchCall } from "./lib/dispatch.mjs";
 import { HANDOFFS, hasPhaseFrame, idOf, parseHandoffs, recordOf, ROLES, validateHandoff } from "./lib/handoff.mjs";
 import { isSubstantiveOwnerWord } from "./lib/owner-words.mjs";
+import { snapshot as planSnapshot } from "./lib/plan.mjs";
+import { globMatch } from "./lib/plan-globs.mjs";
 import { DISPLAY_SHA_LEN, renderSsotStatusMarkdown } from "./lib/ssot.mjs";
 import { parseWindows, windowAlarmKey, WINDOWS, windowState } from "./lib/window.mjs";
 import { classify, DEFAULT_LAYOUT, inspect, isPublicKind, openWords, parseLayout, renderIndex } from "./records-check.mjs";
@@ -257,8 +260,10 @@ export function call(cfg, role, opts, { log = () => {}, now = () => new Date() }
   }
 }
 
-function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD", base: baseRev, dry = false, prepare = false }, { log, now }) {
+function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD", base: baseRev, dry = false, prepare = false, plan: planId = null, package: pkgOpt = null, pkg: pkgArg = null }, { log, now }) {
   // ----- refusals before any model runs -----
+  const packageId = pkgArg ?? pkgOpt ?? null;
+  if (Boolean(planId) !== Boolean(packageId)) throw new Stop(EXIT.usage, "--plan and --package must be passed together");
   if (!ROLES.includes(role)) throw new Stop(EXIT.usage, `role must be one of ${ROLES.join(", ")}`);
   if (!Number.isInteger(round) || round < 1) throw new Stop(EXIT.usage, "--round must be a whole number from 1");
   if (step !== role && !new RegExp(`^${role}(-[a-z]+)+$`).test(step)) throw new Stop(EXIT.usage, `--step must be ${role} or ${role}-<word>`);
@@ -303,10 +308,39 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
   const commits = ["critic", "actor"].includes(role);
   if (commits && branch && cfg.protected.includes(branch)) throw new Stop(EXIT.usage, `${branch} is protected; a role works on a loop branch, the lead promotes with gated-push.mjs`);
   if (role !== "reviewer") refuseUndiagnosed(cfg, view, round);
+  let win = null;
   if (role === "actor") {
-    const win = refuseExhaustedWindow(cfg, view, viewPaths, round);
+    win = refuseExhaustedWindow(cfg, view, viewPaths, round);
     refuseOuterLoopOverdue(cfg, view, viewPaths, base, round, win);
     refuseUndistilledOwnerWords(cfg, view, viewPaths, round);
+  }
+  let dispatchMeta = null;
+  if (planId && packageId) {
+    const check = validateDispatchCall({
+      cfg,
+      state: planSnapshot(cfg.records, view),
+      planId,
+      packageId,
+      role,
+      step,
+      round,
+      base,
+      prepared: preparedIn(cfg),
+      window: win,
+    });
+    if (!check.ok) throw new Stop(EXIT.records, check.errors.join("\n"));
+    dispatchMeta = { plan: planId, package: packageId, files: check.scopeFiles, peerFiles: check.peerFiles };
+  } else {
+    const overlapErr = checkLiveDispatchedOverlap({
+      cfg,
+      state: planSnapshot(cfg.records, view),
+      role,
+      round,
+      step,
+      owns: cfg.owns[role] ?? [],
+      prepared: preparedIn(cfg),
+    });
+    if (overlapErr) throw new Stop(EXIT.records, overlapErr);
   }
   const extra = recordsConfig(cfg, view);
   const extraKinds = extra.extraKinds ?? [];
@@ -361,7 +395,8 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
     writeFileSync(join(ws, "prompt.md"), text);
     if (dry) return { code: EXIT.done, message: `dry run: ${ws} (view ${view.slice(0, DISPLAY_SHA_LEN)}, ${holds.length} records); nothing called or recorded`, ws };
 
-    const ctx = { role, round, step, phase: cfg.phase, task, features, id, record, view, briefs, base, branch, commits, extraKinds, ws, wt, owns, agent };
+    const ctx = { role, round, step, phase: cfg.phase, task, features, id, record, view, briefs, base, branch, commits, extraKinds, ws, wt, owns, agent,
+      ...(dispatchMeta ? { dispatch: dispatchMeta } : {}) };
     if (prepare) {
       const nonce = createHash("sha256").update(`${ws}\n${now().toISOString()}\n${Math.random()}`).digest("hex").slice(0, 16);
       const childPrompt = t3Prompt({ id, nonce, wt, ws, text });
@@ -681,7 +716,7 @@ export function recordCall(cfg, wsDir, { transcript = null, session = null, log 
 
 /** The rest of a call once its agent has run: audit, evidence, hand-off. `run` = { status, error, log, events, cwd, facts }. */
 function finish(cfg, ctx, run, { log, now }) {
-  const { role, round, step, phase = cfg.phase, task, features, id, record, view, briefs, base, branch, commits, extraKinds, ws, wt, owns, agent } = ctx;
+  const { role, round, step, phase = cfg.phase, task, features, id, record, view, briefs, base, branch, commits, extraKinds, ws, wt, owns, agent, dispatch = null } = ctx;
   const confined = role === "reviewer";
   const isArchReviewer = confined && ARCH_STEP.test(step);
   const layoutText = readFileSync(DEFAULT_LAYOUT, "utf8");
@@ -708,19 +743,32 @@ function finish(cfg, ctx, run, { log, now }) {
   let prose = [];
   if (!failure && commits) {
     const owned = ownedChanges(wt, base, owns);
-    prose = proseChanges(wt, base, owned.inside, cfg.records);
-    if (prose.length) {
-      failure = [EXIT.records, [`the ${role}'s product changes add or change ${prose.length} ${prose.some(p => p.status === "pending") ? "comment candidate(s) awaiting action" : "prose comment line(s)"}; a comment is a pointer (record ID or design anchor) or a tool directive (D-0016):`,
-        ...prose.map(p => p.status === "pending"
-          ? `  ${p.path}:${p.line}: pending independent resolution (${p.scope}); source sha256 ${p.source}; rule ${p.rule}; ${p.text}`
-          : `  ${p.path}:${p.line}: ${p.text}`),
-        ...(prose.some(p => p.status === "pending") ? ["No prose verdict for pending candidates. Have an independent judge emit out/comment-resolutions.json by copying each candidate identity (path, source, line, rule, contract, scope, language, text) and adding verdict and authoritative evidence. For comment scope: literal/directive/pointer/prose. For source scope: compliant only after reviewing the ENTIRE source for D-0016, or prose, then retry unchanged source."] : []),
-        ...(prose.some(p => p.scope === "source") ? ["Source prose never supplies generic move credit. For a code-only edit or partial comment deletion, an independent judge may publish complete proseComments inventories for both frozen sources (RECORDS.md, Comment resolution). Later edits to an old resolution or audit do not count; record a fresh audited judge hand-off."] : []),
-        retry ? `Nothing was committed; the worktree ${wt} is kept: ${prose.some(p => p.status === "pending") ? "obtain the independent resolution described above" : "move the prose into records or design and leave a pointer"}, then run ${nodeCommand("call.mjs", cfg.configFile ?? "<config.json>", "record", "--ws", ws)} again`
-          : "Nothing was committed to the product; call the role again with the rule in its task"].join("\n")];
-    } else {
-      const done = commitOwned(wt, base, owned, `${cfg.commitPrefix ?? "self-loop"}: ${id}`);
-      Object.assign(product, { commit: done.commit, outside: done.outside.slice(0, 50) });
+    if (dispatch) {
+      const allChanged = [...owned.inside, ...owned.outside];
+      const peerHits = allChanged.filter(p => (dispatch.peerFiles ?? []).some(pat => globMatch(pat, p)));
+      if (peerHits.length) {
+        failure = [EXIT.records, `cross-package write violation (${dispatch.plan}/${dispatch.package}): modified peer-owned path(s) ${peerHits.join(", ")}`];
+      } else {
+        const inPkg = p => (dispatch.files ?? []).some(pat => globMatch(pat, p));
+        owned.outside = [...owned.outside, ...owned.inside.filter(p => !inPkg(p))];
+        owned.inside = owned.inside.filter(inPkg);
+      }
+    }
+    if (!failure) {
+      prose = proseChanges(wt, base, owned.inside, cfg.records);
+      if (prose.length) {
+        failure = [EXIT.records, [`the ${role}'s product changes add or change ${prose.length} ${prose.some(p => p.status === "pending") ? "comment candidate(s) awaiting action" : "prose comment line(s)"}; a comment is a pointer (record ID or design anchor) or a tool directive (D-0016):`,
+          ...prose.map(p => p.status === "pending"
+            ? `  ${p.path}:${p.line}: pending independent resolution (${p.scope}); source sha256 ${p.source}; rule ${p.rule}; ${p.text}`
+            : `  ${p.path}:${p.line}: ${p.text}`),
+          ...(prose.some(p => p.status === "pending") ? ["No prose verdict for pending candidates. Have an independent judge emit out/comment-resolutions.json by copying each candidate identity (path, source, line, rule, contract, scope, language, text) and adding verdict and authoritative evidence. For comment scope: literal/directive/pointer/prose. For source scope: compliant only after reviewing the ENTIRE source for D-0016, or prose, then retry unchanged source."] : []),
+          ...(prose.some(p => p.scope === "source") ? ["Source prose never supplies generic move credit. For a code-only edit or partial comment deletion, an independent judge may publish complete proseComments inventories for both frozen sources (RECORDS.md, Comment resolution). Later edits to an old resolution or audit do not count; record a fresh audited judge hand-off."] : []),
+          retry ? `Nothing was committed; the worktree ${wt} is kept: ${prose.some(p => p.status === "pending") ? "obtain the independent resolution described above" : "move the prose into records or design and leave a pointer"}, then run ${nodeCommand("call.mjs", cfg.configFile ?? "<config.json>", "record", "--ws", ws)} again`
+            : "Nothing was committed to the product; call the role again with the rule in its task"].join("\n")];
+      } else {
+        const done = commitOwned(wt, base, owned, `${cfg.commitPrefix ?? "self-loop"}: ${id}`);
+        Object.assign(product, { commit: done.commit, outside: done.outside.slice(0, 50) });
+      }
     }
   } else if (!failure && wt) Object.assign(product, { headMoved: git(wt, "rev-parse", "HEAD") !== base, changes: changedPaths(wt).slice(0, 50) });
 
@@ -776,7 +824,8 @@ function finish(cfg, ctx, run, { log, now }) {
         handoff = validateHandoff({ id, time: now().toISOString().slice(0, 19) + "Z", phase, round, step, role, attempt, agent: agentFacts, view,
           ...(features === undefined ? {} : { features }), briefs, task: digest(task), product, exit: run.status,
           audit: { ...summary, file: `${tag}-audit.json` }, record, files: [...own],
-          ...(designConflicts.length ? { designConflicts } : {}) });
+          ...(designConflicts.length ? { designConflicts } : {}),
+          ...(dispatch ? { dispatch: { plan: dispatch.plan, package: dispatch.package, files: dispatch.files } } : {}) });
         put(HANDOFFS, appendJsonLines(read(HANDOFFS), [handoff]), true);
       }
       const screening = indexHandOff(cfg.records, own, candidate, { layoutText, extraKinds, sealed: cfg.sealed });
@@ -831,10 +880,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       if (!configPath || !args.ws) throw new Stop(EXIT.usage, "node call.mjs <config.json> record --ws <prepared workspace> [--session <provider session ID>] [--transcript <file>]");
       result = recordCall(load(configPath), args.ws, { transcript: args.transcript || null, session: args.session || null, log: m => console.error(m) });
     } else {
-      if (!configPath || !role || !args.round || !args.task) throw new Stop(EXIT.usage, "node call.mjs <config.json> <role> --round N --task <file> [--step s] [--view rev] [--base rev] [--dry-run | --prepare]");
+      if (!configPath || !role || !args.round || !args.task) throw new Stop(EXIT.usage, "node call.mjs <config.json> <role> --round N --task <file> [--step s] [--view rev] [--base rev] [--plan PL-NNNN --package id] [--dry-run | --prepare]");
       if (!existsSync(args.task)) throw new Stop(EXIT.usage, `--task ${args.task} does not exist`);
       result = call(load(configPath), role, { round: Number(args.round), step: args.step || role, task: readFileSync(args.task, "utf8"),
-        view: args.view || "HEAD", base: args.base || undefined, dry: "dry-run" in args, prepare: "prepare" in args }, { log: m => console.error(m) });
+        view: args.view || "HEAD", base: args.base || undefined, dry: "dry-run" in args, prepare: "prepare" in args,
+        plan: "plan" in args ? args.plan : null, package: "package" in args ? args.package : null }, { log: m => console.error(m) });
     }
   } catch (e) { result = { code: e instanceof Stop ? e.code : EXIT.failure, message: e.message }; }
   if (result.prepared) console.log(JSON.stringify(result.prepared));

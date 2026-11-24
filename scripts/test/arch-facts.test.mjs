@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { ARCH_THRESHOLDS, collectArchFacts, structuralBreaches } from "../lib/arch-facts.mjs";
+import { ARCH_THRESHOLDS, buildImportGraph, collectArchFacts, structuralBreaches } from "../lib/arch-facts.mjs";
 import { git, repo } from "./helpers.mjs";
 
 const linesOf = (n, prefix = "export const v") =>
@@ -134,4 +134,9 @@ test("static ES import hubs compute fanIn/fanOut and parallelSiblings stay infor
   assert.deepEqual(siblingByRole.get("kernel").paths, ["src/a/alpha-kernel.mjs", "src/b/beta-kernel.mjs"]);
   assert.deepEqual(siblingByRole.get("scheduler").paths, ["src/c/plan-scheduler.ts", "src/d/cop-scheduler.ts"]);
   assert.deepEqual(structuralBreaches(facts), [], "parallelSiblings are screening facts, never T3 hard breaches");
+
+  const graph = buildImportGraph(r, sha);
+  assert.equal(graph.files.length, 6);
+  assert.ok(graph.edges.some(e => e.from === "src/a/alpha-kernel.mjs" && e.to === "src/core/shared.mjs"));
+  assert.equal(graph.inEdges.get("src/core/shared.mjs").size, 4);
 });

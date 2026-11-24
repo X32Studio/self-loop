@@ -10,7 +10,7 @@
   <a href="README.zh-CN.md">中文</a> · <b>English</b> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/METHODOLOGY.md">Methodology</a> · <a href="SKILL.md">Skill Spec</a>
 </p>
 
-<sub>By <a href="https://github.com/k-r33">Ruiyuan Kang (k-r33)</a> @ <a href="https://x32studio.com">X32 Studio</a> (Kang &amp; his Agent Team) · MIT Licensed · v0.7.0</sub>
+<sub>By <a href="https://x32studio.com">X32 Studio</a> · MIT Licensed · v0.8.0</sub>
 
 </div>
 
@@ -34,6 +34,12 @@ On toy tasks, that works. On real software, an ungoverned agent mob fails in fou
 **`self-loop` turns chaotic coding-agent swarms (Claude Code, Codex, Antigravity, and T3 Code harnesses) into a trustworthy delivery organization.** It pairs a first-principles **Frame Reviewer** with a **cross-vendor Critic / Actor / Judge** hardening loop, trajectory-driven premise tests, SSOT authority verification, and Git-backed mechanical gates.
 
 ---
+
+## What's New in v0.8.0
+
+The workflow connects three engines in sequence. The **Generation Engine** defines the plan and package contracts. The **Dispatch & Integration Engine** combines the `arch-facts` import graph with symbolic file globs to identify independent work, schedule parallel Actor waves, and integrate their commits. The **Adversarial Engine** runs one unified Critic or multiple parallel Critics and joins their evidence for a cross-vendor Judge.
+
+Use `self-loop.mjs dispatch analyze|waves|integrate` to inspect coupling, list ready waves, or integrate landed work. Use `call.mjs --plan PL-NNNN --package <id>` with the normal role arguments to bind a call to a committed package. See [Planning and dispatch](SKILL.md#2b-planning-and-dispatch-f-0012-p-0006).
 
 ## What's New in v0.7.0
 
@@ -74,10 +80,10 @@ On toy tasks, that works. On real software, an ungoverned agent mob fails in fou
 
 ```mermaid
 flowchart TD
-    P["Purpose & Owner Words<br/>(purpose/P-NNNN.md)"] --> FR["Frame Reviewer (Generative Engine)<br/>First principles + Trajectory + Git Facts"]
+    P["Purpose & Owner Words<br/>(purpose/P-NNNN.md)"] --> FR["Frame Reviewer (Generation Engine)<br/>First principles + Trajectory + Git Facts"]
     FR -->|"REFRAME / Intent Batch"| OW["Owner Decision Batch<br/>(Options + Recommendation)"]
     OW --> FR
-    FR -->|"CONTINUE + Blueprint (F-NNNN)"| PL["Plan & Dispatch<br/>(plan.mjs)"]
+    FR -->|"CONTINUE + Blueprint (F-NNNN)"| PL["Dispatch & Integration Engine<br/>(plan.mjs + dispatch.mjs)"]
     PL --> CR["Critic<br/>Executable acceptance cases<br/>(held-out cases sealed)"]
     CR --> AC["Actor (Vendor A)<br/>General implementation + design note"]
     AC --> JG["Judge (Vendor B ≠ Vendor A)<br/>Clean checkout + suite + GENERAL/HACK audit"]
@@ -221,4 +227,4 @@ self-loop/
 
 ## Credits & License
 
-Built by **[Ruiyuan Kang (`k-r33`)](https://github.com/k-r33)** @ **[X32 Studio](https://x32studio.com)** · Released under the [MIT License](LICENSE).
+Built by **[X32 Studio](https://x32studio.com)** · Released under the [MIT License](LICENSE).

@@ -10,7 +10,7 @@
   <b>中文</b> · <a href="README.md">English</a> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/METHODOLOGY.md">Methodology</a> · <a href="SKILL.md">Skill Spec</a>
 </p>
 
-<sub>作者：<a href="https://github.com/k-r33">Ruiyuan Kang (k-r33)</a> @ <a href="https://x32studio.com">X32 Studio</a>（Kang 和他的 Agent 团队） · MIT 协议 · v0.7.0</sub>
+<sub>作者：<a href="https://x32studio.com">X32 Studio</a> · MIT 协议 · v0.8.0</sub>
 
 </div>
 
@@ -34,6 +34,12 @@
 **`self-loop` 把混乱的 Coding Agent 群落（Claude Code / Codex / Antigravity / T3 Code）整编成可信赖、能直接交付的 Agent 组织**：它把**第一性帧评审**、**跨厂商对抗裁判**、**SSOT 权威文档校验**、**轨迹报警前提审计**与 **Git/CI 硬门禁**拧成闭环。
 
 ---
+
+## v0.8.0 调度与集成引擎
+
+**生成引擎 → 调度与集成引擎 → 对抗引擎**。生成引擎制定计划与工作包契约。调度与集成引擎结合 `arch-facts` 的导入图与符号 glob 分析耦合，分波并行调度 Actor，并集成已交接的提交。对抗引擎由一个统一 Critic 或多个并行 Critic 审查，再由跨厂商 Judge 裁决。
+
+使用 `self-loop.mjs dispatch analyze|waves|integrate` 分析耦合、查看调度波次或集成提交。调用角色时追加 `call.mjs --plan PL-NNNN --package <id>` 所示的两个参数，将调用绑定到已提交的工作包。
 
 ## v0.7.0 核心新特性
 
@@ -124,4 +130,4 @@ cp -r . ~/.claude/skills/self-loop
 
 ## 作者与开源协议
 
-由 **[Ruiyuan Kang (`k-r33`)](https://github.com/k-r33)** @ **[X32 Studio](https://x32studio.com)** 建造 · 基于 [MIT License](LICENSE) 开源。
+由 **[X32 Studio](https://x32studio.com)** 建造 · 基于 [MIT License](LICENSE) 开源。
