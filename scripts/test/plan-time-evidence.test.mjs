@@ -1,7 +1,7 @@
-// F-0012; synthetic archival roots, no production trusted-event assertion.
+// F-0012
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -28,13 +28,13 @@ test('selectors resolve exact pointers and unique headings without fenced decoys
 });
 
 function fixture(t) {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), 'plan-evidence-synthetic-')));
+  const repo = mkdtempSync(join(tmpdir(), 'plan-evidence-synthetic-'));
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore','pipe','pipe'] }).trim();
   git('init'); git('config', 'user.email', 'synthetic@example.invalid'); git('config', 'user.name', 'Synthetic archive recorder');
   const put = (path, bytes) => { mkdirSync(dirname(join(repo,path)), { recursive: true }); writeFileSync(join(repo,path),bytes); };
   const commit = () => { git('add','.'); git('commit','-qm','synthetic archival cut'); return git('rev-parse','HEAD'); };
-  put('docs/baseline.md', 'synthetic'); commit();
+  put('docs/baseline.md', 'synthetic'); put('owner/answers.jsonl', ''); commit();
   return { repo, git, put, commit };
 }
 
@@ -86,13 +86,17 @@ function scopeFixture(t, change = () => {}, sourceRole = null) {
   const f=fixture(t);
   const criterion='docs/criteria.md', optional='decisions/D-0001.md';
   f.put(criterion,'# Minimum\nReport works.\n');
-  f.put(optional,'# Optional\npolish optional\n');
+  f.put(optional,'# Optional\nby: owner\npolish optional\n');
   f.put('loop.json',JSON.stringify({gates:{require:[]}}));
   const authority=f.commit();
   const exactRef=(path,commit)=>({repository:f.repo,commit,path,sha256:hash(execFileSync('git',['-C',f.repo,'show',`${commit}:${path}`]))});
   const criteriaRef=exactRef(criterion,authority), optionalRef=exactRef(optional,authority), policyRef=exactRef('loop.json',authority);
   const plan={id:'PL-0001',scope:'synthetic',phase:'test',packages:[{id:'core',needs:[]},{id:'restart',needs:['core']},{id:'polish',needs:[]}],time:{schema:'plan-time/v2',rootPlan:'PL-0001',baseline:{minimum:{criteriaRefs:[criteriaRef]},promises:[]}}};
   plan.packages=plan.packages.map((p,i)=>({...p,goal:'synthetic goal',interface:'synthetic contract',acceptance:'synthetic criterion',handoff:`R-${String(i+1).padStart(4,'0')}-actor`,role:'actor',authority:['D-0001'],files:[`src/${p.id}.mjs`]}));
+  plan.packages.push(
+    {id:'cr',needs:['core','restart','polish'],reviews:['core','restart','polish'],goal:'synthetic goal',interface:'synthetic contract',acceptance:'synthetic criterion',handoff:'R-0001-critic-cr',role:'critic',authority:['D-0001'],files:['test/cr.test.mjs']},
+    {id:'j',needs:['cr'],goal:'synthetic goal',interface:'synthetic contract',acceptance:'synthetic criterion',handoff:'R-0001-judge',role:'judge',authority:['D-0001'],files:[]},
+  );
   f.put('plans/PL-0001.md',JSON.stringify(plan));const basedOn=f.commit(),planRef=exactRef('plans/PL-0001.md',basedOn);
   const claim={criteria:[{ref:criteriaRef,selector:'# Minimum',purpose:'minimum',promiseId:null,packages:['restart']}],releasePackages:['restart'],deferred:[{package:'polish',authorityRef:optionalRef,selector:'# Optional',reason:'preauthorized optional'}],gatePolicyRefs:[policyRef]};
   change(claim);
@@ -149,7 +153,7 @@ function positiveEvidence(t, { mode='external', at='2026-11-22T11:50:00Z', event
   const ref=(path,commit=f.git('rev-parse','HEAD'))=>({repository:f.repo,commit,path,sha256:hash(execFileSync('git',['-C',f.repo,'show',`${commit}:${path}`]))});
   const authTokens=[];
   for(const type of ['scope','release','event'])for(let i=0;i<4;i++)authTokens.push(`observer judge req-${type}-${i} R-${String(12+i).padStart(4,'0')}-judge-${type} ${hash(`task-${type}-${i}`)} ${type==='scope'?'scope-assess':type==='release'?'release-assess':'event-attest'}`);
-  f.put('decisions/D-0001.md','# Authorization\n'+authTokens.join('\n')+'\n# Optional\npolish optional\n');
+  f.put('decisions/D-0001.md','# Authorization\nby: owner\n'+authTokens.join('\n')+'\n# Optional\npolish optional\n');
   f.put('docs/criteria.md','# Minimum\nA usable report\n');f.put('evidence/0012/artifact.txt','usable artifact');
   f.put('loop.json',JSON.stringify({gates:{require:['actions/linux'],suite:'node --test synthetic.mjs'}}));
   const log='# tests 2\n# pass 2\n# fail 0\n# cancelled 0\n';
@@ -160,6 +164,11 @@ function positiveEvidence(t, { mode='external', at='2026-11-22T11:50:00Z', event
   const plan={id:'PL-0001',scope:'synthetic',phase:'test',packages:[{id:'core',needs:[],goal:'usable',interface:'report',acceptance:'works',handoff:'R-0001-actor',role:'actor',authority:['D-0001'],files:['src/core.mjs']}],time:{schema:'plan-time/v2',rootPlan:'PL-0001',baseline:{minimum:{outcome:'usable report',criteriaRefs:[criterion]},promises:[]}}};
   if(forecast) Object.assign(plan.time.baseline,{previousRoot:null,startedAt:'2026-11-22T09:00:00Z',startRefs:[authority],deadline:{at:'2026-11-22T14:00:00Z',authorityRefs:[authority]},minimum:{...plan.time.baseline.minimum,authorityRefs:[authority]}});
   if(forecast) plan.packages.push(...['restart','polish'].map(id=>({...plan.packages[0],id,needs:id==='restart'?['core']:[],handoff:`R-0002-actor-${id}`,files:[`src/${id}.mjs`]})));
+  const actorIds=plan.packages.map(p=>p.id);
+  plan.packages.push(
+    {id:'cr',needs:actorIds,reviews:actorIds,goal:'usable',interface:'report',acceptance:'works',handoff:'R-0001-critic-cr',role:'critic',authority:['D-0001'],files:['test/cr.test.mjs']},
+    {id:'j',needs:['cr'],goal:'usable',interface:'report',acceptance:'works',handoff:'R-0001-judge',role:'judge',authority:['D-0001'],files:[]},
+  );
   f.put('plans/PL-0001.md',JSON.stringify(plan));const basedOn=f.commit(),planRef=ref('plans/PL-0001.md',basedOn),counts={scope:0,release:0,event:0};
   function bind(type,claim,supersedes=[]) {
     const i=counts[type]++,dir=`evidence/0012/archive-${type}-${i}`;
@@ -303,7 +312,7 @@ test('AC-26: CodeCommit plan-time CI evidence accepts matching host/repository/a
     const ref = (path, commit = f.git('rev-parse', 'HEAD')) => ({ repository: f.repo, commit, path, sha256: hash(execFileSync('git', ['-C', f.repo, 'show', `${commit}:${path}`])) });
     const authTokens = [];
     for (const type of ['scope', 'release', 'event']) authTokens.push(`observer judge req-${type}-0 ${type === 'scope' ? 'scope-assess' : type === 'release' ? 'release-assess' : 'event-attest'}`);
-    f.put('decisions/D-0001.md', '# Authorization\n' + authTokens.join('\n') + '\n');
+    f.put('decisions/D-0001.md', '# Authorization\nby: owner\n' + authTokens.join('\n') + '\n');
     f.put('docs/criteria.md', '# Minimum\nA usable report\n');
     f.put('evidence/0012/artifact.txt', 'usable artifact');
     f.put('loop.json', JSON.stringify({ gates: { require: ['codebuild/verify'], suite: 'node --test synthetic.mjs' } }));
@@ -327,7 +336,17 @@ test('AC-26: CodeCommit plan-time CI evidence accepts matching host/repository/a
     };
     f.put('evidence/0012/ci.json', JSON.stringify(liveReceipt));
     const initial = f.commit(), authority = ref('decisions/D-0001.md', initial), criterion = ref('docs/criteria.md', initial), policy = ref('loop.json', initial), artifact = ref('evidence/0012/artifact.txt', initial);
-    const plan = { id: 'PL-0001', scope: 'synthetic', phase: 'test', packages: [{ id: 'core', needs: [], goal: 'usable', interface: 'report', acceptance: 'works', handoff: 'R-0001-actor', role: 'actor', authority: ['D-0001'], files: ['src/core.mjs'] }], time: { schema: 'plan-time/v2', rootPlan: 'PL-0001', baseline: { minimum: { outcome: 'usable report', criteriaRefs: [criterion] }, promises: [] } } };
+    const plan = {
+      id: 'PL-0001',
+      scope: 'synthetic',
+      phase: 'test',
+      packages: [
+        { id: 'core', needs: [], goal: 'usable', interface: 'report', acceptance: 'works', handoff: 'R-0001-actor', role: 'actor', authority: ['D-0001'], files: ['src/core.mjs'] },
+        { id: 'cr', needs: ['core'], reviews: ['core'], goal: 'usable', interface: 'report', acceptance: 'works', handoff: 'R-0001-critic-cr', role: 'critic', authority: ['D-0001'], files: ['test/cr.test.mjs'] },
+        { id: 'j', needs: ['cr'], goal: 'usable', interface: 'report', acceptance: 'works', handoff: 'R-0001-judge', role: 'judge', authority: ['D-0001'], files: [] },
+      ],
+      time: { schema: 'plan-time/v2', rootPlan: 'PL-0001', baseline: { minimum: { outcome: 'usable report', criteriaRefs: [criterion] }, promises: [] } },
+    };
     f.put('plans/PL-0001.md', JSON.stringify(plan));
     const basedOn = f.commit(), planRef = ref('plans/PL-0001.md', basedOn);
     function bind(type, claim) {

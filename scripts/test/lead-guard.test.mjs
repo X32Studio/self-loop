@@ -1,4 +1,4 @@
-// lead-guard.mjs: the lead never writes product code and never pushes outside gated-push.
+// F-0004, F-0008, D-0060
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -19,7 +19,7 @@ function setup() {
   return { product, workspaces, wt, lead, other, opts: { product, workspaces: [workspaces], allow: ["docs/", "AGENTS.md", "CLAUDE.md", "README.md"] } };
 }
 
-test("edits: product code in any checkout is refused; docs, rule files, role workspaces and other repositories are not", () => {
+test("edits: product code in any checkout and role workspaces are refused; docs, rule files, task files and other repositories are not", () => {
   const s = setup();
   const edit = (file, tool = "Edit") => refusal({ tool_name: tool, cwd: s.product, tool_input: { file_path: file } }, s.opts);
   assert.match(edit(join(s.product, "src/a.js")), /src\/a\.js is product code/);
@@ -27,7 +27,8 @@ test("edits: product code in any checkout is refused; docs, rule files, role wor
   assert.match(edit(join(s.lead, "src/new/b.js"), "Write"), /product code/, "a new file too");
   assert.equal(edit(join(s.product, "docs/PRODUCT.md")), null);
   assert.equal(edit(join(s.lead, "AGENTS.md")), null);
-  assert.equal(edit(join(s.wt, "src/a.js")), null, "an actor's workspace");
+  assert.equal(edit(join(s.workspaces, "tasks/R-0001-actor.md"), "Write"), null, "a task brief under tasks/");
+  assert.match(edit(join(s.wt, "src/a.js")), /inside workspace root/, "an actor's workspace is denied");
   assert.equal(edit(join(s.other, "src/a.js")), null, "another repository");
   assert.equal(edit("/tmp/scratch.txt", "Write"), null);
 });
@@ -39,7 +40,7 @@ test("push: a direct git push is refused, gated-push is not, and other git comma
   for (const c of ["node scripts/gated-push.mjs --repo . --branch loop/a1 --suite-receipt r.json", "git log --oneline -3", "git status", "echo push", "git stash push"]) assert.equal(bash(c), null, c);
 });
 
-test("CLI: prints a deny decision for a refused call, nothing otherwise, and never fails", () => {
+test("CLI: prints a deny decision for a refused call or malformed JSON, nothing otherwise, and never fails", () => {
   const s = setup();
   const run = input => spawnSync(process.execPath, [join(scripts, "lead-guard.mjs"), "--product", s.product, "--workspaces", s.workspaces], { input, encoding: "utf8" });
   const denied = run(JSON.stringify({ tool_name: "Edit", cwd: s.product, tool_input: { file_path: join(s.product, "src/a.js") } }));
@@ -47,7 +48,10 @@ test("CLI: prints a deny decision for a refused call, nothing otherwise, and nev
   assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, "deny");
   const allowed = run(JSON.stringify({ tool_name: "Read", tool_input: { file_path: join(s.product, "src/a.js") } }));
   assert.deepEqual([allowed.status, allowed.stdout], [0, ""]);
-  assert.deepEqual([run("not json").status, run("not json").stdout], [0, ""]);
+  const malformed = run("not json");
+  assert.equal(malformed.status, 0);
+  assert.equal(JSON.parse(malformed.stdout).hookSpecificOutput.permissionDecision, "deny");
+  assert.match(JSON.parse(malformed.stdout).hookSpecificOutput.permissionDecisionReason, /malformed hook JSON/);
 });
 
 test("B21: push must be the git subcommand, even when the line also mentions gated-push", () => {
@@ -78,7 +82,8 @@ test("B22: configuring the product with a linked checkout protects code in every
   const edit = file => refusal({ tool_name: "Write", cwd: s.lead, tool_input: { file_path: file } }, opts);
   assert.match(edit(join(s.product, "src/a.js")), /product code/);
   assert.match(edit(join(s.lead, "src/new.js")), /product code/);
-  assert.equal(edit(join(s.wt, "src/a.js")), null);
+  assert.match(edit(join(s.wt, "src/a.js")), /inside workspace root/);
+  assert.equal(edit(join(s.workspaces, "tasks/R-0001-actor.md")), null);
   assert.equal(edit(join(s.product, "docs/PRODUCT.md")), null);
 });
 
@@ -155,12 +160,15 @@ test("with core.ignorecase a case variant of a tracked file is the tracked file"
   assert.equal(productCode(s.product, "SRC/A.js"), null);
 });
 
-test("CLI: a Git that cannot answer refuses the edit and names why; unreadable input still passes", () => {
+test("CLI: a Git that cannot answer refuses the edit and names why; unreadable input fails closed with deny", () => {
   const s = setup();
   const run = input => spawnSync(process.execPath, [join(scripts, "lead-guard.mjs"), "--product", s.product, "--workspaces", s.workspaces],
     { input, encoding: "utf8", env: { PATH: "/nonexistent" } });
   const denied = run(JSON.stringify({ tool_name: "Write", cwd: s.product, tool_input: { file_path: "src/new.js" } }));
   const reason = JSON.parse(denied.stdout).hookSpecificOutput.permissionDecisionReason;
   assert.match(reason, /src\/new\.js is product code .*Git could not list it/);
-  assert.deepEqual([run("{truncated").status, run("{truncated").stdout], [0, ""]);
+  const truncated = run("{truncated");
+  assert.equal(truncated.status, 0);
+  assert.equal(JSON.parse(truncated.stdout).hookSpecificOutput.permissionDecision, "deny");
+  assert.match(JSON.parse(truncated.stdout).hookSpecificOutput.permissionDecisionReason, /malformed hook JSON/);
 });

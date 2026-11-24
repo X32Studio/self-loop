@@ -75,6 +75,10 @@ export function mechanisms(t, { cadence, agents, owns } = {}) {
   })) put(p.records, `decisions/${id}.md`, `# ${id} ${title}\n\nid: ${id}\nby: owner\nstatus: active\n`);
   for (const [id, title] of Object.entries({ "F-0011": "Generative engine", "F-0012": "Planning and dispatch" }))
     put(p.records, `blueprint/${id}.md`, `# ${id} ${title}\n\nid: ${id}\nphase: v1\nrequirements: P-0001\n`);
+  put(p.records, "metrics/windows.jsonl", jsonl({
+    type: "open", id: "W-0001", phase: "v1", startRound: 1, horizon: 12,
+    goal: "v1 round-9 fixture", invariants: ["acceptance passes"], openedAt: at(0), openedBy: "lead",
+  }));
   put(p.records, "metrics/blueprint.jsonl", readFileSync(join(p.records, "metrics/blueprint.jsonl"), "utf8")
     + jsonl(...["F-0011", "F-0012"].map(feature => ({ feature, status: "building", time: at(1), by: "lead", note: "Work started", evidence: {} }))));
 
@@ -85,7 +89,9 @@ export function mechanisms(t, { cadence, agents, owns } = {}) {
   };
   publish("Record the authorized inputs", at(1));
   const host = value => hostMeasurement(w, value);
+  const planByHandoff = new Map();
   const plan = (id, packages, { when = at(20), tasks = packages, ...options } = {}) => {
+    for (const item of packages) planByHandoff.set(item.handoff, { planId: id, pkgId: item.id });
     for (const item of tasks) put(p.workDir, `tasks/${item.handoff}.md`, taskText(item));
     put(p.records, `plans/${id}.md`, planText(id, packages, options));
     return publish(`Publish ${id}`, when);
@@ -93,8 +99,10 @@ export function mechanisms(t, { cadence, agents, owns } = {}) {
   const prepare = (item, when = at(30)) => {
     const [, round, step] = /^R-(\d+)-(.+)$/.exec(item.handoff);
     const task = put(p.workDir, `tasks/${item.handoff}.md`, taskText(item));
+    const entry = planByHandoff.get(item.handoff);
+    const planArgs = entry ? ["--plan", entry.planId, "--package", entry.pkgId] : [];
     return jsonOutput(w.run("call.mjs", [p.config, item.role, "--round", String(Number(round)), "--step", step,
-      "--task", task, "--prepare"], { at: when }));
+      ...planArgs, "--task", task, "--prepare"], { at: when }));
   };
   const record = (item, prepared, { start = at(40), end = start, when = end } = {}) => {
     const { ws, wt, id, prompt } = prepared;

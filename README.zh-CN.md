@@ -10,7 +10,7 @@
   <b>中文</b> · <a href="README.md">English</a> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/METHODOLOGY.md">Methodology</a> · <a href="SKILL.md">Skill Spec</a>
 </p>
 
-<sub>作者：<a href="https://x32studio.com">X32 Studio</a> · MIT 协议 · v0.8.0</sub>
+<sub>作者：<a href="https://x32studio.com">X32 Studio</a> · MIT 协议 · v0.9.0</sub>
 
 </div>
 
@@ -34,6 +34,13 @@
 **`self-loop` 把混乱的 Coding Agent 群落（Claude Code / Codex / Antigravity / T3 Code）整编成可信赖、能直接交付的 Agent 组织**：它把**第一性帧评审**、**跨厂商对抗裁判**、**SSOT 权威文档校验**、**轨迹报警前提审计**与 **Git/CI 硬门禁**拧成闭环。
 
 ---
+
+## v0.9.0 强制控制面与单树一次宿主机测试
+
+- **全图提交溯源与工作分支波次门禁（`provenance.mjs`、`gated-push.mjs`、`.githooks/pre-push`）**：`provenanceBaseline` 之上的所有提交均须来自 `PL-NNNN` 备案 hand-off 或干净波次合并（全程 `--no-replace-objects`）；`call.mjs --base` 与工作分支推送强制校验 `PL + critic + actor + 跨厂商 judge` 全链（开放 `W-NNNN` 重构窗口豁免），预审远端 CI 走 `ci/<handoff-id>` 分支。
+- **Nonce 绑定委派锁与写域收窄（`lead-guard.mjs`、`git-push-command.mjs`）**：无活跃未落盘 `call.json` 16 位 hex nonce 一律拒绝任何委派工具；`--workspaces` 写域收窄至 `<workDir>/tasks/`；词法拦截 `git push --no-verify` / `-n` / `-c core.hooksPath=...` / `--exec-path=...`；畸形 hook 输入一律 fail-closed。
+- **单树一次宿主机测试（`suite-green.mjs`、`audit-access.mjs`）**：宿主机通过 POSIX 原子 `linkSync` 单调代链对同一 `(repo, HEAD^{tree}, command, install, runtime)` **仅跑一次**（并发绿/红结果单飞共享、零 TOCTOU），向代码 Judge 与只读终审 Critic 自动注入只读 `0444` `suite-receipt.json`；`call.mjs record` 提交新树时调用 `purgeTreeReceipts` 防缓存预投毒；`gated-push.mjs` 免 `--suite-receipt` 自动查表；角色 brief 删除重复跑全量套件的指令。
+- **0 轮次原话门禁、增量 `T3` 与正门减法（`plan.mjs`、`cadence.mjs`、`t3-child.mjs`、`dispatch.mjs`）**：未蒸馏实质性 Owner 原话立即阻塞（忽略例行确认词）；祖先 `ci-absent` 经同阶段后继绿 CI 自动熄灭；`T3` 仅针对相对上次 `reviewer-architecture` 基线的新增/恶化告警触发，且异步架构审阅期间仅阻塞命中热点的包；`call.mjs record --ws <ws>` 免 `--session` 按 nonce 自动匹配，新增 `call.mjs cancel` 与 `dispatch.mjs prepare|record`。
 
 ## v0.8.0 调度与集成引擎
 

@@ -1,4 +1,4 @@
-// F-0014 Batch 2: Two-way proof for call.mjs role-view SSOT status injection (CLI --dry-run and T3 --prepare).
+// F-0014, D-0060
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -42,12 +42,23 @@ function makeCallFixture(t, { ssot, productFiles = {}, t3 = false } = {}) {
   const records = mkRepo({
     "README.md": "# records\n",
     "records.json": "{}\n",
+    "decisions/D-0001.md": "# D-0001 SSOT view test\n\nby: owner\n",
     "blueprint/F-0001.md": "# F-0001 Core\n",
     "engines/shared.md": "# Shared\n",
     "engines/frame-reviewer.md": "# Reviewer\n",
     "engines/critic.md": "# Critic\n",
     "engines/actor.md": "# Actor\n",
     "engines/judge.md": "# Judge\n",
+    "plans/PL-0001.md": [
+      "# PL-0001 SSOT view", "scope: v1/round-2", "phase: v1", "",
+      "## actor", "role: actor", "handoff: R-0002-actor", "authority: D-0001", "goal: Actor view", "files: src/**, docs/**", "interface: fixed", "acceptance: pass", "needs: ", "",
+      "## critic", "role: critic", "handoff: R-0002-critic", "authority: D-0001", "goal: Critic view", "files: test/**", "interface: fixed", "acceptance: pass", "needs: ", "reviews: actor", "",
+      "## judge-cov", "role: judge", "handoff: R-0002-judge-cov", "authority: D-0001", "goal: Judge coverage", "files: ", "interface: fixed", "acceptance: pass", "needs: ", "",
+    ].join("\n"),
+    "plans/PL-0002.md": [
+      "# PL-0002 SSOT judge view", "scope: v1/round-2-judge", "phase: v1", "",
+      "## judge", "role: judge", "handoff: R-0002-judge", "authority: D-0001", "goal: Judge view", "files: ", "interface: fixed", "acceptance: pass", "needs: ", "",
+    ].join("\n"),
     [frameRecord]: "# R-0001-reviewer-frame\n\nphase: v1\n",
     "metrics/handoffs.jsonl": `${JSON.stringify(frameHandoff)}\n`,
   }, join(root, "records"));
@@ -92,7 +103,6 @@ test("1. Configured ssot injects read-only ssot-status.md + prompt pointer for a
     ],
   };
 
-  // CLI --dry-run fixture
   const fx = makeCallFixture(t, {
     ssot,
     productFiles: {
@@ -108,12 +118,12 @@ test("1. Configured ssot injects read-only ssot-status.md + prompt pointer for a
   const baseSha = commitFile(fx.product, "src/pin.json", JSON.stringify({ pin: "bbbb2222" }) + "\n", "stale pin");
   const shortSha = baseSha.slice(0, 7);
 
-  // Dirty working tree edits must NOT appear in ssot-status.md
   write(fx.product, "docs/PIN.md", "# Pin\nPin: `bbbb2222`\n");
   write(fx.product, "src/clean/mod.mjs", "export const c = 999;\n");
 
+  const planOpts = role => role === "reviewer" ? {} : { plan: role === "judge" ? "PL-0002" : "PL-0001", package: role };
   for (const [role, verb] of [["actor", "editing"], ["judge", "ruling"]]) {
-    const r = call(load(fx.config), role, { round: 2, task: "features: F-0001\nWork.\n", base: baseSha, dry: true });
+    const r = call(load(fx.config), role, { round: 2, task: "features: F-0001\nWork.\n", base: baseSha, dry: true, ...planOpts(role) });
     assert.equal(r.code, EXIT.done, r.message);
     const statusPath = join(r.ws, "ssot-status.md");
     assert.equal(existsSync(statusPath), true, `${role} must receive ssot-status.md`);
@@ -130,15 +140,13 @@ test("1. Configured ssot injects read-only ssot-status.md + prompt pointer for a
   }
   assert.equal(existsSync(markerFile), false, "custom Rung-2 check command must NEVER run during call.mjs workspace prep");
 
-  // Critic and reviewer get ZERO files and ZERO prompt text even when ssot is configured
   for (const role of ["critic", "reviewer"]) {
-    const r = call(load(fx.config), role, { round: 2, task: "features: F-0001\nReview.\n", base: baseSha, dry: true });
+    const r = call(load(fx.config), role, { round: 2, task: "features: F-0001\nReview.\n", base: baseSha, dry: true, ...planOpts(role) });
     assert.equal(r.code, EXIT.done, r.message);
     assert.equal(existsSync(join(r.ws, "ssot-status.md")), false, `${role} must NOT receive ssot-status.md`);
     assert.doesNotMatch(readFileSync(join(r.ws, "prompt.md"), "utf8"), /ssot-status\.md|SSOT status/i);
   }
 
-  // T3 --prepare path: BOTH prompt.md and t3-prompt.md carry the exact pointer & drifted entry for actor and judge
   const t3Fx = makeCallFixture(t, {
     ssot, t3: true,
     productFiles: {
@@ -152,7 +160,8 @@ test("1. Configured ssot injects read-only ssot-status.md + prompt pointer for a
   });
   const t3Base = commitFile(t3Fx.product, "src/api/handler.mjs", "export const v = 2;\n", "drift api");
   for (const [role, verb] of [["actor", "editing"], ["judge", "ruling"]]) {
-    const cliRes = runCallCli([t3Fx.config, role, "--round", "2", "--task", t3Fx.taskFile, "--base", t3Base, "--prepare"]);
+    const planId = role === "judge" ? "PL-0002" : "PL-0001";
+    const cliRes = runCallCli([t3Fx.config, role, "--round", "2", "--plan", planId, "--package", role, "--task", t3Fx.taskFile, "--base", t3Base, "--prepare"]);
     assert.equal(cliRes.status, 0, cliRes.stderr);
     const prepared = JSON.parse(cliRes.stdout);
     const statusPath = join(prepared.ws, "ssot-status.md");
@@ -165,7 +174,7 @@ test("1. Configured ssot injects read-only ssot-status.md + prompt pointer for a
     }
     git(t3Fx.product, "worktree", "remove", "--force", prepared.wt);
   }
-  const criticPrep = runCallCli([t3Fx.config, "critic", "--round", "2", "--task", t3Fx.taskFile, "--base", t3Base, "--prepare"]);
+  const criticPrep = runCallCli([t3Fx.config, "critic", "--round", "2", "--plan", "PL-0001", "--package", "critic", "--task", t3Fx.taskFile, "--base", t3Base, "--prepare"]);
   assert.equal(criticPrep.status, 0, criticPrep.stderr);
   const cPrepared = JSON.parse(criticPrep.stdout);
   assert.equal(existsSync(join(cPrepared.ws, "ssot-status.md")), false);
@@ -178,16 +187,16 @@ test("2. Zero impact when loop.json has no ssot key, graceful error summary, and
   const noSsot = makeCallFixture(t, { productFiles: { "src/a.mjs": "export const a = 1;\n" } });
   const cfg = load(noSsot.config);
   assert.equal(Object.hasOwn(cfg, "ssot"), false);
+  const planOpts = role => role === "reviewer" ? {} : { plan: role === "judge" ? "PL-0002" : "PL-0001", package: role };
   for (const role of ["actor", "judge", "critic", "reviewer"]) {
-    const r = call(cfg, role, { round: 2, task: "features: F-0001\nNo ssot.\n", dry: true });
+    const r = call(cfg, role, { round: 2, task: "features: F-0001\nNo ssot.\n", dry: true, ...planOpts(role) });
     assert.equal(r.code, EXIT.done, r.message);
     assert.equal(existsSync(join(r.ws, "ssot-status.md")), false);
     assert.doesNotMatch(readFileSync(join(r.ws, "prompt.md"), "utf8"), /ssot-status\.md|SSOT status/i);
   }
 
-  // Evaluation failure (missing configFile on synthetic cfg with ssot) writes clear error summary without crashing call.mjs
   const brokenCfg = { ...cfg, ssot: { entries: [{ id: "a", doc: "README.md", watch: ["src/**"] }] }, configFile: undefined };
-  const errCall = call(brokenCfg, "actor", { round: 2, task: "features: F-0001\nBroken ssot.\n", dry: true });
+  const errCall = call(brokenCfg, "actor", { round: 2, task: "features: F-0001\nBroken ssot.\n", dry: true, plan: "PL-0001", package: "actor" });
   assert.equal(errCall.code, EXIT.done, errCall.message);
   const errMd = readFileSync(join(errCall.ws, "ssot-status.md"), "utf8");
   assert.equal(statSync(join(errCall.ws, "ssot-status.md")).mode & 0o777, 0o444);
@@ -195,8 +204,6 @@ test("2. Zero impact when loop.json has no ssot key, graceful error summary, and
   assert.match(errMd, /configFile must be an absolute path/);
   assert.match(readFileSync(join(errCall.ws, "prompt.md"), "utf8"), /evaluation error:/);
 
-  // B1: load() preserves resolve(configPath) (no realpathSync), keeping symlinked non-ssot behavior unchanged
-  // and keeping call.mjs ssot-status.md 100% consistent with ssot-check.mjs on symlinked external repos.
   const aliasDir = temp("self-loop-ssot-alias-");
   t.after(() => rmSync(aliasDir, { recursive: true, force: true }));
   const realRec = join(aliasDir, "nested", "real-rec"), linkedRec = join(aliasDir, "rec-link");
@@ -222,7 +229,7 @@ test("2. Zero impact when loop.json has no ssot key, graceful error summary, and
   const checkRes = spawnSync(process.execPath, [join(scripts, "ssot-check.mjs"), "check", "--config", symlinkCfgPath], { encoding: "utf8", env: isolatedEnv() });
   assert.equal(checkRes.status, 2);
   assert.match(checkRes.stderr + checkRes.stdout, /repo-error|symlink/i);
-  const symCall = call(load(symlinkCfgPath), "actor", { round: 2, task: "features: F-0001\nSymlink config.\n", dry: true });
+  const symCall = call(load(symlinkCfgPath), "actor", { round: 2, task: "features: F-0001\nSymlink config.\n", dry: true, plan: "PL-0001", package: "actor" });
   assert.equal(symCall.code, EXIT.done, symCall.message);
   assert.match(readFileSync(join(symCall.ws, "ssot-status.md"), "utf8"), /repo-error|symlink/i);
   assert.ok(designRepo);

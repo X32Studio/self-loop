@@ -1,3 +1,7 @@
 #!/bin/sh
-# Every push carries a higher, tagged VERSION and a green suite on the exact commit (self-loop records D-0004).
-exec node "$(git rev-parse --show-toplevel)/scripts/version-gate.mjs" pre-push "$@"
+# D-0004, D-0060, design/mandatory-control-plane.md#1
+set -e
+root="$(git rev-parse --show-toplevel)"
+updates="$(cat)"
+printf '%s\n' "$updates" | node "$root/scripts/gated-push.mjs" --verify-only --repo "$root"
+printf '%s\n' "$updates" | exec node "$root/scripts/version-gate.mjs" pre-push "$@"

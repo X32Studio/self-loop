@@ -1,9 +1,11 @@
+// F-0004, D-0007, D-0060, design/mandatory-control-plane.md#2
 import { basename } from "node:path";
 
 const assignment = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const leading = new Set(["if", "then", "elif", "else", "while", "until", "do", "!", "{"]);
-const globalValue = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env"]);
-const globalFlag = new Set(["-p", "-P", "--paginate", "--no-pager", "--no-replace-objects", "--no-optional-locks",
+const globalValue = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--attr-source", "--shallow-file"]);
+const globalEquals = new Set(["--exec-path"]);
+const globalFlag = new Set(["-p", "-P", "--paginate", "--no-pager", "--no-replace-objects", "--no-lazy-fetch", "--no-optional-locks",
   "--no-advice", "--bare", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs"]);
 
 function isGitPush(words) {
@@ -28,14 +30,15 @@ function isGitPush(words) {
   while (words[i]) {
     const arg = words[i].value;
     if (arg === "push") return !["-h", "--help"].includes(words[i + 1]?.value);
+    const eq = arg.indexOf("=");
+    const flag = eq > 0 ? arg.slice(0, eq) : arg;
     if (globalValue.has(arg)) i += 2;
-    else if (globalFlag.has(arg) || globalValue.has(arg.split("=")[0]) && arg.includes("=")) i++;
+    else if (globalFlag.has(arg) || (eq > 0 && (globalValue.has(flag) || globalEquals.has(flag))) || (/^-[Cc].+/.test(arg))) i++;
     else return false;
   }
   return false;
 }
 
-// Return the offset just after a here-document, or the end of the input if its delimiter is missing.
 function skipHereDocument(command, start, { delimiter, stripTabs, quoted }) {
   let continued = "";
   while (start < command.length) {
@@ -43,7 +46,6 @@ function skipHereDocument(command, start, { delimiter, stripTabs, quoted }) {
     if (end === -1) return command.length;
     const line = command.slice(start, end);
     start = end + 1;
-    // In an unquoted here-document Bash joins backslash-newline pairs before matching the delimiter.
     if (!quoted && /(?:^|[^\\])(?:\\\\)*\\$/.test(line)) {
       continued += line.slice(0, -1);
       continue;
@@ -55,10 +57,6 @@ function skipHereDocument(command, start, { delimiter, stripTabs, quoted }) {
   return start;
 }
 
-/**
- * Recognize direct Git invocations in simple shell commands. Shell programs with nested substitutions,
- * or grouping are outside this grammar. Here-document bodies are opaque.
- */
 export function hasGitPush(command) {
   let words = [], value = "", quote = null, plain = true, started = false, assigns = false, redirect = false;
   const heredocs = [];
@@ -93,14 +91,13 @@ export function hasGitPush(command) {
     }
     if (c === "(" || c === ")") return false;
     if (c === "<" || c === ">" || c === "&" && next === ">") {
-      // A number next to the operator is a file descriptor, not a command word.
       if (started && plain && /^\d+$/.test(value) && c !== "&") started = false;
       else finishWord();
       value = "";
       if (stripTabs !== null) return false;
       if (c === "<" && next === "<") {
         i++;
-        if (command[i + 1] === "<") return false; // Here-string.
+        if (command[i + 1] === "<") return false;
         stripTabs = command[i + 1] === "-";
         if (stripTabs) i++;
       } else {

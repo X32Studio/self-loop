@@ -19,6 +19,7 @@ defines each). A failure with no loss from that list is a known limit to list in
 - From the second round on, attack white-box: read the actor's code and `records/design/` and aim at that
   implementation's weaknesses. Each new batch is the held-out set for the code it attacks.
 - The judge's public rulings (`records/rounds/NNNN-judge.md`) say which properties broke and what to attack next.
+- Verification: run only your new or targeted acceptance probes to prove clean RED/GREEN behavior; never re-run the full public suite on an unchanged tree—when host-attested `suite-receipt.json` is staged in your workspace, inspect it instead of duplicating `gates.suite` (D-0061).
 - Comments are pointers or tool directives (self-loop D-0016). Your case files are product source, so your hand-off
   is held to the same rule as the actor's (self-loop D-0023 item 3). A comment line may hold only record IDs
   (`D-0016`, `R-0006-critic-b`, `SL-05`, `W-` and ten hex digits) or design anchors (`design/<file>.md#<anchor>`), or

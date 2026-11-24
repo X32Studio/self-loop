@@ -16,7 +16,11 @@ const RECORDS = "/model/records";
 const product = (...lists) => lists.reduce((all, list) => all.flatMap(a => list.map(b => [...a, b])), [[]]);
 
 function memory(files = {}) {
-  const contents = { "decisions/D-0001.md": "# D-0001\n", ...files };
+  const win = JSON.stringify({
+    type: "open", id: "W-0001", phase: "v1", startRound: 1, horizon: 10,
+    goal: "bounded model", invariants: ["disjoint"], openedAt: "2026-11-24T00:00:00Z", openedBy: "lead",
+  }) + "\n";
+  const contents = { "decisions/D-0001.md": "# D-0001\n\nby: owner\n", "metrics/windows.jsonl": win, ...files };
   return { records: RECORDS, revision: "a".repeat(40), files: new Set(Object.keys(contents)),
     read: path => typeof contents[path] === "string" ? contents[path] : contents[path]?.toString("utf8") ?? "",
     bytes: path => contents[path] === undefined ? null : Buffer.from(contents[path]) };

@@ -1,5 +1,4 @@
-// Single source of truth for Antigravity harness disk layout, transcript/DB schema, tool registries,
-// envelope unwrapping, and hook protocol constants (F-0009, design/antigravity-harness.md).
+// F-0009, D-0052, D-0060, design/antigravity-harness.md#adapter
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -8,8 +7,7 @@ import { fileURLToPath } from "node:url";
 import { canonical } from "./path-canonical.mjs";
 
 export const VERIFIED_ANTIGRAVITY_LS_VERSION = "cli-1.5.14";
-// Probed cli-1.5.14 least-privilege PreToolUse pass-through: empty stdout + exit 0 preserves user approval policy
-// ("{}" is parsed as protojson enum 0 = DENY; never emit {"decision":"allow"}).
+// F-0009, design/antigravity-harness.md#hooks
 export const PRE_TOOL_USE_PASSTHROUGH = "";
 
 export const ANTIGRAVITY_STEP_TYPES = Object.freeze([
@@ -20,7 +18,6 @@ export const ANTIGRAVITY_STEP_TYPES = Object.freeze([
   "CHECKPOINT",
 ]);
 
-// Canonical file-tool registry covering both observed cli-1.5.14 function names and documented step-type spellings.
 export const ANTIGRAVITY_FILE_TOOL_MAP = Object.freeze({
   read_file: { canonical: "Read" },
   write_file: { canonical: "Write" },
@@ -56,7 +53,6 @@ export const ANTIGRAVITY_SCALAR_PATH_KEYS = Object.freeze([
 
 export const ANTIGRAVITY_ARRAY_PATH_KEYS = Object.freeze(["paths"]);
 
-// Native Antigravity tools that spawn or message unaudited conversations.
 export const ANTIGRAVITY_NATIVE_DELEGATION_TOOLS = new Set([
   "invoke_subagent",
   "run_workflow",
@@ -66,10 +62,18 @@ export const ANTIGRAVITY_NATIVE_DELEGATION_TOOLS = new Set([
   "browser_subagent",
 ]);
 
+// F-0008, F-0009, D-0060, design/mandatory-control-plane.md#2
+const T3_DELEGATION_BASES = ["delegate_task", "t3_thread_launch", "create_threads"];
+export const ANTIGRAVITY_DELEGATION_TOOLS = new Set([
+  "invoke_subagent",
+  "run_workflow",
+  "swarm",
+  ...T3_DELEGATION_BASES.flatMap(base => [base, `mcp_t3-code_${base}`, `mcp__t3-code__${base}`]),
+]);
+
 export const T3_MCP_TOOL_PREFIX = /^(?:mcp_t3[-_]code_|mcp__t3[-_]code__)(.+)$/;
 
-// Strict read-only allowlist for T3 MCP tools in role audits; every other mcp_t3-code_* / mcp__t3-code__*
-// tool is classified as a violation (fail closed against schedule_task, delegate_task, t3_queue, future tools).
+// F-0009, design/antigravity-harness.md#audit
 export const T3_MCP_READ_ONLY_ALLOWLIST = new Set([
   "t3_thread_read",
   "t3_thread_list",
@@ -109,7 +113,6 @@ const COMPACT_TRUNCATED_RE = /\n<truncated \d+ bytes>$/;
 const APP_SUBDIRS = ["antigravity-acp", "antigravity", "antigravity-cli", "antigravity-ide"];
 const BRACKET_OPENERS = Object.freeze({ ")": "(", "]": "[", "}": "{" });
 
-/** Single definition point for resolving GEMINI_HOME consistently across discovery, hooks, and tests. */
 export function geminiHome(env = process.env, home = env?.HOME || homedir()) {
   return env?.GEMINI_HOME !== undefined && env.GEMINI_HOME !== ""
     ? resolve(env.GEMINI_HOME)
@@ -212,7 +215,6 @@ function loadSqlite() {
   return createRequire(import.meta.url)("node:sqlite");
 }
 
-/** Three-state conversation_summaries.db reader: ok | unavailable(reason), with per-id ok | missing-row. */
 export function readConversationSummaries(appDir, { sqliteLoader = loadSqlite } = {}) {
   const dbPath = join(appDir, "conversation_summaries.db");
   if (!existsSync(dbPath)) return { state: "unavailable", reason: "conversation_summaries.db missing" };
@@ -252,11 +254,11 @@ export function readConversationSummaries(appDir, { sqliteLoader = loadSqlite } 
   } catch (error) {
     return { state: "unavailable", reason: error?.message ?? String(error) };
   } finally {
-    try { db?.close(); } catch { /* ignore close error */ }
+    try { db?.close(); } catch {}
   }
 }
 
-/** Tail-anchored, fail-closed unwrapper for Antigravity/T3 USER_INPUT envelopes. */
+// F-0009, design/antigravity-harness.md#envelope
 export function unwrapAntigravityUserText(raw) {
   if (typeof raw !== "string") return null;
   if (!raw.startsWith("<USER_REQUEST>") && !raw.startsWith("<t3_code_instructions>")) return raw;
@@ -306,7 +308,7 @@ export function antigravityFirstPrompt(rows) {
   return unwrapAntigravityUserText(first.content) ?? "";
 }
 
-/** Normative terminal-status rule for an Antigravity child transcript + optional DB summary. */
+// F-0009, design/antigravity-harness.md#status
 export function antigravityStatus(rows, summary = null) {
   let lastUserIdx = -1;
   for (let i = rows.length - 1; i >= 0; i--) {
@@ -388,7 +390,6 @@ function collectFileUrls(value, out, depth = 0, seen = new WeakSet()) {
   for (const v of Object.values(value)) collectFileUrls(v, out, depth + 1, seen);
 }
 
-/** Extract every candidate path from any tool's args (scalar keys, paths[], and embedded/nested file:// URLs). */
 export function extractToolPaths(args) {
   if (!args || typeof args !== "object" || Array.isArray(args)) return [];
   const found = new Set();
@@ -406,7 +407,6 @@ export function extractToolPaths(args) {
   return [...found];
 }
 
-/** Decode JSON-quoted string args from compact Antigravity transcript rows. */
 export function decodeCompactArg(raw) {
   if (typeof raw !== "string") return { ok: true, truncated: false, value: raw };
   if (COMPACT_TRUNCATED_RE.test(raw)) return { ok: false, truncated: true, value: null };

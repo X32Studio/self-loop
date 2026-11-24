@@ -1,4 +1,4 @@
-// SKILL.md#2b-planning-and-dispatch-f-0012-p-0006
+// P-0011, P-0012, D-0058, D-0059, design/two-loop-rhythm.md#3, design/parallel-dispatch.md#1
 import { posix } from "node:path";
 import { ANTI_ROT_THRESHOLDS, antiRotBreaches, scanAntiRot } from "./anti-rot.mjs";
 import { blobs, gitOk, regularFiles, run } from "./git-plumbing.mjs";
@@ -126,7 +126,7 @@ function computeImportGraph(jsFiles, textsByPath) {
   return { files, outEdges, inEdges, edges };
 }
 
-// SKILL.md#2b-planning-and-dispatch-f-0012-p-0006
+// P-0012, D-0059, design/parallel-dispatch.md#1
 export function buildImportGraph(productRepo, sha, { sourceExts = DEFAULT_EXTS } = {}) {
   const extSet = new Set(sourceExts.map(e => e.toLowerCase()));
   const jsFiles = regularFiles(productRepo, sha)
@@ -286,5 +286,126 @@ export function structuralBreaches(facts, thresholds = null) {
   }
 
   breaches.push(...antiRotBreaches(facts.antiRot));
+  return breaches;
+}
+
+// D-0060, D-0058, design/mandatory-control-plane.md#3
+export function compareArchFacts(currentFacts, baselineFacts, thresholds = null) {
+  if (!currentFacts) return [];
+  if (!baselineFacts) return structuralBreaches(currentFacts, thresholds);
+  const limits = { ...ARCH_THRESHOLDS, ...(currentFacts.thresholds ?? {}), ...(thresholds ?? {}) };
+  const breaches = [];
+
+  const baseLinesByPath = new Map();
+  const baseGrowthByPath = new Map();
+  for (const f of [...(baselineFacts.growthFiles ?? []), ...(baselineFacts.largestFiles ?? [])]) {
+    if (!baseLinesByPath.has(f.path)) baseLinesByPath.set(f.path, f.lines);
+    if (f.baselineLines !== null && f.baselineLines !== undefined && f.baselineLines >= 100
+        && f.growthPct !== null && f.growthPct !== undefined && f.growthPct >= limits.growthPct) {
+      baseGrowthByPath.set(f.path, Math.max(baseGrowthByPath.get(f.path) ?? -Infinity, f.growthPct));
+    }
+  }
+
+  for (const file of currentFacts.largestFiles ?? []) {
+    if (file.lines <= limits.hardLines) continue;
+    const baseLines = baseLinesByPath.get(file.path);
+    if (baseLines === undefined || baseLines <= limits.hardLines) {
+      breaches.push({
+        kind: "file-size",
+        path: file.path,
+        detail: `${file.lines} lines exceeds hard limit ${limits.hardLines}`,
+      });
+    } else if (file.lines > baseLines) {
+      breaches.push({
+        kind: "file-size",
+        path: file.path,
+        detail: `${file.lines} lines exceeds hard limit ${limits.hardLines} (grew from ${baseLines})`,
+      });
+    }
+  }
+
+  const seenGrowth = new Set();
+  for (const file of [...(currentFacts.growthFiles ?? []), ...(currentFacts.largestFiles ?? [])]) {
+    if (seenGrowth.has(file.path)) continue;
+    if (file.baselineLines !== null && file.baselineLines !== undefined && file.baselineLines >= 100
+        && file.growthPct !== null && file.growthPct !== undefined && file.growthPct >= limits.growthPct) {
+      seenGrowth.add(file.path);
+      const basePct = baseGrowthByPath.get(file.path);
+      if (basePct === undefined || file.growthPct > basePct) {
+        breaches.push({
+          kind: "file-growth",
+          path: file.path,
+          detail: `grew ${file.growthPct}% (${file.baselineLines} -> ${file.lines} lines, limit ${limits.growthPct}%)`,
+        });
+      }
+    }
+  }
+
+  const baseChurnByPath = new Map((baselineFacts.churnHotspots ?? []).map(s => [s.path, s.commits]));
+  for (const spot of currentFacts.churnHotspots ?? []) {
+    if (spot.commits < limits.churnCommits) continue;
+    const baseCommits = baseChurnByPath.get(spot.path);
+    if (baseCommits === undefined || baseCommits < limits.churnCommits || spot.commits > baseCommits) {
+      breaches.push({
+        kind: "churn-hotspot",
+        path: spot.path,
+        detail: `touched in ${spot.commits} commits (limit ${limits.churnCommits})`,
+      });
+    }
+  }
+
+  const curRot = currentFacts.antiRot ?? {};
+  const baseRot = baselineFacts.antiRot ?? {};
+
+  const baseRemnantKeys = new Set(
+    (baseRot.compatRemnants ?? []).map(i => `${i.path}\0${i.kind}\0${String(i.marker).toLowerCase()}`),
+  );
+  const deltaRemnants = (curRot.compatRemnants ?? []).filter(
+    i => !baseRemnantKeys.has(`${i.path}\0${i.kind}\0${String(i.marker).toLowerCase()}`),
+  );
+
+  const baseLiteralKeys = new Set(
+    (baseRot.hardcodedLiterals ?? []).map(i => `${i.path}\0${i.kind}\0${i.match}`),
+  );
+  const deltaLiterals = (curRot.hardcodedLiterals ?? []).filter(
+    i => !baseLiteralKeys.has(`${i.path}\0${i.kind}\0${i.match}`),
+  );
+
+  const baseTestRotCounts = new Map();
+  const baseTestRotExact = new Set();
+  for (const i of baseRot.testRot ?? []) {
+    const gk = `${i.path}\0${i.kind}`;
+    baseTestRotCounts.set(gk, (baseTestRotCounts.get(gk) ?? 0) + 1);
+    baseTestRotExact.add(`${gk}\0${i.line}`);
+  }
+  const curRotByGroup = new Map();
+  for (const i of curRot.testRot ?? []) {
+    const gk = `${i.path}\0${i.kind}`;
+    if (!curRotByGroup.has(gk)) curRotByGroup.set(gk, []);
+    curRotByGroup.get(gk).push(i);
+  }
+  const deltaTestRot = [];
+  for (const [gk, items] of curRotByGroup) {
+    let allowance = baseTestRotCounts.get(gk) ?? 0;
+    const unmatched = [];
+    for (const item of items) {
+      if (allowance > 0 && baseTestRotExact.has(`${gk}\0${item.line}`)) allowance--;
+      else unmatched.push(item);
+    }
+    deltaTestRot.push(...unmatched.slice(allowance));
+  }
+
+  const baseCommentByPath = new Map((baseRot.commentBloat ?? []).map(i => [i.path, i.proseLines]));
+  const deltaCommentBloat = (curRot.commentBloat ?? []).filter(i => {
+    const baseLines = baseCommentByPath.get(i.path);
+    return baseLines === undefined || i.proseLines > baseLines;
+  });
+
+  breaches.push(...antiRotBreaches({
+    compatRemnants: deltaRemnants,
+    hardcodedLiterals: deltaLiterals,
+    testRot: deltaTestRot,
+    commentBloat: deltaCommentBloat,
+  }));
   return breaches;
 }

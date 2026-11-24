@@ -1,43 +1,43 @@
-// design/alarm-gate.md#the-rule; D-0015 item 3, D-0017
+// design/alarm-gate.md#the-rule, D-0015, D-0017, D-0060
 import { git, run } from "./git-plumbing.mjs";
 import { HANDOFFS, parseHandoffs } from "./handoff.mjs";
 import { alarms, parseRows, TRAJECTORY } from "../trajectory.mjs";
 
-/** Steps that diagnose: `reviewer-diagnosis`, or a further one in the same round such as `reviewer-diagnosis-b`. */
 export const DIAGNOSIS_STEP = /^reviewer-diagnosis(-[a-z]+)*$/;
-/**
- * The part of a reviewer's round record that holds the lead's task: everything before its `## Report (verbatim)`
- * heading (call.mjs writes the header and the task verbatim above it), so nothing the reviewer wrote can name a key.
- */
 export const taskOfRecord = text => text.split(/^## Report \(verbatim\)[ \t]*$/m, 1)[0];
 
-/** The alarm keys a task names on its `alarms: <key>[, ...]` lines (backquotes around a key are allowed). */
 export function alarmKeys(task) {
   return [...task.matchAll(/^alarms:[ \t]*(.*)$/gm)]
     .flatMap(m => m[1].split(",").map(key => key.trim().replace(/^`(.*)`$/, "$1").trim()).filter(Boolean));
 }
 
-const lines = text => text.split("\n").filter(Boolean); // the rows parseRows and parseHandoffs read, in order
+const lines = text => text.split("\n").filter(Boolean);
 const signature = list => JSON.stringify(list);
 
-/** design/alarm-gate.md#the-rule (item 3) */
+function attachExtinguished(list, extinguished) {
+  Object.defineProperty(list, "extinguished", { value: extinguished, enumerable: false });
+  return list;
+}
+
+// design/alarm-gate.md#the-rule
 export function firings(rows, options) {
-  const now = alarms(rows, options);
-  if (!now.length) return [];
-  const last = new Map(); // key -> { sig, row }
+  const opts = options?.repo ? { ...options, _ancestorCache: new Map() } : options;
+  const now = alarms(rows, opts);
+  const extinguished = now.extinguished ?? [];
+  if (!now.length) return attachExtinguished([], extinguished);
+  const last = new Map();
   for (let k = 0; k < rows.length; k++) {
     const byKey = new Map();
-    for (const a of alarms(rows.slice(0, k + 1), options)) byKey.set(a.key, [...(byKey.get(a.key) ?? []), a]);
+    for (const a of alarms(rows.slice(0, k + 1), opts)) byKey.set(a.key, [...(byKey.get(a.key) ?? []), a]);
     for (const key of [...last.keys()]) if (!byKey.has(key)) last.delete(key);
     for (const [key, list] of byKey) {
       const sig = signature(list);
       if (last.get(key)?.sig !== sig) last.set(key, { sig, row: k });
     }
   }
-  return now.map(a => ({ ...a, row: last.get(a.key).row }));
+  return attachExtinguished(now.map(a => ({ ...a, row: last.get(a.key).row })), extinguished);
 }
 
-/** The commit that added each non-empty line of `path` at `commit` (`git blame`), in line order. */
 function addedBy(repo, commit, path) {
   const out = git(repo, "blame", "--porcelain", commit, "--", path);
   const result = [];
@@ -50,7 +50,7 @@ function addedBy(repo, commit, path) {
   return result;
 }
 
-/** design/alarm-gate.md#the-rule (item 6) */
+// design/alarm-gate.md#the-rule
 function rowsWhenRecorded(repo, commit, diagnoses) {
   const added = addedBy(repo, commit, HANDOFFS);
   const commits = [...new Set(diagnoses.map(d => added[d.i]))];
@@ -58,7 +58,6 @@ function rowsWhenRecorded(repo, commit, diagnoses) {
   return new Map(diagnoses.map(d => [d.i, rowsAt.get(added[d.i])]));
 }
 
-/** The text of `<rev>:<path>` for each spec, null where it does not exist: one `git cat-file --batch` for all of them. */
 function texts(repo, specs) {
   if (!specs.length) return [];
   const out = run("git", ["-C", repo, "cat-file", "--batch"], { input: `${specs.join("\n")}\n` });
@@ -76,19 +75,16 @@ function texts(repo, specs) {
   return result;
 }
 
-/**
- * The phase's alarms at records commit `commit` that no diagnosis covers: [{ key, type, message, round, row, ... }].
- * Throws when the trajectory or the hand-offs at that commit cannot be read. A constant number of Git processes: the
- * ledgers, the diagnosis records, the blame of the hand-offs and the trajectories where diagnoses were recorded are each
- * read in one batch.
- */
-export function undiagnosedAlarms(repo, commit, phase) {
+export function undiagnosedAlarms(repo, commit, phase, options = {}) {
   const [trajectory, handoffText] = texts(repo, [`${commit}:${TRAJECTORY}`, `${commit}:${HANDOFFS}`]);
-  if (trajectory === null) return [];
+  if (trajectory === null) return attachExtinguished([], []);
   const rowLines = lines(trajectory);
   const rows = parseRows(rowLines.join("\n"), `${TRAJECTORY}@${commit.slice(0, 12)}`);
-  const open = firings(rows).filter(a => rows[a.row].phase === phase);
-  const result = () => open.filter(a => !covers(a)).map(a => ({ ...a, round: rows[a.row].round }));
+  const alarmOpts = { extinguishCiAbsent: true, ...(options?.repo ? { repo: options.repo } : {}) };
+  const fired = firings(rows, alarmOpts);
+  const extinguished = (fired.extinguished ?? []).filter(e => e.phase === phase);
+  const open = fired.filter(a => rows[a.row].phase === phase);
+  const result = () => attachExtinguished(open.filter(a => !covers(a)).map(a => ({ ...a, round: rows[a.row].round })), extinguished);
   let covers = () => false;
   if (!open.length || handoffText === null) return result();
 
@@ -111,7 +107,7 @@ export function undiagnosedAlarms(repo, commit, phase) {
 }
 
 const second = time => { const t = Date.parse(time); return Number.isFinite(t) ? Math.floor(t / 1000) : null; };
-/** D-0017 item 3 */
+// D-0017
 function byTime(diagnosed, row) {
   const [d, r] = [second(diagnosed), second(row)];
   return d === null || r === null ? 0 : Math.sign(d - r);

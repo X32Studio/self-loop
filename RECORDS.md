@@ -245,8 +245,8 @@ the exit code, the audit counts, the feature IDs, the public record and every fi
 carries no verdict. The committed `reviewer-frame` hand-off and its round record establish that the
 generative engine ran for that phase. Other reviewer modes cannot supply the phase frame. A `reviewer-architecture` hand-off
 records `product: { base, commit: base }` (zero product commit), receives read-only `arch-facts.json` + detached product worktree under
-strict `FILE_TOOLS` confinement, resets the outer-loop `T1`/`T3` cadence counter, and supplies the baseline SHA for subsequent
-`arch-facts` growth and churn checks. A line exists only for a call with no access violation, committed together with every file it names.
+strict `FILE_TOOLS` confinement, commits `evidence/<NNNN>/<step>-<k>-arch-facts.json` as the delta-scoped `T3` baseline (`compareArchFacts`, amended `D-0058`), resets the outer-loop `T1`/`T3` cadence counter, and supplies the baseline SHA for subsequent
+`arch-facts` growth and churn checks. Every post-`provenanceBaseline` `critic`, `actor`, and code `judge` hand-off carries `dispatch: { plan, package, files }` bound to a validated `PL-NNNN` plan (`D-0060`); `call.mjs` also stages once-per-tree host `suite-receipt.json` receipts (`D-0061`) and purges cached receipts for newly created unattested product trees on `record`. A line exists only for a call with no access violation, committed together with every file it names.
 A row of the trajectory is the lead's account of a ruling (area, verdict, blockers `class:id`, suite counts, the commit)
 and the append's own CI reading; the supervision alarms read it. When the lead pushed a commit raising `VERSION` on top
 of the ruled commit (D-0009 item 2), the row's `tip` names the pushed SHA and `commit` stays the ruled one. The loop is
@@ -425,8 +425,7 @@ in the word log. The checker screens for a missing source line and for each open
 checks committed records and their configuration. The records checker also sees staged records for review.
 Capture and transcript sync deterministically ignore T3/harness orchestration envelopes (`Delegated task node:delegated-task:`,
 `[T3 Code: the agent in T3 thread`, `<CONTEXT_SUMMARY>`, `<SYSTEM_MESSAGE>`). Substantive open owner words
-(`isSubstantiveOwnerWord`) trigger an async `reviewer-distill` action in `next` and block further `actor` calls (`exit 7`)
-once ignored past 1-turn grace (timestamp strictly earlier than the latest committed `actor` hand-off of the phase).
+(`isSubstantiveOwnerWord`) trigger a `reviewer-distill` action in `next` and immediately block `plan.mjs validate` and `critic`/`actor` calls (`exit 7`, 0-turn grace per `D-0060`) until distilled or marked.
 Legacy declarations of native kinds in `extraKinds` keep their existing index presentation until the lead removes
 them and regenerates the index.
 

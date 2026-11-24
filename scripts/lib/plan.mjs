@@ -1,15 +1,18 @@
-// P-0006, F-0012, design/dispatch.md#ready-state
-import { existsSync, realpathSync } from 'node:fs';
+// P-0006, F-0012, D-0060, design/dispatch.md#ready-state, design/mandatory-control-plane.md#4
+import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { git, regularFiles, run } from './git-plumbing.mjs';
 import { node as nodeCommand } from './commands.mjs';
 import { HEAVY_ROLES, normalize, preparedIn } from '../call.mjs';
-import { parseHandoffs, ROLES } from './handoff.mjs';
+import { HANDOFFS, parseHandoffs, ROLES } from './handoff.mjs';
 import { batchesFrom } from '../decisions.mjs';
+import { isSubstantiveOwnerWord, MARKS, parseWords, wordClasses, WORDS } from './owner-words.mjs';
 import { hostLoad, resolveOwnerStore } from './registry.mjs';
 import { fileOverlap, globOverlap } from './plan-globs.mjs';
+import { parseWindows, WINDOWS, windowState } from './window.mjs';
 import { gunzipSync } from 'node:zlib';
-import { parseRows } from '../trajectory.mjs';
+import { classify, DEFAULT_LAYOUT, parseLayout } from '../records-check.mjs';
+import { parseRows, TRAJECTORY } from '../trajectory.mjs';
 
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -18,7 +21,7 @@ export const HANDOFF_ID = /^R-(\d{4})-(reviewer|critic|actor|judge)((?:-[a-z]+)*
 const recordPointer = /^(?:PL|D|P|F|B|I|L)-\d{4}$|^R-\d{4}-[a-z]+(?:-[a-z]+)*$/;
 
 export function snapshot(records, revision = 'HEAD') {
-  records = realpathSync(resolve(records));
+  records = resolve(records);
   const head = git(records, 'rev-parse', `${revision}^{commit}`);
   const files = new Set(regularFiles(records, head).map(f => f.path)), cache = new Map();
   const bytes = path => {
@@ -106,12 +109,109 @@ const contract = p => JSON.stringify([p.authority?.toSorted(), p.goal, p.files?.
   object(p.settings) && Object.keys(p.settings).length ? Object.entries(p.settings).sort(([a], [b]) => a.localeCompare(b)) : 'current', p.acceptance,
   ...(Array.isArray(p.reviews) && p.reviews.length ? [p.reviews.toSorted()] : [])]);
 
+const AUTHORITY_ID = /^D-\d{4}$|^R-\d{4}-(?:reviewer|judge)(?:-[a-z]+)*$/;
+const WORD_CITE = /(?<![\w-])W-[0-9a-f]{10}(?![\w-])/g;
+const BATCH_CITE = /(?<![\w-])B-\d{4}(?![\w-])/g;
+const REVIEW_OR_JUDGE_CITE = /(?<![\w-])R-\d{4}-(?:reviewer|judge)(?:-[a-z]+)*(?![\w-])/g;
+const TEXT_RECORD = /\.(md|tsv|json|txt|mjs|js|ts|ya?ml)$/i;
+const DISTILL_KINDS = new Set(['Purpose', 'Decisions', 'Blueprint', 'Interventions', 'Lessons']);
+
+// D-0060, design/mandatory-control-plane.md#4
+function openSubstantiveWords(state) {
+  if (!state.files.has(WORDS)) return [];
+  const words = parseWords(state.read(WORDS));
+  if (!words.length) return [];
+  const marks = state.files.has(MARKS) ? wordClasses(parseWords(state.read(MARKS))) : new Map();
+  const extra = state.files.has('records.json') ? (JSON.parse(state.read('records.json')).extraKinds ?? []) : [];
+  const layout = parseLayout(readFileSync(DEFAULT_LAYOUT, 'utf8'), extra);
+  const ids = new Set(), cited = new Set();
+  for (const path of state.files) {
+    const rec = classify(layout, path);
+    if (rec?.id) ids.add(rec.id);
+    if (path !== WORDS && path !== MARKS && TEXT_RECORD.test(path) && (DISTILL_KINDS.has(rec?.kind) || rec?.settlesOwnerWords === true)) {
+      for (const m of state.read(path).matchAll(WORD_CITE)) cited.add(m[0]);
+    }
+  }
+  return words.filter(w => {
+    if (!isSubstantiveOwnerWord(w.text)) return false;
+    const mark = marks.get(w.id) ?? null;
+    const settled = mark ? (mark.as !== 'direction' || ids.has(mark.intervention)) : cited.has(w.id);
+    return !settled;
+  });
+}
+
+// D-0060, design/mandatory-control-plane.md#4
+function decisionAuthorityProblem(id, state, { batches, handoffIds, hasHandoffs }) {
+  const doc = state.read(recordPath(id));
+  const by = /^by:\s*(.*)$/mi.exec(doc)?.[1]?.trim() ?? '';
+  const answeredBatch = bid => Boolean(batches.find(b => b.id === bid)?.answered);
+  const committedHandoff = hid => Boolean(recordPath(hid) && state.files.has(recordPath(hid)) && (!hasHandoffs || handoffIds.has(hid)));
+  if (/^owner\b/i.test(by)) {
+    const byBatches = [...new Set([...by.matchAll(BATCH_CITE)].map(m => m[0]))];
+    if (byBatches.length && !byBatches.some(answeredBatch)) {
+      return `${id} claims owner batch ${byBatches.join(', ')} with no verbatim answer in owner/answers.jsonl`;
+    }
+    return null;
+  }
+  const batchRefs = [...new Set([...doc.matchAll(BATCH_CITE)].map(m => m[0]))];
+  const handoffRefs = [...new Set([...doc.matchAll(REVIEW_OR_JUDGE_CITE)].map(m => m[0]))];
+  if (batchRefs.some(answeredBatch) || handoffRefs.some(committedHandoff)) return null;
+  const details = [];
+  if (batchRefs.length) details.push(`unanswered batch ${batchRefs.join(', ')}`);
+  if (handoffRefs.length) details.push(`uncommitted handoff ${handoffRefs.join(', ')}`);
+  return `${id} lacks owner or generation-engine authority${by ? ` (by: ${by})` : ''}${details.length ? `: ${details.join('; ')}` : ': requires by: owner, a verbatim-answered B-NNNN batch, or a committed R-NNNN-reviewer-* / R-NNNN-judge-* handoff'}`;
+}
+
+// D-0060, design/mandatory-control-plane.md#4
+function hasOpenRefactorWindow(plan, state, handoffs) {
+  if (!state.files.has(WINDOWS)) return false;
+  const windows = parseWindows(state.read(WINDOWS), WINDOWS);
+  const rows = state.files.has(TRAJECTORY) ? parseRows(state.read(TRAJECTORY)).filter(r => r.phase === plan.phase) : [];
+  const phaseHandoffs = handoffs.filter(h => h.phase === plan.phase && state.files.has(h.record));
+  const win = windowState({ windows, handoffs: phaseHandoffs, rows, phase: plan.phase });
+  return Boolean(win.active && (win.mode === 'slack' || win.mode === 'converging'));
+}
+
+// D-0060, design/mandatory-control-plane.md#4
+function checkActorCoverage(plan, state, handoffs, fail) {
+  const actors = plan.packages.filter(p => p.role === 'actor');
+  if (!actors.length || hasOpenRefactorWindow(plan, state, handoffs)) return;
+  const critics = plan.packages.filter(p => p.role === 'critic');
+  const judges = plan.packages.filter(p => p.role === 'judge');
+  const byId = new Map(plan.packages.map(p => [p.id, p]));
+  const reachable = startId => {
+    const seen = new Set(), stack = [...(byId.get(startId)?.needs ?? [])];
+    while (stack.length) {
+      const id = stack.pop();
+      if (seen.has(id) || !byId.has(id)) continue;
+      seen.add(id);
+      for (const dep of byId.get(id).needs ?? []) stack.push(dep);
+    }
+    return seen;
+  };
+  const covered = new Set();
+  for (const c of critics) {
+    const reach = reachable(c.id);
+    for (const a of actors) {
+      if ((a.needs ?? []).includes(c.id) || (c.reviews ?? []).includes(a.id) || reach.has(a.id)) covered.add(a.id);
+    }
+  }
+  const uncovered = actors.filter(a => !covered.has(a.id));
+  if (uncovered.length) fail(`${plan.id}: actor package(s) lack critic coverage outside an open W-NNNN window: ${uncovered.map(a => a.id).join(', ')}`);
+  if (!judges.length) fail(`${plan.id}: actor packages require at least one judge package in the same plan outside an open W-NNNN window`);
+}
+
 export function validatePlan(plan, state) {
   const errors = [], fail = message => errors.push(message);
   if (!PLAN_ID.test(plan.id)) fail('plan id must be PL-NNNN');
   for (const key of ['scope', 'phase']) if (!text(plan[key])) fail(`plan needs ${key}`);
   if (!Array.isArray(plan.packages)) return [...errors, 'plan needs a packages list'];
-  const packages = new Map(), handoffs = new Set();
+  for (const w of openSubstantiveWords(state)) fail(`open substantive owner word ${w.id} must be distilled or marked before planning (0-turn grace)`);
+  const hasHandoffs = state.files.has(HANDOFFS);
+  const handoffs = hasHandoffs ? parseHandoffs(state.read(HANDOFFS)) : [];
+  const handoffIds = new Set(handoffs.map(h => h.id));
+  const batches = batchesFrom([...state.files], state.read);
+  const packages = new Map(), handoffsSeen = new Set();
   const hasRecord = id => recordPath(id) && state.files.has(recordPath(id));
   const reference = (id, at) => { if (!hasRecord(id)) fail(`${at}: missing committed record ${id}`); };
   for (const p of plan.packages) {
@@ -122,12 +222,20 @@ export function validatePlan(plan, state) {
     if (!ROLES.includes(p.role)) fail(`${p.id}: unknown role ${p.role}`);
     const h = HANDOFF_ID.exec(p.handoff ?? '');
     if (!h || Number(h[1]) < 1 || h[2] !== p.role) fail(`${p.id}: handoff must name this role and a positive round`);
-    if (handoffs.has(p.handoff)) fail(`duplicate expected handoff ${p.handoff}`);
-    handoffs.add(p.handoff);
+    if (handoffsSeen.has(p.handoff)) fail(`duplicate expected handoff ${p.handoff}`);
+    handoffsSeen.add(p.handoff);
     if (!Array.isArray(p.authority) || !p.authority.length || !p.authority.every(text)) fail(`${p.id}: authority is required`);
     else for (const authority of p.authority) {
-      if (!/^D-\d{4}$|^R-\d{4}-judge(?:-[a-z]+)*$/.test(authority)) fail(`${p.id}: authority must be a decision or judge ruling: ${authority}`);
+      if (!AUTHORITY_ID.test(authority)) fail(`${p.id}: authority must be a decision, reviewer handoff, or judge ruling: ${authority}`);
       reference(authority, `${p.id} authority`);
+      if (hasRecord(authority)) {
+        if (/^D-\d{4}$/.test(authority)) {
+          const problem = decisionAuthorityProblem(authority, state, { batches, handoffIds, hasHandoffs });
+          if (problem) fail(`${p.id} authority: ${problem}`);
+        } else if (hasHandoffs && !handoffIds.has(authority)) {
+          fail(`${p.id} authority: ${authority} has no committed handoff in ${HANDOFFS}`);
+        }
+      }
     }
     for (const field of ['files', 'needs']) if (!Array.isArray(p[field]) || !p[field].every(text)) fail(`${p.id}: ${field} must be a list (empty is allowed)`);
     if (p.reviews !== undefined && (!Array.isArray(p.reviews) || !p.reviews.every(text))) fail(`${p.id}: reviews must be a list of package ids`);
@@ -154,6 +262,7 @@ export function validatePlan(plan, state) {
     visiting.delete(id); visited.add(id);
   }
   if (plan.packages.every(p => Array.isArray(p.needs))) for (const id of packages.keys()) visit(id);
+  checkActorCoverage(plan, state, handoffs, fail);
   if (!errors.length) for (let i = 0; i < plan.packages.length; i++) for (let j = i + 1; j < plan.packages.length; j++) {
     const a = plan.packages[i], b = plan.packages[j], overlap = fileOverlap(a.files, b.files);
     if (overlap) fail(`${a.id} and ${b.id} share overlapping files: ${overlap.left} / ${overlap.right}`);
@@ -201,7 +310,7 @@ export function loadPlan(state, id) {
 export function planContext(state, plan, { live = true } = {}) {
   if (!state.files.has('loop.json')) throw new Error('missing committed loop.json');
   const cfg = { ...normalize(JSON.parse(state.read('loop.json')), state.records), configFile: join(state.records, 'loop.json') };
-  if (realpathSync(resolve(cfg.records)) !== state.records || cfg.phase !== plan.phase) throw new Error('plan and loop.json must name the same records repository and phase');
+  if (resolve(cfg.records) !== state.records || cfg.phase !== plan.phase) throw new Error('plan and loop.json must name the same records repository and phase');
   return { cfg, handoffs: parseHandoffs(state.read('metrics/handoffs.jsonl')),
     trajectory: parseRows(state.read('metrics/trajectory.jsonl')),
     batches: batchesFrom([...state.files], state.read), plans: plansFrom(state), prepared: live ? preparedIn(cfg) : [] };
@@ -256,7 +365,8 @@ export function readyPlan(state, plan, { context = planContext(state, plan), hos
     }
     for (const w of active) {
       const old = plans.flatMap(q => q.packages).find(q => q.handoff === w.id);
-      const paths = old?.files ?? (w.owns ?? []).flatMap(f => [f, `${f.replace(/\/$/, '')}/**`]);
+      const paths = Array.isArray(w.dispatch?.files) ? w.dispatch.files : (old?.files ?? null);
+      if (!paths || !paths.length) continue;
       const overlap = fileOverlap(p.files, paths);
       if (overlap) hold(row, 'writer', w.id, `record or reconcile ${w.id} before writing ${overlap.left}`);
     }

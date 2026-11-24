@@ -78,6 +78,10 @@ function mechanisms(t, { cadence, agents } = {}) {
   })) put(p.records, `decisions/${id}.md`, `# ${id} ${title}\n\nid: ${id}\nby: owner\nstatus: active\n`);
   for (const [id, title] of Object.entries({ "F-0011": "Generative engine", "F-0012": "Planning and dispatch" }))
     put(p.records, `blueprint/${id}.md`, `# ${id} ${title}\n\nid: ${id}\nphase: v1\nrequirements: P-0001\n`);
+  put(p.records, "metrics/windows.jsonl", jsonl({
+    type: "open", id: "W-0001", phase: "v1", startRound: 1, horizon: 12,
+    goal: "v1 round-8 mechanisms fixture", invariants: ["acceptance passes"], openedAt: at(0), openedBy: "lead",
+  }));
   put(p.records, "metrics/blueprint.jsonl", readFileSync(join(p.records, "metrics/blueprint.jsonl"), "utf8")
     + jsonl(...["F-0011", "F-0012"].map(feature => ({ feature, status: "building", time: at(1), by: "lead", note: "Work started", evidence: {} }))));
 
@@ -88,16 +92,25 @@ function mechanisms(t, { cadence, agents } = {}) {
   };
   publish("Record the authorized inputs", at(1));
   const host = value => hostMeasurement(w, value);
+  let lastPlanId = null;
+  let lastPackages = [];
   const plan = (id, packages, { when = at(20), tasks = packages, ...options } = {}) => {
+    lastPlanId = id;
+    lastPackages = packages;
     for (const item of tasks) put(p.workDir, `tasks/${item.handoff}.md`, taskText(item));
     put(p.records, `plans/${id}.md`, planText(id, packages, options));
     return publish(`Publish ${id}`, when);
   };
   const prepare = (item, when = at(30)) => {
     const [, round, step] = /^R-(\d+)-(.+)$/.exec(item.handoff);
+    let planId = lastPackages.some(q => q.id === item.id && q.handoff === item.handoff) ? lastPlanId : null;
+    if (!planId) {
+      planId = "PL-0099";
+      plan(planId, [item], { when });
+    }
     const task = put(p.workDir, `tasks/${item.handoff}.md`, taskText(item));
     return jsonOutput(w.run("call.mjs", [p.config, item.role, "--round", String(Number(round)), "--step", step,
-      "--task", task, "--prepare"], { at: when }));
+      "--plan", planId, "--package", item.id, "--task", task, "--prepare"], { at: when }));
   };
   const record = (item, prepared, { start = at(40), end = start, when = end, terminal = "complete" } = {}) => {
     const { ws, wt, id, prompt } = prepared;

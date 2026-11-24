@@ -1,3 +1,4 @@
+// P-0011, D-0058, D-0060
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -59,7 +60,6 @@ test("1. T1 0-bug green streak progresses ok -> async-due -> hard-due (exit 7) a
   const s = await setup({}, { cadence: { deliveries: 2, outerGrace: 1 } });
   const config = writeConfig(s);
 
-  // Two green actor deliveries with zero bugs / zero blockers
   for (let i = 1; i <= 2; i++) {
     const { base, commit } = commitProductFile(s.product, `src/f${i}.js`, `export const f${i} = ${i};\n`, `delivery ${i}`);
     appendHandoff(s.records, actorHandoff(i + 1, base, commit, `2026-11-24T01:0${i}:00Z`));
@@ -78,10 +78,8 @@ test("1. T1 0-bug green streak progresses ok -> async-due -> hard-due (exit 7) a
   assert.match(nextAsync.stdout, /Outer loop due asynchronously \(T1\)/);
   assert.match(nextAsync.stdout, /--step reviewer-architecture/);
 
-  // Within async grace: actor dry-run is still allowed
   assert.equal(s.run("actor", { round: 4, dry: true }).code, EXIT.done);
 
-  // 3rd actor delivery exceeds grace (2 + 1 = 3) -> hard-due
   const { base: b3, commit: c3 } = commitProductFile(s.product, "src/f3.js", "export const f3 = 3;\n", "delivery 3");
   appendHandoff(s.records, actorHandoff(4, b3, c3, "2026-11-24T01:03:00Z"));
   commitAll(s.records, "actor delivery 3");
@@ -101,12 +99,10 @@ test("1. T1 0-bug green streak progresses ok -> async-due -> hard-due (exit 7) a
   assert.match(refused.message, /reviewer-architecture/);
   assert.match(refused.message, /T1 delivery cadence/);
 
-  // Non-actor roles are never blocked by the outer-loop gate
   assert.equal(s.run("critic", { round: 5, dry: true }).code, EXIT.done);
   assert.equal(s.run("judge", { round: 5, dry: true }).code, EXIT.done);
   assert.equal(s.run("reviewer", { round: 5, step: "reviewer-architecture", dry: true }).code, EXIT.done);
 
-  // Running reviewer-architecture resets outer loop back to ok and unblocks actor
   const arch = s.run("reviewer", { round: 5, step: "reviewer-architecture" });
   assert.equal(arch.code, EXIT.done, arch.message);
   const handoffsAfter = readFileSync(join(s.records, "metrics/handoffs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
@@ -122,14 +118,12 @@ test("2. T3 arch-facts hard-size breach triggers async-due -> hard-due after gra
   const big = Array.from({ length: 850 }, (_, i) => `export const x${i} = ${i};`).join("\n") + "\n";
   commitProductFile(s.product, "src/god-module.js", big, "add god module");
 
-  // 0 deliveries since baseline: T3 is async-due, actor still allowed
   const next0 = runNext(s, config);
   assert.equal(next0.status, 0, next0.stderr);
   assert.match(next0.stdout, /Outer loop: async-due \(T3\)/);
   assert.match(next0.stdout, /src\/god-module\.js/);
   assert.equal(s.run("actor", { round: 2, dry: true }).code, EXIT.done);
 
-  // 1 delivery reaches outerGrace=1 with T3 active -> hard-due, actor exits 7
   const { base, commit } = commitProductFile(s.product, "src/touch.js", "export const t = 1;\n", "one more delivery");
   appendHandoff(s.records, actorHandoff(2, base, commit, "2026-11-24T01:01:00Z"));
   commitAll(s.records, "delivery under T3");
@@ -139,7 +133,6 @@ test("2. T3 arch-facts hard-size breach triggers async-due -> hard-due after gra
   assert.match(blocked.message, /T3 arch-facts breach/);
   assert.match(blocked.message, /src\/god-module\.js/);
 
-  // Opening a Bounded Horizon Window authorizes refactoring slack and lifts the outer-loop hard gate during slack
   openWindow(s.records, { phase: PHASE, startRound: 3, horizon: 3, goal: "Decompose god module", invariants: ["All files <= 500 lines"] });
   assert.equal(s.run("actor", { round: 3, dry: true }).code, EXIT.done);
 });
@@ -148,7 +141,6 @@ test("3. read-only reviewer-architecture gets arch-facts.json + readable wt, mak
   const s = await setup({});
   const beforeProduct = git(s.product, "rev-parse", "loop/s5");
 
-  // Legitimate read of product worktree via Read succeeds with 0 violations and 0 product commits
   const dry = s.run("reviewer", { round: 2, step: "reviewer-architecture", dry: true });
   assert.equal(dry.code, EXIT.done, dry.message);
   const factsPath = join(dry.ws, "arch-facts.json");
@@ -169,21 +161,18 @@ test("3. read-only reviewer-architecture gets arch-facts.json + readable wt, mak
   assert.equal(ok.handoff.product.commit, beforeProduct, "zero product commits from reviewer-architecture");
   assert.equal(git(s.product, "rev-parse", "loop/s5"), beforeProduct);
 
-  // Accessing sealed/ triggers EXIT.violation (6)
   s.scenarioSet({
     reviewer: [{ events: [{ name: "Read", input: { file_path: join(s.sealed, "case-07.mjs") } }] }],
   });
   const sealedHit = s.run("reviewer", { round: 3, step: "reviewer-architecture" });
   assert.equal(sealedHit.code, EXIT.violation, sealedHit.message);
 
-  // Running Bash triggers EXIT.violation (6)
   s.scenarioSet({
     reviewer: [{ events: [{ name: "Bash", input: { command: "ls" } }] }],
   });
   const bashHit = s.run("reviewer", { round: 4, step: "reviewer-architecture" });
   assert.equal(bashHit.code, EXIT.violation, bashHit.message);
 
-  // Mutating the detached product worktree triggers EXIT.violation (6)
   s.scenarioSet({
     reviewer: [{ write: { "ws:wt/src/a.js": "export const hacked = 1;\n" } }],
   });
@@ -221,11 +210,10 @@ test("4. owner-words strips T3/harness noise envelopes and distinguishes routine
   }
 });
 
-test("5. owner-word distillation gate allows 1-turn grace, refuses 2nd actor turn (exit 7), and unblocks once distilled", async () => {
+test("5. owner-word distillation gate enforces 0-turn grace on 1st actor turn (exit 7), leaves reviewer open, and unblocks once distilled", async () => {
   const s = await setup({});
   const config = writeConfig(s);
 
-  // Routine open word never triggers distillation refusal
   const routineWord = {
     id: "W-1111111111", time: "2026-11-24T00:10:00Z", source: "claude", session: "s1",
     text: "去做", sha256: "a",
@@ -236,41 +224,28 @@ test("5. owner-word distillation gate allows 1-turn grace, refuses 2nd actor tur
   };
   appendWords(s.records, [routineWord, substantiveWord]);
 
-  // loop.mjs next recommends async reviewer-distill
   const nextOut = runNext(s, config);
   assert.equal(nextOut.status, 0, nextOut.stderr);
   assert.match(nextOut.stdout, /substantive open owner word\(s\) \(W-2222222222\)/);
   assert.match(nextOut.stdout, /--step reviewer-distill/);
 
-  // 1st actor turn after substantive word is ALLOWED (1-turn async grace)
-  assert.equal(s.run("actor", { round: 2, dry: true }).code, EXIT.done);
-
-  // Commit that 1st actor hand-off with timestamp strictly after substantiveWord.time
-  const { base, commit } = commitProductFile(s.product, "src/step1.js", "export const s1 = 1;\n", "actor turn 1");
-  appendHandoff(s.records, actorHandoff(2, base, commit, "2026-11-24T00:30:00Z"));
-  commitAll(s.records, "actor handoff after owner word");
-
-  // 2nd actor turn while substantive word is STILL open -> REFUSED with exit 7
-  const refused = s.run("actor", { round: 3, dry: true });
+  const refused = s.run("actor", { round: 2, dry: true });
   assert.equal(refused.code, EXIT.records, `expected exit 7, got ${refused.code}: ${refused.message}`);
   assert.match(refused.message, /W-2222222222/);
   assert.match(refused.message, /reviewer-distill/);
   assert.doesNotMatch(refused.message, /W-1111111111/, "routine ack is not blocked");
 
-  // reviewer-distill itself is never blocked
-  assert.equal(s.run("reviewer", { round: 3, step: "reviewer-distill", dry: true }).code, EXIT.done);
+  assert.equal(s.run("reviewer", { round: 2, step: "reviewer-distill", dry: true }).code, EXIT.done);
 
-  // Distill substantiveWord into purpose/ citing its ID -> actor passes again (even though routineWord is still open)
   put(s.records, "purpose/P-0002.md", "# P-0002 Code-enforced gates\n\nwords: W-2222222222\n");
   commitAll(s.records, "distill owner word");
-  assert.equal(s.run("actor", { round: 3, dry: true }).code, EXIT.done);
+  assert.equal(s.run("actor", { round: 2, dry: true }).code, EXIT.done);
 });
 
 test("6. self-loop start surfaces missing Antigravity hooks.json when a T3 instance exists and stays silent when none exists", () => {
   const lead = loopProduct({ activity: "2026-11-24T00:00:00.000Z" });
   const store = ownerStore([{ name: "lead", records: lead.records }]);
 
-  // No Antigravity dir on host -> silent & healthy
   const cleanEnv = isolatedEnv({ SELF_LOOP_OWNER_STORE: store });
   const cleanJson = selfLoop(["start", "--now", "2026-11-24T01:00:00.000Z", "--json"], { cwd: lead.product, env: cleanEnv });
   assert.equal(cleanJson.status, 0, cleanJson.stderr);
@@ -282,7 +257,6 @@ test("6. self-loop start surfaces missing Antigravity hooks.json when a T3 insta
   assert.equal(cleanText.status, 0, cleanText.stderr);
   assert.doesNotMatch(cleanText.stdout, /hooks \(antigravity\)/);
 
-  // Fake T3 Antigravity instance dir without hooks.json -> surfaced in both --json and text
   const fakeT3 = temp("fake-t3-home-");
   mkdirSync(join(fakeT3, "userdata", "providers", "antigravity", "inst-deadbeef", "antigravity-acp"), { recursive: true });
   const agEnv = isolatedEnv({ SELF_LOOP_OWNER_STORE: store, T3CODE_HOME: fakeT3 });

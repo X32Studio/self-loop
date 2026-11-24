@@ -1,4 +1,4 @@
-// self-loop-records@bd8a1ad:evidence/0012/admitted-time-budget/contracts.json
+// D-0060
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
@@ -25,6 +25,7 @@ export function fixture(t, { deadline = 24, packages, timed = true } = {}) {
   put('purpose/P-0001.md', '# P-0001\nUsable save/reopen, never sacrifice quality to meet an estimate.\n');
   put('metrics/handoffs.jsonl','');
   put('metrics/trajectory.jsonl','');
+  put('metrics/windows.jsonl',JSON.stringify({type:'open',id:'W-0001',phase:'tb',startRound:1,horizon:12,goal:'time-budget fixture',invariants:['acceptance passes'],openedAt:h(0),openedBy:'lead'})+'\n');
   put('records.json',json({extraKinds:[{kind:'Plan',path:'plans/PL-NNNN.md',changes:'immutable',citedAs:'PL-NNNN'},{kind:'Forecast observation',path:'forecasts/FO-<digest>.json',changes:'immutable',settlesOwnerWords:false},{kind:'Continuation delivery',path:'metrics/continuations.jsonl',changes:'append-only',settlesOwnerWords:false},{kind:'Delegation',path:'delegations/T-NNNN.md',changes:'append-only'}]}));
   put('loop.json',json({product:records,records,workDir:work,phase:'tb',briefs:{},agents:{actor:{runner:'t3',provider:'codex',model:'fixture',effort:'high'}},branch:'main',setup:[]}));
   writeFileSync(join(store,'products.json'),json({roots:[],products:[{name:'tb',records}]}));

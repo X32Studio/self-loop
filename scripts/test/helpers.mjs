@@ -1,3 +1,4 @@
+// F-0008, D-0060
 import "../lib/unbind-git.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
@@ -9,7 +10,7 @@ export const here = dirname(fileURLToPath(import.meta.url));
 export const fixtures = join(here, "fixtures");
 export const scripts = join(here, "..");
 export const skill = join(scripts, "..");
-process.env.SELF_LOOP_TEST = "1"; // the scripted stand-in agent (fake-agent.mjs) runs on the `cmd` runner
+process.env.SELF_LOOP_TEST = "1";
 export const temp = (name = "self-loop-test-") => mkdtempSync(join(tmpdir(), name));
 const ENV = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.invalid" };
 process.env.GIT_AUTHOR_NAME ??= "t"; process.env.GIT_AUTHOR_EMAIL ??= "t@example.invalid";
@@ -19,7 +20,6 @@ export function git(repo, ...argv) {
   return execFileSync("git", ["-C", repo, ...argv], { encoding: "utf8", env: ENV }).trim();
 }
 
-/** A git repository with the given files committed. */
 export function repo(files, dir = temp()) {
   git(dir, "init", "-q", "-b", "main");
   for (const [path, text] of Object.entries(files)) {
@@ -30,7 +30,6 @@ export function repo(files, dir = temp()) {
   return dir;
 }
 
-/** Replay the frozen S4 ancestry and access.js excerpts as an isolated Git repository. */
 export function s4History() {
   const product = repo({}), commits = new Map();
   for (const { sha, parent, refs, access } of JSON.parse(readFileSync(join(fixtures, "s4-history.json"), "utf8"))) {
@@ -46,11 +45,10 @@ export function s4History() {
     commits.set(sha, replay);
     for (const ref of refs) git(product, "update-ref", ref, replay);
   }
-  git(product, "remote", "add", "origin", "https://github.com/example/app.git");
+  git(product, "remote", "add", "origin", "https://github.com/example/example-app.git");
   return { product, commits };
 }
 
-/** Every file under a folder whose text contains `needle`. */
 export function grepTree(dir, needle) {
   const hits = [];
   const walk = d => { for (const n of readdirSync(d)) { const p = join(d, n); if (statSync(p).isDirectory()) walk(p); else if (readFileSync(p, "utf8").includes(needle)) hits.push(p.slice(dir.length + 1)); } };
@@ -61,14 +59,6 @@ export function grepTree(dir, needle) {
 export const BRIEFS = { shared: "engines/shared.md", critic: "engines/critic.md", actor: "engines/actor.md", judge: "engines/judge.md", reviewer: "engines/frame-reviewer.md" };
 export const green = (name = "verify", app = "github-actions", conclusion = "success", started_at = "2026-11-20T00:00:00Z") => ({ app, name, status: "completed", conclusion, started_at });
 
-/**
- * A stand-in `gh` for the CI gate (lib/ci.mjs `FORGES.github.fetchRuns`), first on `env.PATH`: `gh api
- * repos/<owner/name>/commits/<sha>/check-runs…` logs the query and prints the runs `serve` holds for that repository
- * and commit, one JSON object per line as `--jq` does. A repository and commit it holds nothing for exits 1: the checks
- * cannot be read. No network.
- * @param served { "owner/name": { [sha]: runs } }
- * @returns {{ env, serve(served), queries(): string[] }} `queries()` lists "owner/name sha" per read, in order
- */
 export function fakeGh(served = {}) {
   const bin = temp("self-loop-gh-");
   const data = join(bin, "runs.json"), log = join(bin, "queries");
@@ -87,12 +77,6 @@ for (const run of runs) console.log(JSON.stringify(run));
   return { bin, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, serve, queries };
 }
 
-/**
- * A stand-in `aws` CLI v2 on `env.PATH` for AWS CodeCommit/CodeBuild tests (single AWS test seam mirroring `fakeGh`).
- * Enforces real AWS CLI v2 semantics: auto-pagination without `--max-items`/`--no-paginate`, error on `--sort-order`
- * when holding >100 builds, strict unknown-flag rejection (including `--next-token`), mutual exclusion of
- * `--no-paginate` with `--max-items`/`--starting-token`, and `--cli-input-json` support. Logs exact argv and AWS env.
- */
 export function fakeAws(initialState = {}) {
   const bin = temp("self-loop-aws-");
   const data = join(bin, "state.json"), log = join(bin, "calls.jsonl");
@@ -222,38 +206,61 @@ fail(252, "Unsupported aws command: " + argv.join(" "));
   return { bin, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, serve, calls, clearCalls };
 }
 
-/** Red evidence: the line of fixtures/v0.2-red/probes.log for a case, run on a4db050 (probes.mjs.txt there). */
 export const redOn = name => {
   const line = readFileSync(join(fixtures, "v0.2-red", "probes.log"), "utf8").split("\n").find(l => l.startsWith(`${name} `));
   if (!line) throw new Error(`no red evidence for ${name}`);
   return JSON.parse(line.slice(name.length + 1));
 };
 
-/**
- * A product repository (branch loop/s5, a GitHub-looking origin), a sealed repository, a records repository with
- * committed briefs, and a config whose agents are the scripted stand-in (fake-agent.mjs). `run(role, opts)` makes one
- * call through call.mjs's module entry.
- */
+const pad4 = n => String(n).padStart(4, "0");
+const globOf = list => (list ?? []).map(p => `${p.replace(/\/$/, "")}/**`).join(", ");
+const renderPlan = (id, scope, phase, packages) => [
+  `# ${id} Test plan`, `scope: ${scope}`, `phase: ${phase}`, "",
+  ...packages.flatMap(p => [
+    `## ${p.id}`, `role: ${p.role}`, `handoff: ${p.handoff}`, "authority: D-0001",
+    `goal: Test ${p.id}`, `files: ${p.files ?? ""}`, "interface: fixed", "acceptance: pass",
+    `needs: ${p.needs ?? ""}`, ...(p.reviews ? [`reviews: ${p.reviews}`] : []), "",
+  ]),
+].join("\n");
+
 export async function setup(scenario = {}, overrides = {}) {
-  const { call, normalize } = await import("../call.mjs");
+  const { call, normalize, preparedIn } = await import("../call.mjs");
+  const { gitOk, regularFiles } = await import("../lib/git-plumbing.mjs");
+  const { HANDOFFS, hasPhaseFrame, idOf, parseHandoffs } = await import("../lib/handoff.mjs");
+  const { plansFrom, snapshot } = await import("../lib/plan.mjs");
+  const { commitRecords } = await import("../lib/records-commit.mjs");
   const product = repo({ "src/a.js": "export const a = 1;\n", "test/a.test.js": "// cases\n", "docs/PURPOSE.md": "# Purpose\n\nBooks survive a restart.\n" });
   git(product, "branch", "loop/s5");
   git(product, "remote", "add", "origin", "https://github.com/example/product.git");
   const sealed = repo({ "case-07.mjs": "export default { expects: 'SEALED_CASE_07' }\n" });
   const { BLUEPRINT, inspectBlueprint, renderBlueprint } = await import("../lib/blueprint.mjs");
   const { ownerAlarms } = await import("../lib/blueprint-alarms.mjs");
+  const initPhase = overrides.phase ?? "S5";
+  const owns = overrides.owns ?? { critic: ["test"], actor: ["src"] };
+  const extraRecords = overrides.recordFiles ?? {};
   const files = {
     "README.md": "# loop records\n",
     "purpose/P-0001.md": "# P-0001 Test purpose\n",
-    "blueprint/F-0001.md": "# F-0001 Test feature\n\nid: F-0001\nphase: S5\nrequirements: P-0001\n",
+    "decisions/D-0001.md": "# D-0001 Test decision\n\nid: D-0001\nby: owner\nstatus: active\n",
+    "blueprint/F-0001.md": `# F-0001 Test feature\n\nid: F-0001\nphase: ${initPhase}\nrequirements: P-0001\n`,
     ...Object.fromEntries(Object.values(BRIEFS).map(p => [p, `# ${p}\n\nBrief text.\n`])),
-    ...overrides.recordFiles,
+    ...(overrides.plans !== false && !Object.keys(extraRecords).some(k => k.startsWith("plans/")) ? {
+      "plans/PL-0001.md": renderPlan("PL-0001", "helper/r1", initPhase, [
+        { id: "critic", role: "critic", handoff: "R-0001-critic", files: globOf(owns.critic), reviews: "actor" },
+        { id: "actor", role: "actor", handoff: "R-0001-actor", files: globOf(owns.actor) },
+        { id: "judge-cov", role: "judge", handoff: "R-0001-judge-cov", files: "" },
+      ]),
+      "plans/PL-0002.md": renderPlan("PL-0002", "helper/r1-judge", initPhase, [
+        { id: "judge", role: "judge", handoff: "R-0001-judge", files: "" },
+      ]),
+    } : {}),
+    ...extraRecords,
   };
   if (overrides.frame !== false) {
     const record = "rounds/0001-reviewer-frame.md";
     files[record] = "# R-0001-reviewer-frame\n";
     files["metrics/handoffs.jsonl"] = JSON.stringify({
-      id: "R-0001-reviewer-frame", time: "2026-11-20T00:00:00Z", phase: "S5", round: 1, step: "reviewer-frame", role: "reviewer",
+      id: "R-0001-reviewer-frame", time: "2026-11-20T00:00:00Z", phase: initPhase, round: 1, step: "reviewer-frame", role: "reviewer",
       record, files: [record], view: "f".repeat(40), attempt: 1, agent: { runner: "claude" }, product: null, audit: { violations: 0 },
     }) + "\n";
   }
@@ -264,22 +271,62 @@ export async function setup(scenario = {}, overrides = {}) {
   const scenarioFile = join(dir, "scenario.json");
   writeFileSync(scenarioFile, JSON.stringify(scenario));
   const agent = () => ({ runner: "cmd", cmd: [process.execPath, join(here, "fake-agent.mjs"), scenarioFile] });
-  const { recordFiles, frame, ...rest } = overrides;
+  const { recordFiles, frame, plans, ...rest } = overrides;
   const cfg = normalize({
-    product, branch: "loop/s5", records, phase: "S5", workDir: join(dir, "work"), briefs: BRIEFS, sealed: [sealed],
-    purpose: ["docs/PURPOSE.md"], owns: { critic: ["test"], actor: ["src"] }, protected: ["main"],
+    product, branch: "loop/s5", records, phase: initPhase, workDir: join(dir, "work"), briefs: BRIEFS, sealed: [sealed],
+    purpose: ["docs/PURPOSE.md"], owns, protected: ["main"],
     agents: { critic: agent(), actor: agent(), judge: agent(), reviewer: agent() }, commitPrefix: "loop(s5)",
     ...rest,
   }, dir);
   const logs = [];
-  const run = (role, opts = {}) => call(cfg, role, { round: 1, task: `Task for the ${role}.\nfeatures: ${role === "reviewer" ? "none" : "F-0001"}\n`, ...opts }, { log: m => logs.push(m) });
+  const ensurePlan = (role, round, step) => {
+    const metaJudge = role === "judge" && (/^judge-frame(?:-[a-z]+)*$/.test(step) || /^judge-comments(?:-[a-z]+)*$/.test(step));
+    if (role === "reviewer" || metaJudge || process.env.SELF_LOOP_TEST !== "1") return {};
+    if (!Number.isInteger(round) || round < 1) return {};
+    if (step !== role && !new RegExp(`^${role}(-[a-z]+)+$`).test(step)) return {};
+    if (gitOk(cfg.records, "cat-file", "-e", `HEAD:${HANDOFFS}`) && !gitOk(cfg.records, "diff", "--quiet", "HEAD", "--", HANDOFFS)) return {};
+    const head = git(cfg.records, "rev-parse", "HEAD");
+    const paths = new Set(regularFiles(cfg.records, head).map(f => f.path));
+    const handoffs = paths.has(HANDOFFS) ? parseHandoffs(git(cfg.records, "show", `${head}:${HANDOFFS}`)) : [];
+    if (!hasPhaseFrame(handoffs, cfg.phase, p => paths.has(p))) return {};
+    const wanted = idOf(round, step);
+    const st = snapshot(cfg.records, "HEAD");
+    const all = plansFrom(st);
+    const active = all.filter(p => p.phase === cfg.phase && !all.some(q => q.supersedes === p.id));
+    for (const p of active) {
+      const hit = p.packages.find(pkg => pkg.role === role && pkg.handoff === wanted);
+      if (hit) return { plan: p.id, package: hit.id };
+    }
+    const maxNo = Math.max(9, ...all.map(p => Number(p.id.slice(3))).filter(Number.isFinite));
+    const planId = `PL-${pad4(maxNo + 1)}`;
+    const liveSame = preparedIn(cfg).some(w => w.liveWorkspace && w.role === role);
+    const scopeFiles = liveSame ? "" : role === "actor" ? globOf(cfg.owns.actor) : role === "critic" ? globOf(cfg.owns.critic) : "";
+    const pkgs = role === "actor"
+      ? [
+          { id: step, role: "actor", handoff: wanted, files: scopeFiles },
+          { id: `${step}-cr`, role: "critic", handoff: `R-${pad4(round)}-critic-${step.replace(/[^a-z]/g, "")}cov`, files: "", reviews: step },
+          { id: `${step}-jg`, role: "judge", handoff: `R-${pad4(round)}-judge-${step.replace(/[^a-z]/g, "")}cov`, files: "" },
+        ]
+      : [{ id: step, role, handoff: wanted, files: scopeFiles }];
+    commitRecords(cfg.records, ({ files: fset, add }) => {
+      if (!fset.has("decisions/D-0001.md")) add("decisions/D-0001.md", "# D-0001 Test decision\n\nid: D-0001\nby: owner\nstatus: active\n");
+      add(`plans/${planId}.md`, renderPlan(planId, `helper/${cfg.phase}/${round}/${step}`, cfg.phase, pkgs));
+      return { message: `helper plan ${planId}` };
+    });
+    return { plan: planId, package: step };
+  };
+  const run = (role, opts = {}) => {
+    const round = opts.round ?? 1;
+    const step = opts.step ?? role;
+    const auto = opts.plan === undefined && opts.package === undefined && opts.pkg === undefined ? ensurePlan(role, round, step) : {};
+    return call(cfg, role, { round, step, task: `Task for the ${role}.\nfeatures: ${role === "reviewer" ? "none" : "F-0001"}\n`, ...auto, ...opts }, { log: m => logs.push(m) });
+  };
   const counts = () => (existsSync(`${scenarioFile}.counts.json`) ? JSON.parse(readFileSync(`${scenarioFile}.counts.json`, "utf8")) : {});
   const prompt = (role, n) => readFileSync(`${scenarioFile}.${role}.${n}.prompt`, "utf8");
   const scenarioSet = s => writeFileSync(scenarioFile, JSON.stringify(s));
   return { cfg, product, records, sealed, dir, scenarioFile, logs, run, counts, prompt, scenarioSet };
 }
 
-/** Environment for a child self-loop command: a private HOME and no inherited owner store or configuration. */
 export function isolatedEnv(extra = {}) {
   const env = { ...process.env, HOME: temp("self-loop-home-") };
   for (const key of [
@@ -290,15 +337,10 @@ export function isolatedEnv(extra = {}) {
   return { ...env, ...extra };
 }
 
-/** Run scripts/self-loop.mjs. */
 export function selfLoop(args, { cwd = process.cwd(), env = isolatedEnv() } = {}) {
   return spawnSync(process.execPath, [join(scripts, "self-loop.mjs"), ...args], { cwd, env, encoding: "utf8" });
 }
 
-/**
- * A product loop: a product repository (branch loop/v1) and its records repository holding loop.json. `activity` is
- * the time of one `building` feature event (none when null); `loop` overrides loop.json fields.
- */
 export function loopProduct({ phase = "v1", activity = null, loop = {}, loopJson = true, dir = temp("self-loop-product-") } = {}) {
   const product = join(dir, "product"), records = join(dir, "records");
   mkdirSync(product, { recursive: true });
@@ -316,7 +358,6 @@ export function loopProduct({ phase = "v1", activity = null, loop = {}, loopJson
   return { dir, product, records };
 }
 
-/** An owner store with its registry committed. */
 export function ownerStore(products, { roots = [], dir = temp("self-loop-owner-"), bound = {} } = {}) {
   return repo({ "README.md": "# Owner store\n", "products.json": JSON.stringify({ products, roots, ...bound }, null, 2) + "\n" }, dir);
 }

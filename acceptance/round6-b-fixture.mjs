@@ -1,6 +1,9 @@
+// D-0060
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { preparedIn } from "../scripts/lib/t3-child.mjs";
+import { plansFrom, snapshot } from "../scripts/lib/plan.mjs";
 import { json, jsonl, jsonOutput, output, put, status, world } from "./fixture.mjs";
 import { now, seed, seeded } from "./scenario.mjs";
 
@@ -8,6 +11,17 @@ export const handoffs = "metrics/handoffs.jsonl";
 export const trajectory = "metrics/trajectory.jsonl";
 export const integration = "loop/v1";
 export const greenCheck = { id: 1, app: "github-actions", name: "verify", status: "completed", conclusion: "success" };
+const META_JUDGE = /^(?:judge-frame(?:-[a-z]+)*|judge-comments(?:-[a-z]+)*)$/;
+const pad4 = n => String(n).padStart(4, "0");
+const globOf = list => (list ?? []).map(p => `${p.replace(/\/$/, "")}/**`).join(", ");
+const renderPlan = (id, scope, phaseName, packages) => [
+  `# ${id} Fixture plan`, `scope: ${scope}`, `phase: ${phaseName}`, "",
+  ...packages.flatMap(q => [
+    `## ${q.id}`, `role: ${q.role}`, `handoff: ${q.handoff}`, "authority: D-0090",
+    `goal: Deliver ${q.id}`, `files: ${q.files ?? ""}`, "interface: fixed", "acceptance: pass",
+    `needs: ${q.needs ?? ""}`, ...(q.reviews ? [`reviews: ${q.reviews}`] : []), "",
+  ]),
+].join("\n");
 
 export function round6B(t) {
   const w = world(t);
@@ -18,7 +32,11 @@ export function round6B(t) {
 }
 
 export function phase(w, name = "work", { files = {}, agents = {} } = {}) {
-  const product = w.repo(join(w.projects, name), { VERSION: "1.0.0\n", ...files });
+  const product = w.repo(join(w.projects, name), {
+    VERSION: "1.0.0\n",
+    "smoke.test.mjs": 'import test from "node:test";\ntest("smoke", () => {});\n',
+    ...files,
+  });
   w.git(product, "branch", integration);
   w.git(product, "remote", "add", "origin", "https://github.com/example/fixture.git");
   const records = join(w.projects, name + "-records");
@@ -28,7 +46,7 @@ export function phase(w, name = "work", { files = {}, agents = {} } = {}) {
   const roles = ["reviewer", "critic", "actor", "judge"];
   const t3 = { runner: "t3", provider: "codex", model: "fixture-codex" };
   w.repo(records, {
-    "records.json": "{}\n",
+    "records.json": json({ extraKinds: [{ kind: "Plan", path: "plans/PL-NNNN.md", changes: "immutable", citedAs: "PL-NNNN" }] }),
     "loop.json": json({
       product, records, workDir, phase: "v1", branch: integration, protected: ["main"],
       owns: { critic: ["acceptance"], actor: ["src", ".githooks"] },
@@ -36,6 +54,7 @@ export function phase(w, name = "work", { files = {}, agents = {} } = {}) {
       agents: { reviewer: { runner: "claude" }, critic: t3, actor: t3, judge: { ...t3, provider: "claude" }, ...agents },
       gates: { suite: "node --test", require: ["github-actions/verify"] },
     }),
+    "decisions/D-0090.md": "# D-0090 Authorize fixture phase\n\nid: D-0090\nby: owner\nstatus: active\n",
     "purpose/P-0001.md": "# P-0001 Build the phase\n\nstatus: active\n",
     "blueprint/F-0003.md": "# F-0003 Deliver the feature\n\nid: F-0003\nphase: v1\nrequirements: P-0001\n",
     "metrics/blueprint.jsonl": jsonl({ feature: "F-0003", status: "building", time: now, by: "lead", note: "Work started", evidence: {} }),
@@ -50,12 +69,51 @@ export function phase(w, name = "work", { files = {}, agents = {} } = {}) {
   }));
   status(w.run("records-check.mjs", ["--repo", records, "--write"]), 0);
   w.commit(records, "Record the frame");
-  return { name, product, records, workDir, config, initial };
+  return { name, product, records, workDir, config, initial, _run: w.run };
 }
 
-export function argsFor(w, p, role, { round = 2, step = role, base } = {}) {
+function ensurePlan(w, p, role, round, step) {
+  if (role === "reviewer" || (role === "judge" && META_JUDGE.test(step))) return [];
+  const cfg = JSON.parse(readFileSync(p.config, "utf8"));
+  const st = snapshot(p.records, "HEAD");
+  const all = plansFrom(st);
+  const active = all.filter(q => q.phase === cfg.phase && !all.some(o => o.supersedes === q.id));
+  const wanted = `R-${pad4(round)}-${step}`;
+  for (const q of active) {
+    const hit = q.packages.find(pkg => pkg.role === role && pkg.handoff === wanted);
+    if (hit) return ["--plan", q.id, "--package", hit.id];
+  }
+  const maxNo = Math.max(9, ...all.map(q => Number(q.id.slice(3))).filter(Number.isFinite));
+  const planId = `PL-${pad4(maxNo + 1)}`;
+  const liveSame = preparedIn({ ...cfg, workDir: p.workDir, records: p.records }).some(x => x.liveWorkspace && x.role === role);
+  const scopeFiles = liveSame ? "" : role === "actor" ? globOf(cfg.owns?.actor) : role === "critic" ? globOf(cfg.owns?.critic) : "";
+  const tag = step.replace(/[^a-z]/g, "") || role;
+  const pkgs = role === "actor"
+    ? [
+        { id: step, role: "actor", handoff: wanted, files: scopeFiles },
+        { id: `${step}-cr`, role: "critic", handoff: `R-${pad4(round)}-critic-${tag}cov`, files: "", reviews: step },
+        { id: `${step}-jg`, role: "judge", handoff: `R-${pad4(round)}-judge-${tag}cov`, files: "" },
+      ]
+    : [{ id: step, role, handoff: wanted, files: scopeFiles }];
+  if (!st.files.has("decisions/D-0090.md")) {
+    put(p.records, "decisions/D-0090.md", "# D-0090 Authorize fixture phase\n\nid: D-0090\nby: owner\nstatus: active\n");
+  }
+  const rcRaw = st.files.has("records.json") ? JSON.parse(st.read("records.json")) : {};
+  const extraKinds = rcRaw.extraKinds ?? [];
+  if (!extraKinds.some(k => k.kind === "Plan")) {
+    put(p.records, "records.json", json({ ...rcRaw, extraKinds: [...extraKinds, { kind: "Plan", path: "plans/PL-NNNN.md", changes: "immutable", citedAs: "PL-NNNN" }] }));
+  }
+  put(p.records, `plans/${planId}.md`, renderPlan(planId, `fixture/${cfg.phase}/${round}/${step}`, cfg.phase, pkgs));
+  w.git(p.records, "add", "-A");
+  status((p._run ?? w.run)("records-check.mjs", ["--repo", p.records, "--write"]), 0);
+  w.commit(p.records, `Publish ${planId}`);
+  return ["--plan", planId, "--package", step];
+}
+
+export function argsFor(w, p, role, { round = 2, step = role, base, plan, pkg } = {}) {
   const task = put(w.dir, `${p.name}-${round}-${step}-task.md`, `Deliver the ${step} work.\nfeatures: ${role === "reviewer" ? "none" : "F-0003"}\n`);
-  return [p.config, role, "--round", String(round), "--step", step, "--task", task, ...(base ? ["--base", base] : [])];
+  const planArgs = plan !== undefined && pkg !== undefined ? ["--plan", plan, "--package", pkg] : ensurePlan(w, p, role, round, step);
+  return [p.config, role, "--round", String(round), "--step", step, "--task", task, ...planArgs, ...(base ? ["--base", base] : [])];
 }
 
 export function prepare(w, p, role, opts) {

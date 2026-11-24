@@ -1,25 +1,29 @@
 #!/usr/bin/env node
-// The lead's guard: a Claude Code `PreToolUse` hook that refuses, before it runs, what the owner's rule forbids the
-// lead (owner, 2026-11-21: 「强制你follow self loop的生成引擎和对抗引擎去开发，这是我们的规矩」):
-// - editing the product in any checkout of the product repository, except the documents and rule files the lead owns
-//   (product code is written by self-loop roles, in their workspaces under --workspaces);
-// - pushing with git directly (every push goes through gated-push.mjs, which refuses a red suite or CI).
-//
-// node lead-guard.mjs --product <repository dir> --workspaces <dir> [--allow docs/,AGENTS.md,CLAUDE.md,README.md]
-// Reads the hook's JSON on stdin. Prints a deny decision for a refused call, nothing otherwise. Always exit 0: a guard
-// that cannot read its input lets the call through (the landing gates still hold) rather than block the session.
+// F-0004, F-0008, F-0009, D-0060, design/mandatory-control-plane.md#2
 import "./lib/unbind-git.mjs";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/args.mjs";
-import { ANTIGRAVITY_SHELL_TOOLS, ANTIGRAVITY_WRITE_TOOLS, extractToolPaths, isAntigravityHook, PRE_TOOL_USE_PASSTHROUGH } from "./lib/antigravity.mjs";
+import {
+  ANTIGRAVITY_DELEGATION_TOOLS,
+  ANTIGRAVITY_SHELL_TOOLS,
+  ANTIGRAVITY_WRITE_TOOLS,
+  extractToolPaths,
+  isAntigravityHook,
+  PRE_TOOL_USE_PASSTHROUGH,
+  T3_MCP_TOOL_PREFIX,
+} from "./lib/antigravity.mjs";
 import { hasGitPush } from "./lib/git-push-command.mjs";
 import { canonical } from "./lib/path-canonical.mjs";
 
 const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit", ...ANTIGRAVITY_WRITE_TOOLS]);
 const SHELL_TOOLS = new Set(["Bash", ...ANTIGRAVITY_SHELL_TOOLS]);
+export const DELEGATION_TOOLS = new Set(["Agent", "spawn_agent", ...ANTIGRAVITY_DELEGATION_TOOLS]);
+const DELEGATION_PROMPT_KEYS = Object.freeze(["task", "prompt", "Prompt", "message", "brief", "Script"]);
+const NONCE_RE = /^[0-9a-f]{16}$/;
+const NONCE_TOKEN_RE = /\b[0-9a-f]{16}\b/g;
 const GIT_TIMEOUT_MS = 2_000;
 
 export function normalizeHookInput(input, formatFlag = null) {
@@ -36,10 +40,98 @@ export function normalizeHookInput(input, formatFlag = null) {
 
 const within = (dir, root) => {
   const r = relative(canonical(root), dir);
-  return r !== ".." && !r.startsWith(".." + sep) && !r.startsWith(sep);
+  return r !== ".." && !r.startsWith(".." + sep) && !isAbsolute(r);
 };
 
-/** The common git directory of the checkout holding `path` (a worktree's `.git` file names it), or null. */
+const withinStrict = (dir, root) => {
+  const r = relative(canonical(root), dir);
+  return Boolean(r) && r !== ".." && !r.startsWith(".." + sep) && !isAbsolute(r);
+};
+
+function delegationBase(tool) {
+  const m = T3_MCP_TOOL_PREFIX.exec(tool);
+  return m ? m[1] : tool;
+}
+
+export function isDelegationTool(tool) {
+  if (typeof tool !== "string" || !tool) return false;
+  if (DELEGATION_TOOLS.has(tool)) return true;
+  const base = delegationBase(tool);
+  return base !== tool && DELEGATION_TOOLS.has(base);
+}
+
+export function extractDelegationPrompts(tool, args) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return [];
+  const base = delegationBase(tool);
+  if (base === "run_workflow" && typeof args.ScriptPath === "string" && args.ScriptPath.trim()) return [];
+  if (base === "create_threads" || Array.isArray(args.threads)) {
+    if (!Array.isArray(args.threads) || !args.threads.length) return [];
+    return args.threads.map(entry => {
+      if (!entry || typeof entry !== "object") return "";
+      if (typeof entry.prompt === "string") return entry.prompt;
+      if (typeof entry.message === "string") return entry.message;
+      return "";
+    });
+  }
+  const prompts = [];
+  for (const key of DELEGATION_PROMPT_KEYS) {
+    if (typeof args[key] === "string") prompts.push(args[key]);
+  }
+  return prompts;
+}
+
+function isLiveCallManifest(meta, expectedWs = null) {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return false;
+  if (typeof meta.nonce !== "string" || !NONCE_RE.test(meta.nonce)) return false;
+  if (meta.recorded === true || meta.cancelled === true) return false;
+  if (expectedWs !== null && typeof meta.ws === "string" && canonical(meta.ws) !== canonical(expectedWs)) return false;
+  if (meta.wt === null || meta.wt === undefined) return true;
+  if (typeof meta.wt !== "string" || !meta.wt) return false;
+  return existsSync(meta.wt);
+}
+
+export function liveCallNonces(workspaces = [], records = null) {
+  const live = new Set();
+  for (const root of workspaces) {
+    if (!root || !existsSync(root)) continue;
+    let entries;
+    try { entries = readdirSync(root, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const ws = join(root, entry.name);
+      const manifest = join(ws, "call.json");
+      if (!existsSync(manifest)) continue;
+      try {
+        const meta = JSON.parse(readFileSync(manifest, "utf8"));
+        if (isLiveCallManifest(meta, ws)) live.add(meta.nonce);
+      } catch {}
+    }
+  }
+  if (records) {
+    const delegationsDir = join(records, "delegations");
+    if (existsSync(delegationsDir)) {
+      let entries;
+      try { entries = readdirSync(delegationsDir, { withFileTypes: true }); } catch { entries = []; }
+      for (const entry of entries) {
+        if (!entry.isFile() || !/^T-.*\.json$/.test(entry.name)) continue;
+        try {
+          const meta = JSON.parse(readFileSync(join(delegationsDir, entry.name), "utf8"));
+          if (isLiveCallManifest(meta)) live.add(meta.nonce);
+        } catch {}
+      }
+    }
+  }
+  return live;
+}
+
+function promptContainsLiveNonce(text, liveNonces) {
+  if (typeof text !== "string" || !text || !liveNonces.size) return false;
+  for (const match of text.matchAll(NONCE_TOKEN_RE)) {
+    if (liveNonces.has(match[0])) return true;
+  }
+  return false;
+}
+
 export function commonGitDir(path) {
   for (let dir = resolve(path); ; dir = dirname(dir)) {
     const dotgit = join(dir, ".git");
@@ -77,10 +169,16 @@ export function productCode(top, rel, { timeoutMs = GIT_TIMEOUT_MS } = {}) {
   return `Git could not tell whether it is ignored: ${failed(ignored)}`;
 }
 
-/** The reason to refuse one tool call, or null. */
-export function refusal(input, { product, workspaces, allow, format = null, gitTimeoutMs = GIT_TIMEOUT_MS }) {
+export function refusal(input, { product, workspaces = [], allow = [], records = null, format = null, gitTimeoutMs = GIT_TIMEOUT_MS }) {
   const { tool, args, cwd } = normalizeHookInput(input, format);
-  if (!WRITE_TOOLS.has(tool) && !SHELL_TOOLS.has(tool)) return null;
+  if (isDelegationTool(tool)) {
+    const liveNonces = liveCallNonces(workspaces, records);
+    const prompts = extractDelegationPrompts(tool, args);
+    if (!prompts.length || !prompts.every(p => promptContainsLiveNonce(p, liveNonces))) {
+      return `${tool} requires a live, unrecorded 16-hex call.json nonce in every prompt/task. Prepare the role call first with call.mjs <role> --prepare or dispatch.mjs prepare.`;
+    }
+    return null;
+  }
   if (WRITE_TOOLS.has(tool)) {
     const files = extractToolPaths(args);
     if (!files.length) return null;
@@ -88,7 +186,12 @@ export function refusal(input, { product, workspaces, allow, format = null, gitT
     const productRepo = commonGitDir(product);
     for (const file of files) {
       const path = canonical(resolve(cwd ?? "/", file));
-      if (workspaces.some(w => within(path, w))) continue;
+      if (workspaces.some(w => withinStrict(path, join(w, "tasks")))) continue;
+      const workspace = workspaces.find(w => within(path, w));
+      if (workspace) {
+        const relWs = relative(canonical(workspace), path).split(sep).join("/") || ".";
+        return `${relWs} is inside workspace root ${workspace}. The lead may write only under ${join(workspace, "tasks")}/, never inside role workspaces, worktrees, call.json, or out/.`;
+      }
       const repo = commonGitDir(existsSync(path) ? path : dirname(path));
       if (!repo || !productRepo || real(repo.common) !== real(productRepo.common)) continue;
       const rel = relative(repo.top, path).split(sep).join("/");
@@ -104,31 +207,52 @@ export function refusal(input, { product, workspaces, allow, format = null, gitT
   return null;
 }
 
+function emitDeny(isAg, reason) {
+  const full = `lead-guard: ${reason}`;
+  if (isAg) console.log(JSON.stringify({ decision: "deny", reason: full }));
+  else console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: full } }));
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const args = parseArgs(process.argv.slice(2));
   const formatFlag = args.harness || args.format || null;
   let isAg = formatFlag === "antigravity";
   try {
-    const opts = {
-      product: resolve(args.product), workspaces: String(args.workspaces ?? "").split(",").filter(Boolean).map(w => resolve(w)),
-      allow: String(args.allow || "docs/,AGENTS.md,CLAUDE.md,README.md").split(",").map(s => s.trim()).filter(Boolean),
-      format: formatFlag,
-    };
-    const input = JSON.parse(readFileSync(0, "utf8") || "{}");
-    isAg = isAntigravityHook(input, formatFlag);
-    const reason = refusal(input, opts);
-    if (isAg) {
-      if (reason) console.log(JSON.stringify({ decision: "deny", reason: `lead-guard: ${reason}` }));
-      else if (PRE_TOOL_USE_PASSTHROUGH) console.log(PRE_TOOL_USE_PASSTHROUGH);
-    } else if (reason) {
-      console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: `lead-guard: ${reason}` } }));
+    const raw = readFileSync(0, "utf8");
+    let input = {};
+    if (raw.trim()) {
+      try {
+        input = JSON.parse(raw);
+      } catch (error) {
+        if (isAg) console.error(`lead-guard: ${error?.message ?? error}`);
+        emitDeny(isAg, `malformed hook JSON on stdin (${error?.message ?? error})`);
+        process.exitCode = 0;
+        input = null;
+      }
+      if (input !== null && (!input || typeof input !== "object" || Array.isArray(input))) {
+        emitDeny(isAg, "malformed hook JSON on stdin (expected object)");
+        process.exitCode = 0;
+        input = null;
+      }
+    }
+    if (input !== null) {
+      const opts = {
+        product: resolve(args.product),
+        workspaces: String(args.workspaces ?? "").split(",").filter(Boolean).map(w => resolve(w)),
+        allow: String(args.allow || "docs/,AGENTS.md,CLAUDE.md,README.md").split(",").map(s => s.trim()).filter(Boolean),
+        records: args.records ? resolve(args.records) : null,
+        format: formatFlag,
+      };
+      isAg = isAntigravityHook(input, formatFlag);
+      const reason = refusal(input, opts);
+      if (reason) emitDeny(isAg, reason);
+      else if (isAg && PRE_TOOL_USE_PASSTHROUGH) console.log(PRE_TOOL_USE_PASSTHROUGH);
     }
   } catch (error) {
     if (isAg) {
       console.error(`lead-guard: ${error?.message ?? error}`);
       if (PRE_TOOL_USE_PASSTHROUGH) console.log(PRE_TOOL_USE_PASSTHROUGH);
     }
-    /* let the call through; the landing gates still hold */
   }
   process.exitCode = 0;
 }

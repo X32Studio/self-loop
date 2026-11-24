@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-// A view of what the phase's records and gates call for. Release observations go into the product Git directory.
-// `self-loop.mjs` runs the same views for a product found through the owner store's registry, or for every product.
+// F-0003, D-0015, D-0058, D-0060, design/mandatory-control-plane.md#5
 import { createHash } from "node:crypto";
 import { normalOpportunities } from "./lib/normal-entry.mjs";
 import { ALARM_DETECTOR_REVISION, buildAlarmContext, readNormalEntry } from "./lib/normal-entry-source.mjs";
@@ -11,7 +10,7 @@ import { HEAVY_ROLES, load, normalize, preparedIn, Stop } from "./call.mjs";
 import { ANSWERS, batchesFrom } from "./decisions.mjs";
 import { ALARMS, currentStall, parseAlarms } from "./lib/alarms.mjs";
 import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
-import { collectArchFacts, structuralBreaches } from "./lib/arch-facts.mjs";
+import { collectArchFacts } from "./lib/arch-facts.mjs";
 import { FEATURE_EVENTS, inspectBlueprint } from "./lib/blueprint.mjs";
 import { advancingAction, ARCH_STEP, cadenceLines, cadenceOf, cadenceState, dueReason, JUDGE_FRAME_STEP, outerCadenceOf, outerLoopLines, outerLoopState } from "./lib/cadence.mjs";
 import { ciGreen, fullSha, judgeAccepted, receiptProblem } from "./lib/ci.mjs";
@@ -38,12 +37,10 @@ import { alarms, parseRows, TRAJECTORY } from "./trajectory.mjs";
 import { reconcileReleases } from "./version-gate.mjs";
 
 const pad = n => String(n).padStart(4, "0");
-/** Records paths that may hold a gate receipt (suite-green.mjs). */
 const evidenceJson = path => path.startsWith("evidence/") && path.endsWith(".json");
 const relevant = path => /^(blueprint|decisions|owner|purpose|rounds)\/.*\.md$/.test(path) || /^sealed\/judge\/\d+\/judge(?:-[a-z]+)*-\d+\.md$/.test(path) || evidenceJson(path)
   || [ALARMS, ANSWERS, FEATURE_EVENTS, HANDOFFS, TRAJECTORY, WINDOWS, "loop.json", "records.json"].includes(path);
 
-/** The committed records the views read, from the records HEAD. */
 export function recordsOf(cfg, at = "HEAD") {
   const revision = fullSha(cfg.records, at);
   const entries = regularFiles(cfg.records, revision);
@@ -266,7 +263,7 @@ function dispositionAction(metrics) {
 const figure = value => value === null || value === undefined ? "unknown" : String(value);
 const percent = share => share === null || share === undefined ? "unknown" : `${Math.round(share * 1000) / 10}%`;
 
-// design/time-entry.md
+// F-0012
 export function queryClock({ now, clockMode } = {}) {
   const mode = clockMode ?? (now === undefined ? "live" : "simulation");
   const at = now === undefined ? Date.now() : typeof now === "number" ? now : Date.parse(now);
@@ -275,7 +272,7 @@ export function queryClock({ now, clockMode } = {}) {
   return { now: at, clockMode: mode };
 }
 
-// design/time-entry.md
+// F-0012
 export function cliClock(args) {
   if (!("now" in args)) return queryClock();
   if (typeof args.now !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(args.now) || !Number.isFinite(Date.parse(args.now)))
@@ -285,7 +282,7 @@ export function cliClock(args) {
   return queryClock({ now: at, clockMode: "simulation" });
 }
 
-// design/time-entry.md
+// F-0012
 export function timeLines(time) {
   if (!time) return [];
   const seconds = n => n == null ? "unknown" : `${n} s`;
@@ -472,7 +469,6 @@ export function predicateReplay(records, { revision = "HEAD", phase, from = null
 const SUBTRACTION = /^reviewer-subtraction(?:-[a-z]+)*$/;
 const SHOWN_PROSE = 10;
 
-/** The phase's due actions as text, from the committed records and the gates. */
 // design/dispatch.md#ready-state
 export function integrationTarget(cfg, state = recordsOf(cfg)) {
   const managed = new Set(state.files);
@@ -553,21 +549,17 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
   const outerBase = outerLoopState({ handoffs, rows, phase });
   const archBaseSha = outerBase.baseline?.product?.base ?? outerBase.baseline?.product?.commit ?? null;
   const validArchBase = archBaseSha && gitOk(product, "cat-file", "-e", `${archBaseSha}^{commit}`) ? archBaseSha : null;
-  let archBreaches = [];
-  if (target) {
-    try {
-      const facts = collectArchFacts(product, target, { baselineSha: validArchBase });
-      archBreaches = structuralBreaches(facts);
-    } catch { /* unreadable product tree stays empty */ }
+  let baselineFacts = null;
+  if (outerBase.baseline && ARCH_STEP.test(outerBase.baseline.step ?? "")) {
+    const fp = (outerBase.baseline.files ?? []).find(p => p.endsWith("arch-facts.json") && managed.has(p));
+    if (fp) try { baselineFacts = JSON.parse(state.read(fp)); } catch {}
+    if (!baselineFacts && validArchBase) try { baselineFacts = collectArchFacts(product, validArchBase); } catch {}
   }
+  let currentFacts = null;
+  if (target) try { currentFacts = collectArchFacts(product, target, { baselineSha: validArchBase }); } catch {}
   const outer = outerLoopState({
-    handoffs,
-    rows,
-    archBreaches,
-    deliveries: outerSetting.deliveries,
-    outerGrace: outerSetting.outerGrace,
-    phase,
-    targetSha: target,
+    handoffs, rows, currentFacts, baselineFacts, prepared: pending.filter(p => !p.phase || p.phase === phase),
+    deliveries: outerSetting.deliveries, outerGrace: outerSetting.outerGrace, phase, targetSha: target,
   });
   const win = windowState({ windows: state.windows ?? parseWindows(state.read(WINDOWS), WINDOWS), handoffs, rows, phase, nextRound: round });
   const reconciled = state.files.some(path => /^plans\/PL-\d{4}\.md$/.test(path)) ? reconcilePlans(records, state.revision, phase, { host, base: target, now: clock.now }) : null;
@@ -605,7 +597,7 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
       `  Invariants: ${win.active.invariants.join("; ")}`);
   }
   let openAlarms = null, alarmGateError = null;
-  try { openAlarms = undiagnosedAlarms(records, state.revision, phase); }
+  try { openAlarms = undiagnosedAlarms(records, state.revision, phase, { repo: product }); }
   catch (error) { alarmGateError = error; }
   let stalled = null, stallError = null;
   try { stalled = liveStall(cfg, state); }
@@ -669,8 +661,8 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
   }
   for (const p of pending)
     action(`unrecorded prepared workspace ${p.id}${p.phase ? "" : " (phase unverified)"}`, join(p.ws, "call.json"),
-      "Record after the child has finished. Use its provider-native session ID.",
-      node("call.mjs", config, "record", "--ws", p.ws) + " --session " + env("PROVIDER_SESSION", "set the child provider session ID"));
+      "Record after the child has finished (--session optional when nonce uniquely matches).",
+      node("call.mjs", config, "record", "--ws", p.ws));
   for (const p of abandoned)
     action(`unrecorded prepared workspace ${p.id} lost its ${p.role === "reviewer" ? "workspace" : "worktree"}`, join(p.ws, "call.json"),
       "Review the attempt evidence before preparing a retry.", node("records-check.mjs", "--repo", records));
@@ -708,7 +700,7 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
       owner, "Cite each distilled word in a record or mark it with a reason.",
       node("owner-words.mjs", "mark", "--records", records, "--id", words[0].id) + " --as " + env("MARK_AS", "set routine or not-owner") + " --note " + env("MARK_REASON", "set the reason"),
       ...(substantiveWords.length ? [
-        `${substantiveWords.length} substantive open owner word(s) (${substantiveWords.map(w => w.id).join(", ")}): run async reviewer-distill to distill verbatim words into purpose/decisions/design with first-principles derivation and generalization (blocks further actor calls after 1-turn grace):`,
+        `${substantiveWords.length} substantive open owner word(s) (${substantiveWords.map(w => w.id).join(", ")}): run reviewer-distill to distill verbatim words into purpose/decisions/design with first-principles derivation and generalization (blocks critic/actor calls immediately, 0-turn grace; D-0060):`,
         ...callFor("reviewer", "reviewer-distill", round),
       ] : []));
   if (!frame) action("no phase frame", HANDOFFS, ...callFor("reviewer", "reviewer-frame"));
@@ -814,8 +806,7 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
   for (const h of judges) {
     const sha = h.product?.base;
     if (!sha || rulings.some(row => row.round === h.round && row.commit === sha)) continue;
-    // The append reads CI itself, once, in the loop that owns the ledger (D-0015 item 1): nothing about CI is passed.
-    // D-0009 item 2: a head that adds only VERSION to the ruled SHA is the pushed tip, and the row names both.
+    // D-0015, D-0009
     const pushed = tipOf(sha);
     const tip = pushed ? ["--tip", pushed.sha] : [];
     const append = node("trajectory.mjs", "append", "--file", trajectory, "--round", h.round, "--phase", phase, "--role", "judge", "--commit", sha, ...tip);
@@ -849,10 +840,6 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
   return lines.join("\n");
 }
 
-/**
- * The latest recorded activity of the phase: a blueprint event, hand-off, judge ruling or batch answer; with none, the
- * last commit of the configuration, else the last records commit other than the driver's own alarms.
- */
 export function lastActivity(cfg, state) {
   const activities = [
     ...state.features.filter(f => f.event).map(f => ({ time: f.event.time, source: FEATURE_EVENTS })),
@@ -869,14 +856,8 @@ export function lastActivity(cfg, state) {
       source: "phase configuration or records HEAD" };
 }
 
-/**
- * The committed stall alarm of the phase's current idle period, or null: the alarm whose key is this phase and the last
- * recorded activity, the identity `tick` writes it under. New activity or another phase ends it. Throws on a malformed
- * ledger.
- */
 export const liveStall = (cfg, state) => currentStall(parseAlarms(state.read(ALARMS)), cfg.phase, lastActivity(cfg, state).time);
 
-/** Whether the phase stalled: unfinished work (or no features) and no recorded activity for `hours`. */
 export function stallState(cfg, state, hours, now = Date.now()) {
   const unsettled = state.features.filter(f => !["done", "retired"].includes(f.event?.status));
   if (state.features.length && !unsettled.length)

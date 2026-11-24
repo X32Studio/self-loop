@@ -20,21 +20,50 @@ function callWorld(t, { clock } = {}) {
   const workDir = join(w.dir, "roles");
   const records = join(w.dir, "records");
   const roles = ["critic", "actor", "judge", "reviewer"];
+  const planDocs = {};
+  const planFor = new Map();
+  let planSeq = 1;
+  for (let r = 1; r <= 6; r++) {
+    const pad = String(r).padStart(4, "0");
+    for (const [role, step] of [["critic", "critic"], ["actor", "actor"], ["actor", "actor-b"], ["judge", "judge"]]) {
+      const id = `PL-${String(planSeq++).padStart(4, "0")}`;
+      const tag = step.replace(/[^a-z]/g, "");
+      const handoff = `R-${pad}-${step}`;
+      const pkgs = role === "actor" ? [
+        { id: step, role: "actor", handoff, files: "", reviews: null },
+        { id: `${step}-cr`, role: "critic", handoff: `R-${pad}-critic-${tag}cov`, files: "", reviews: step },
+        { id: `${step}-jg`, role: "judge", handoff: `R-${pad}-judge-${tag}cov`, files: "", reviews: null },
+      ] : [{ id: step, role, handoff, files: "", reviews: null }];
+      planDocs[`plans/${id}.md`] = [
+        `# ${id} Replay plan`, `scope: v1/r${r}-${step}`, "phase: v1", "",
+        ...pkgs.flatMap(q => [
+          `## ${q.id}`, `role: ${q.role}`, `handoff: ${q.handoff}`, "authority: D-0001",
+          `goal: Replay ${q.handoff}`, `files: ${q.files}`, "interface: fixed", "acceptance: pass", "needs:",
+          ...(q.reviews ? [`reviews: ${q.reviews}`] : []), "",
+        ]),
+      ].join("\n");
+      planFor.set(`${role}:${r}:${step}`, { plan: id, pkg: step });
+    }
+  }
   w.repo(records, {
-    "records.json": "{}\n",
+    "records.json": json({ extraKinds: [{ kind: "Plan", path: "plans/PL-NNNN.md", changes: "immutable", citedAs: "PL-NNNN" }] }),
     "loop.json": json({
       phase: "v1", branch: "main", product, records, workDir,
       briefs: Object.fromEntries(roles.map(role => [role, `engines/${role}.md`])),
       agents: { critic: t3, actor: t3, judge: t3, reviewer: { runner: "claude" } },
     }),
+    "decisions/D-0001.md": "# D-0001 Replay authority\n\nid: D-0001\nby: owner\nstatus: active\n",
     "purpose/P-0001.md": "# P-0001 The phase progresses\n\nstatus: active\n",
     "blueprint/F-0003.md": "# F-0003 Supervise the phase\n\nid: F-0003\nphase: v1\nrequirements: P-0001\n",
+    ...planDocs,
     ...Object.fromEntries(roles.map(role => [`engines/${role}.md`, `# Fixture ${role}\n`])),
   });
   const config = join(records, "loop.json");
   const call = (role, { round, step = role, mode = "--dry-run", view, configFile = config, features = ["F-0003"] }) => {
     const task = put(w.dir, "call-task.md", `Continue the scheduled ${step} task.\nfeatures: ${features.length ? features.join(", ") : "none"}\n`);
-    return w.run([configFile, role, "--round", String(round), "--step", step, "--task", task,
+    const bound = planFor.get(`${role}:${round}:${step}`);
+    const planArgs = role !== "reviewer" && bound ? ["--plan", bound.plan, "--package", bound.pkg] : [];
+    return w.run([configFile, role, "--round", String(round), "--step", step, ...planArgs, "--task", task,
       ...(view ? ["--view", view] : []), ...(mode ? [mode] : [])], { entry: "call.mjs", at: checkAt });
   };
   const snapshot = (rows, handoffs, tasks = {}, reports = {}) => {
@@ -69,8 +98,6 @@ function replay(t, wanted, { trajectory = history.trajectory, alarms = {} } = {}
     const index = history.handoffs.findIndex(h => h.id === id);
     assert.ok(index >= 0, id);
     const h = history.handoffs[index];
-    // Calls can share a view even when they hand off at different times.
-    // In particular, R-0002-actor-b shared the judge's pre-result view.
     if (!snapshots.has(h.view)) {
       const view = s.snapshot(trajectory.filter(row => row.round < h.round), history.handoffs.slice(0, index));
       snapshots.set(h.view, view);

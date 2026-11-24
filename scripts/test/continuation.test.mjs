@@ -1,4 +1,4 @@
-// self-loop-records@b694377:evidence/0010/continuation-grok/public.md.
+// D-0060
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -130,9 +130,13 @@ async function integratedFixture(t) {
   const write=(path,body) => { mkdirSync(dirname(join(f.records,path)),{recursive:true}); writeFileSync(join(f.records,path),typeof body === 'string' ? body : JSON.stringify(body)); };
   const commit=() => { git(f.records,'add','-A'); git(f.records,'commit','-qm','fixture observation'); return git(f.records,'rev-parse','HEAD'); };
   const pointer=path => ({repository:f.records,commit:git(f.records,'rev-parse','HEAD'),path,sha256:bytesHash(readFileSync(join(f.records,path)))});
-  const packages=['ready','secure'].map(id => ({id,authority:['D-0001'],goal:`Review fixture ${id}`,files:[],interface:'review only',needs:[],role:'actor',acceptance:'fixture review',handoff:`R-0001-actor-${id}`,task:import.meta.filename,...(id === 'secure' ? {hold:'security refusal',release:'explicit security resolution'} : {})}));
+  const packages=[
+    ...['ready','secure'].map(id => ({id,authority:['D-0001'],goal:`Review fixture ${id}`,files:[],interface:'review only',needs:[],role:'actor',acceptance:'fixture review',handoff:`R-0001-actor-${id}`,task:import.meta.filename,...(id === 'secure' ? {hold:'security refusal',release:'explicit security resolution'} : {})})),
+    {id:'critic',authority:['D-0001'],goal:'Review fixture critic',files:[],interface:'review only',needs:['ready','secure'],reviews:['ready','secure'],role:'critic',acceptance:'fixture review',handoff:'R-0001-critic-cr',task:import.meta.filename},
+    {id:'judge',authority:['D-0001'],goal:'Review fixture judge',files:[],interface:'review only',needs:['critic'],role:'judge',acceptance:'fixture review',handoff:'R-0001-judge',task:import.meta.filename},
+  ];
   const plan={id:'PL-0001',scope:'A/s1',phase:'v1',packages};
-  write('plans/PL-0001.md',plan); write('decisions/D-0001.md','# D-0001\nReview fixture only; no runtime launch authorized.\n');
+  write('plans/PL-0001.md',plan); write('decisions/D-0001.md','# D-0001\n\nby: owner\nReview fixture only; no runtime launch authorized.\n');
   write('delegations/T-0001.md','# T-0001\nAccountable coordinator for fixture review.\n');
   write('records.json',{extraKinds:[{kind:'Continuation delivery',path:'metrics/continuations.jsonl',changes:'append-only',settlesOwnerWords:false}]});
   commit();

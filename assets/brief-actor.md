@@ -14,6 +14,7 @@ on a case id, name, size or constant.
 - `out/design/<area>.md` (recorded as `design/<area>.md`): current state only (no "Round N" sections; history lives in rounds and the repository):
   each mechanism traced to the requirement it comes from, module map, data flow, how each owner constraint is met with
   measured numbers, every place the documents were silent and the choice made, contract changes as proposals only.
+- Verification: run targeted unit and package acceptance tests during iteration; when host-attested `suite-receipt.json` is staged in your workspace, do not re-run the full public suite on an unchanged tree (the host runs `gates.suite` once per `HEAD^{tree}` via `suite-green.mjs`, D-0061).
 - Subtraction is part of the work: when a mechanism is superseded, delete it and its tests in the same change.
 - When the previous round's remote CI was not green, making it green on the real CI platform comes first.
 - Comments are pointers or tool directives (self-loop D-0016): a comment line holds only record IDs (`D-0016`,
@@ -27,5 +28,5 @@ Never lower a model's reasoning or swap to a weaker model to meet a latency targ
 heuristic added after a failure. Real calls only within the bound in your prompt, raw answers saved per call.
 
 ## Report (`out/report.md`)
-Module map; constraint numbers; the full suite's counts as you ran it, and for each failure whether the case is unfair
+Module map; constraint numbers; targeted test counts as you ran them (plus the staged host `suite-receipt.json` counts when present), and for each failure whether the case is unfair
 and why; what you deleted; open questions for the owner, each with your recommendation (the judge or the lead decides whether they reach the owner).

@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { RELEASE_IN_WORDS } from "../lib/plan.mjs";
+import { openWindow } from "../lib/window.mjs";
 import { git, isolatedEnv, loopProduct, ownerStore, ROOMY, selfLoop } from "./helpers.mjs";
 
 const NOW = "2026-11-21T12:00:00.000Z";
@@ -12,7 +13,7 @@ function fixture() {
   const other = loopProduct({ activity: NOW });
   mkdirSync(join(other.records, "plans"));
   mkdirSync(join(other.records, "decisions"));
-  writeFileSync(join(other.records, "decisions/D-0001.md"), "# D-0001 Build the packages\n");
+  writeFileSync(join(other.records, "decisions/D-0001.md"), "# D-0001 Build the packages\n\nby: owner\n");
   const section = (id, release) => [`## ${id}`, "authority: D-0001", `goal: Deliver ${id}`, `files: src/${id}/`,
     "interface: fixed contract", "needs: ", "role: actor", "acceptance: cases pass", `handoff: R-0001-actor-${id}`,
     ...(release ? ["hold: wait for approval", `release: ${release}`] : []), ""];
@@ -21,6 +22,7 @@ function fixture() {
     ...section("released", "P-0001"), ...section("free")].join("\n"));
   git(other.records, "add", "-A");
   git(other.records, "commit", "-qm", "plan");
+  openWindow(other.records, { phase: "v1", startRound: 1, horizon: 3, goal: "hold validation", invariants: ["green"] });
   const store = ownerStore([{ name: "lead", records: lead.records }, { name: "other", records: other.records }], { bound: ROOMY });
   return { lead, other, env: isolatedEnv({ SELF_LOOP_OWNER_STORE: store }) };
 }

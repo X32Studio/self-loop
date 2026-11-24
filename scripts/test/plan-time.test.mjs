@@ -1,7 +1,7 @@
-// F-0012, design/time-model.md
+// F-0012
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -12,15 +12,17 @@ import { loadForecastHistory, projectPlanTime, validatePlanTime } from '../lib/p
 const hash = b => createHash('sha256').update(b).digest('hex');
 const at = s => new Date(Date.parse('2026-11-22T00:00:00Z') + s * 1000).toISOString();
 function fixture(t) {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), 'time-model-'))); t.after(() => rmSync(repo, { recursive: true, force: true }));
+  const repo = mkdtempSync(join(tmpdir(), 'time-model-')); t.after(() => rmSync(repo, { recursive: true, force: true }));
   git(repo, 'init', '-q'); git(repo, 'config', 'user.name', 'Test'); git(repo, 'config', 'user.email', 'test@example.invalid');
   const write = (path, value) => { mkdirSync(dirname(join(repo, path)), { recursive: true }); writeFileSync(join(repo, path), typeof value === 'string' ? value : JSON.stringify(value)); };
   const commit = () => { git(repo, 'add', '.'); git(repo, '-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'fixture'); return git(repo, 'rev-parse', 'HEAD'); };
   const ref = (path, commit = git(repo, 'rev-parse', 'HEAD')) => ({ repository: repo, commit, path, sha256: hash(snapshot(repo, commit).bytes(path)) });
-  write('decisions/D-0001.md', '# D-0001\nApproved minimum and time agreement'); commit();
+  write('decisions/D-0001.md', '# D-0001\nby: owner\nApproved minimum and time agreement'); commit();
   const authority = ref('decisions/D-0001.md');
   const p = id => ({ id, authority: ['D-0001'], goal: id, files: [], needs: [], role: 'actor', handoff: `R-0001-actor-${id}`, interface: 'fixed', acceptance: 'fixed' });
-  const plan = { id: 'PL-0001', scope: 'phase/scope', phase: 'v1', packages: [p('a'), { ...p('b'), needs: ['a'] }, p('c')], time: { schema: 'plan-time/v2', rootPlan: 'PL-0001', baseline: { previousRoot: null, startedAt: at(0), startRefs: [authority], deadline: { at: at(100), authorityRefs: [authority] }, minimum: { outcome: 'usable release', criteriaRefs: [authority], authorityRefs: [authority] }, promises: [] } } };
+  const cr = (reviews, handoff = 'R-0001-critic-cr') => ({ id: 'cr', authority: ['D-0001'], goal: 'cr', files: [], needs: reviews, reviews, role: 'critic', handoff, interface: 'fixed', acceptance: 'fixed' });
+  const j = (handoff = 'R-0001-judge') => ({ id: 'j', authority: ['D-0001'], goal: 'j', files: [], needs: ['cr'], role: 'judge', handoff, interface: 'fixed', acceptance: 'fixed' });
+  const plan = { id: 'PL-0001', scope: 'phase/scope', phase: 'v1', packages: [p('a'), { ...p('b'), needs: ['a'] }, p('c'), cr(['a', 'b', 'c']), j()], time: { schema: 'plan-time/v2', rootPlan: 'PL-0001', baseline: { previousRoot: null, startedAt: at(0), startRefs: [authority], deadline: { at: at(100), authorityRefs: [authority] }, minimum: { outcome: 'usable release', criteriaRefs: [authority], authorityRefs: [authority] }, promises: [] } } };
   write('plans/PL-0001.md', plan); const base = commit();
   const estimate = (lo, hi) => ({ asOf: at(0), remaining: { lowSeconds: lo, highSeconds: hi }, availableAfter: { lowSeconds: 0, highSeconds: 0 }, basisRefs: [authority], assumptions: ['independent capacity available'], unknowns: [] });
   const observation = () => ({ schema: 'plan-forecast/v1', rootRef: ref('plans/PL-0001.md', base), planRef: ref('plans/PL-0001.md', base), parents: [], outlook: { asOf: at(0), observation: { observedAt: at(0), recordedAt: at(0), evidenceRefs: [authority] }, basedOn: base, inputs: [authority], releasePackages: ['b', 'c'], reserve: { remaining: { lowSeconds: 1, highSeconds: 2 }, covers: ['review'], basisRefs: [authority], assumptions: [] }, checkpointAt: at(5), change: { reason: 'initial outlook', authorityRefs: [authority], deferredPackages: [] }, outcome: { state: 'active', evidenceRefs: [], deliveredAt: null } }, estimates: { a: estimate(5, 6), b: estimate(2, 3), c: estimate(3, 4) }, promisesAdded: [] });
@@ -101,12 +103,17 @@ test('generic capacity assumptions cannot bound an unresolved external hold', t 
 
 test('malformed optional time screens without obstructing ready or unrelated reconciliation', t => {
   const f = fixture(t);
-  f.write('loop.json', { product: f.repo, records: f.repo, workDir: `${f.repo}-work`, phase: 'v1', briefs: {}, agents: { actor: { runner: 't3' } } });
-  const legacy = { ...f.plan, id: 'PL-0002', scope: 'other', time: undefined, packages: [{ ...f.plan.packages[0], handoff: 'R-0002-actor-a', task: import.meta.filename }] };
+  f.write('loop.json', { product: f.repo, records: f.repo, workDir: `${f.repo}-work`, phase: 'v1', briefs: {}, agents: { actor: { runner: 't3' }, critic: { runner: 't3' }, judge: { runner: 't3' } } });
+  const coverA = (round, task) => [
+    { id: 'cr', authority: ['D-0001'], goal: 'cr', files: [], needs: ['a'], reviews: ['a'], role: 'critic', handoff: `R-000${round}-critic-cr`, interface: 'fixed', acceptance: 'fixed', task },
+    { id: 'j', authority: ['D-0001'], goal: 'j', files: [], needs: ['cr'], role: 'judge', handoff: `R-000${round}-judge`, interface: 'fixed', acceptance: 'fixed', task },
+  ];
+  const legacy = { ...f.plan, id: 'PL-0002', scope: 'other', time: undefined, packages: [{ ...f.plan.packages[0], handoff: 'R-0002-actor-a', task: import.meta.filename }, ...coverA(2, import.meta.filename)] };
   f.write('plans/PL-0002.md', legacy);
+  const fmtPkg = pkg => `## ${pkg.id}\n${Object.entries(pkg).filter(([k]) => k !== 'id').map(([k, v]) => `${k}: ${Array.isArray(v) ? JSON.stringify(v) : v}`).join('\n')}`;
   for (const markdown of [true, false]) {
-    const p = { ...f.plan, time: '{broken', packages: [{ ...f.plan.packages[0], task: import.meta.filename }] };
-    const source = markdown ? `# ${p.id}\nscope: ${p.scope}\nphase: ${p.phase}\ntime: {broken\n## a\n${Object.entries(p.packages[0]).filter(([k]) => k !== 'id').map(([k, v]) => `${k}: ${Array.isArray(v) ? JSON.stringify(v) : v}`).join('\n')}\n` : JSON.stringify(p);
+    const p = { ...f.plan, time: '{broken', packages: [{ ...f.plan.packages[0], task: import.meta.filename }, ...coverA(1, import.meta.filename)] };
+    const source = markdown ? `# ${p.id}\nscope: ${p.scope}\nphase: ${p.phase}\ntime: {broken\n${p.packages.map(fmtPkg).join('\n')}\n` : JSON.stringify(p);
     f.write('plans/PL-0001.md', source); f.commit();
     const state = snapshot(f.repo), parsed = loadPlan(state, p.id);
     assert.deepEqual(validatePlan(parsed, state), []);

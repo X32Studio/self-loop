@@ -7,8 +7,11 @@ report, including your own earlier rulings: withdraw a ruling when the evidence 
 - You run on a different vendor and model from the actor, as a fresh agent that never saw the actor's session.
 - You rule on the exact commit in your worktree, name it in full (40 characters) on the `SHA:` line, and leave that
   worktree unchanged.
-- You run the full suite yourself on that worktree and report the counts. The lead's acceptance of a CONVERGED also
-  needs the remote CI green on that exact SHA (`ci-green.mjs`).
+- Verify the host-attested read-only `suite-receipt.json` staged in your workspace (`receipt.tree === HEAD^{tree}`,
+  `receipt.green === true`, produced by `suite-green.mjs` in a clean host checkout) and report its counts on `SUITE:`.
+  Never re-run the full public suite (`gates.suite`) on an unchanged tree; spend your execution budget on held-out
+  `sealed/` cases, targeted single-file mutation kills on temporary copies, and code/case quality review (D-0061).
+  The lead's acceptance of a CONVERGED also needs the remote CI green on that exact SHA (`ci-green.mjs`).
 - Only you see the held-out cases and your own earlier full rulings (`records/sealed/judge/`). Your full report
   (`out/report.md`) is private to you, later judges and the lead; the critic and
   actor read only `out/public.md`. Describe a held-out failure there by the property it breaks, never by its content,

@@ -1,15 +1,9 @@
 #!/usr/bin/env node
-// Gate: does the full test suite pass on one exact commit, in a clean checkout? The lead runs it before any push (then
-// pushes with gated-push.mjs). The commit is checked out as a fresh detached worktree in a temporary folder, so nothing
-// uncommitted, untracked or ignored in the repository's own working tree takes part; an optional install command runs
-// first; then the test command. Green only when the command exits 0 and, where node --test output is present (spec or
-// TAP summary lines), its summed summary has tests > 0, fail 0 and cancelled 0. `--format node-test` requires that
-// summary (a run whose output has none is not green).
-// design/version-tip.md#one-tree-one-suite-run
+// D-0020, D-0061, design/version-tip.md#one-tree-one-suite-run, design/suite-once.md#1
 import "./lib/unbind-git.mjs";
 import { spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +17,6 @@ export const LOAD_ENV = "SELF_LOOP_LOAD_DIR";
 
 const KEYS = ["tests", "suites", "pass", "fail", "cancelled", "skipped", "todo"];
 
-/** The node --test summary of an output (spec `ℹ fail 0` or TAP `# fail 0` lines), summed over every run; null if none. */
 export function parseSummary(output) {
   const summary = Object.fromEntries(KEYS.map(k => [k, 0]));
   let found = false;
@@ -34,7 +27,6 @@ export function parseSummary(output) {
   return found ? summary : null;
 }
 
-/** The verdict on one run: green, and every reason it is not. */
 export function verdict({ exit, output, format = "auto", installExit = 0 }) {
   const reasons = [];
   if (installExit !== 0) reasons.push(`install exited ${installExit}`);
@@ -48,8 +40,6 @@ export function verdict({ exit, output, format = "auto", installExit = 0 }) {
   return { green: reasons.length === 0, reasons, summary };
 }
 
-// NODE_TEST_CONTEXT, set when this runs inside a node --test process, would switch an inner node --test to the
-// runner's internal protocol instead of its summary; the command runs as it would from a shell.
 const shellEnv = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== "NODE_TEST_CONTEXT"));
 const sh = (command, cwd, timeoutMin) => {
   const r = spawnSync("sh", ["-c", command], { cwd, env: shellEnv(), encoding: "utf8", maxBuffer: 1 << 30, timeout: timeoutMin * 60_000 });
@@ -103,7 +93,7 @@ export function suiteStore(repo) {
   return join(realpathSync(git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"])), STORE);
 }
 
-// R-0008-judge-frame proposal 1; design/round9-b.md#runtime
+// R-0008-judge-frame, design/round9-b.md#runtime
 function executionOf(command, install) {
   if (install || !/^node --test(?: [a-zA-Z0-9_./=-]+)*$/.test(command) || process.env.NODE_OPTIONS) return null;
   const resolved = spawnSync("sh", ["-c", "command -v node"], { env: shellEnv(), encoding: "utf8" });
@@ -115,8 +105,9 @@ function executionOf(command, install) {
   } catch { return null; }
 }
 
+const normInstall = value => (value ? String(value) : null);
 const keyText = key => JSON.stringify([key.repository, key.tree, key.command, key.install ?? null, key.execution ?? null, [key.runtime?.node ?? null, key.runtime?.platform ?? null, key.runtime?.arch ?? null]]);
-const keyDir = (store, key) => join(store, sha256(keyText(key)));
+const keyHashOf = key => sha256(keyText(key));
 
 function storedGreen(dir, key, format) {
   if (!existsSync(dir)) return null;
@@ -124,7 +115,7 @@ function storedGreen(dir, key, format) {
     try {
       const path = join(dir, name);
       const run = JSON.parse(readFileSync(path, "utf8"));
-      if (!run.key || keyText(run.key) !== keyText(key) || keyText({ ...key, runtime: run.runtime }) !== keyText(key) || run.tree !== key.tree) continue;
+      if (run.green !== true || !run.key || keyText(run.key) !== keyText(key) || keyText({ ...key, runtime: run.runtime }) !== keyText(key) || run.tree !== key.tree) continue;
       const text = gunzipSync(readFileSync(path.replace(/\.json$/, ".log.gz"))).toString();
       if (sha256(text) !== run.log?.sha256) continue;
       const judged = verdict({ exit: run.exit, output: text, format, installExit: run.installExit });
@@ -169,8 +160,122 @@ function runIn(repo, commit, { command, install, timeoutMin, execution }) {
   return { log, exit, installExit };
 }
 
+const SLEEP_BUF = new Int32Array(new SharedArrayBuffer(4));
+const LOCK_POLL_MS = 40, CLAIM_RE = /^g(\d+)\.claim$/;
+const tryJson = raw => { try { return JSON.parse(raw); } catch { return null; } };
+const validPid = p => (p && Number.isInteger(p.pid) && p.pid > 0 ? p.pid : null);
+const isPidAlive = pid => {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return e?.code === "EPERM"; }
+};
+const clearDeadLockfile = (storeDir, keyHash) => {
+  const lockPath = join(storeDir, `${keyHash}.lock`);
+  try { const pid = validPid(tryJson(readFileSync(lockPath, "utf8"))); if (pid === null || !isPidAlive(pid)) rmSync(lockPath, { force: true }); }
+  catch (e) { if (e?.code !== "ENOENT") throw e; }
+};
+const isClaimAlive = (genDir, gen) => {
+  const path = join(genDir, `g${gen}.claim`);
+  let raw;
+  try { raw = readFileSync(path, "utf8"); } catch (e) { if (e?.code === "ENOENT") return false; throw e; }
+  const claim = tryJson(raw), pid = validPid(claim);
+  if (pid === null || (claim.gen !== undefined && claim.gen !== gen)) throw new Error(`invalid suite claim ${path}`);
+  return isPidAlive(pid);
+};
+const writeDone = (genDir, gen, token, payload) => {
+  mkdirSync(genDir, { recursive: true });
+  const path = join(genDir, `g${gen}.done.json`), temp = join(genDir, `.g${gen}.${token}.${process.pid}.tmp`);
+  try { writeFileSync(temp, `${JSON.stringify(payload, null, 1)}\n`); renameSync(temp, path); return path; }
+  catch (e) { rmSync(temp, { force: true }); throw e; }
+};
+
+function readDone(genDir, gen, keyHash, format) {
+  const path = join(genDir, `g${gen}.done.json`);
+  let raw;
+  try { raw = readFileSync(path, "utf8"); } catch (e) { if (e?.code === "ENOENT") return null; throw e; }
+  const p = tryJson(raw);
+  if (p?.gen !== gen || p?.key !== keyHash) return null;
+  if (p.aborted === true) return { aborted: true, path };
+  if (!p.receipt || typeof p.green !== "boolean" || typeof p.text !== "string") return null;
+  const v = p.format && p.format !== format
+    ? verdict({ exit: p.receipt.exit, output: p.text, format, installExit: p.installExit ?? 0 })
+    : { green: p.green, summary: p.receipt.summary, reasons: p.receipt.reasons };
+  return { aborted: false, path, receipt: p.receipt, receiptPath: p.receiptPath ?? null, text: p.text, v, raw: p };
+}
+
+const maxGenOf = genDir => {
+  try { return readdirSync(genDir).reduce((m, n) => { const x = CLAIM_RE.exec(n); return x ? Math.max(m, Number(x[1])) : m; }, 0); }
+  catch (e) { if (e?.code === "ENOENT") return 0; throw e; }
+};
+function tryClaim(genDir, gen, token) {
+  const claimPath = join(genDir, `g${gen}.claim`), tmp = join(genDir, `.claim-${process.pid}-${token}.tmp`);
+  const payload = `${JSON.stringify({ pid: process.pid, gen, token, startedAt: new Date().toISOString() })}\n`;
+  try {
+    try { writeFileSync(tmp, payload, { flag: "wx" }); }
+    catch (e) { if (e?.code === "ENOENT") { mkdirSync(genDir, { recursive: true }); return null; } throw e; }
+    try { linkSync(tmp, claimPath); return true; }
+    catch (e) {
+      if (e?.code === "EEXIST") return false;
+      if (e?.code === "ENOENT") { mkdirSync(genDir, { recursive: true }); return null; }
+      throw e;
+    }
+  } finally { try { rmSync(tmp, { force: true }); } catch {} }
+}
+
+function acquireOrJoin(storeDir, tree, keyHash, timeoutMs, format, lookupGreen) {
+  const genDir = join(storeDir, ".gen", `${tree}-${keyHash}`), token = randomBytes(8).toString("hex");
+  const deadline = Date.now() + Math.max(10_000, timeoutMs);
+  mkdirSync(genDir, { recursive: true });
+  let enrolledGen = null;
+  const resolveDone = d => { const h = d.v.green ? lookupGreen() : null; return h ? { mode: "hit", hit: h } : { mode: "resolved", done: d }; };
+  const claimOrEnroll = (gen, prevGen = 0) => {
+    const claimed = tryClaim(genDir, gen, token);
+    if (claimed === null) return null;
+    if (!claimed) { enrolledGen = gen; return null; }
+    if (prevGen > 0) {
+      const raced = readDone(genDir, prevGen, keyHash, format);
+      if (raced && !raced.aborted) {
+        try { writeDone(genDir, gen, token, { ...raced.raw, gen, token, key: keyHash, finishedAt: new Date().toISOString() }); } catch {}
+        return resolveDone(raced);
+      }
+    }
+    clearDeadLockfile(storeDir, keyHash);
+    const isCurrent = () => maxGenOf(genDir) === gen;
+    const assertCurrent = phase => { const cur = maxGenOf(genDir); if (cur !== gen) throw new Error(`suite generation g${gen} fenced before ${phase} (current g${cur}) in ${genDir}`); };
+    return { mode: "leader", gen, token, isCurrent, assertCurrent, finish: p => writeDone(genDir, gen, token, { gen, token, key: keyHash, ...p, finishedAt: new Date().toISOString() }) };
+  };
+  for (;;) {
+    if (enrolledGen !== null) {
+      const done = readDone(genDir, enrolledGen, keyHash, format);
+      if (done && !done.aborted) return resolveDone(done);
+      if (!done) {
+        if (isClaimAlive(genDir, enrolledGen)) {
+          if (Date.now() >= deadline) throw new Error(`timed out waiting for suite generation g${enrolledGen} in ${genDir}`);
+          Atomics.wait(SLEEP_BUF, 0, 0, LOCK_POLL_MS);
+          continue;
+        }
+        const after = readDone(genDir, enrolledGen, keyHash, format);
+        if (after && !after.aborted) return resolveDone(after);
+      }
+      const next = claimOrEnroll(enrolledGen + 1, enrolledGen);
+      if (next) return next;
+      continue;
+    }
+    const hit = lookupGreen();
+    if (hit) return { mode: "hit", hit };
+    const maxGen = maxGenOf(genDir);
+    if (maxGen > 0) {
+      const done = readDone(genDir, maxGen, keyHash, format);
+      if (!done) { enrolledGen = maxGen; continue; }
+      if (!done.aborted && done.v.green) { const h = lookupGreen(); if (h) return { mode: "hit", hit: h }; }
+    }
+    const next = claimOrEnroll(maxGen + 1);
+    if (next) return next;
+  }
+}
+
 export function suiteGreen({ repo, sha, command, install = null, format = "auto", timeoutMin = 60, varyVersion = null }) {
   repo = resolve(repo);
+  install = normInstall(install);
   const full = fullSha(repo, sha);
   if (varyVersion !== null) {
     const parsed = parseVersion(varyVersion);
@@ -178,50 +283,102 @@ export function suiteGreen({ repo, sha, command, install = null, format = "auto"
     varyVersion = parsed.text;
   }
   const tested = testedCommit(repo, full, varyVersion);
-  const storeDir = suiteStore(repo);
-  const execution = executionOf(command, install);
-  const runtime = execution?.runtime ?? null;
+  const storeDir = suiteStore(repo), execution = executionOf(command, install), runtime = execution?.runtime ?? null;
   const key = { repository: dirname(storeDir), tree: tested.tree, command, install, runtime, execution: execution?.digest ?? null };
-  const dir = keyDir(storeDir, key);
-  const varied = varyVersion === null ? {} : { versionVaried: varyVersion };
-  const hit = execution ? storedGreen(dir, key, format) : null;
-  if (hit) {
-    return { repository: repo, sha: full, tree: tested.tree, ...varied, command, install, runtime, exit: hit.run.exit, summary: hit.judged.summary,
-      durationMs: hit.run.durationMs, green: true, reasons: [], log: hit.run.log, reusedFrom: hit.path, text: hit.text };
-  }
-  const started = Date.now();
-  const release = holdLease(repo, full);
-  let ran;
-  try { ran = runIn(repo, tested.commit, { command, install, timeoutMin, execution }); }
-  finally { release(); }
-  const v = verdict({ exit: ran.exit, output: ran.log, format, installExit: ran.installExit });
-  const receipt = { repository: repo, sha: full, tree: tested.tree, ...varied, command, install, runtime, exit: ran.exit, summary: v.summary,
-    durationMs: Date.now() - started, green: v.green, reasons: v.reasons, log: { sha256: sha256(ran.log), bytes: Buffer.byteLength(ran.log) } };
-  try { store(dir, { ...receipt, key, format, installExit: ran.installExit }, ran.log); }
-  catch (e) { console.error(`suite-green: the receipt of ${full.slice(0, 7)} was not stored for reuse (${e.message})`); }
-  return { ...receipt, text: ran.log };
+  const keyHash = keyHashOf(key), dir = join(storeDir, keyHash), varied = varyVersion === null ? {} : { versionVaried: varyVersion };
+  const base = { repository: repo, sha: full, tree: tested.tree, ...varied, command, install, runtime };
+  const reuseHit = h => ({ ...base, exit: h.run.exit, summary: h.judged.summary, durationMs: h.run.durationMs, green: true, reasons: [], log: h.run.log, reusedFrom: h.path, text: h.text });
+  const fromDone = d => ({ ...base, exit: d.receipt.exit, summary: d.v.summary, durationMs: d.receipt.durationMs, green: d.v.green, reasons: d.v.reasons, log: d.receipt.log, ...(d.v.green ? {} : { reused: true }), reusedFrom: d.v.green ? (d.receiptPath || d.path) : d.path, text: d.text });
+  const lookupGreen = () => (execution ? storedGreen(dir, key, format) : null);
+  const hit = lookupGreen();
+  if (hit) return reuseHit(hit);
+  const slot = execution ? acquireOrJoin(storeDir, tested.tree, keyHash, timeoutMin * 60_000, format, lookupGreen) : { mode: "leader", gen: 0, token: null, isCurrent: () => true, assertCurrent: () => {}, finish: null };
+  if (slot.mode === "hit") return reuseHit(slot.hit);
+  if (slot.mode === "resolved") return fromDone(slot.done);
+  let finished = false;
+  try {
+    const rehit = lookupGreen();
+    if (rehit) {
+      if (slot.finish && slot.isCurrent()) try { slot.finish({ green: true, receipt: rehit.run, receiptPath: rehit.path, text: rehit.text, format: rehit.run.format ?? format, installExit: rehit.run.installExit ?? 0 }); } catch {}
+      finished = true;
+      return reuseHit(rehit);
+    }
+    slot.assertCurrent("execution");
+    const started = Date.now(), release = holdLease(repo, full);
+    let ran;
+    try { ran = runIn(repo, tested.commit, { command, install, timeoutMin, execution }); } finally { release(); }
+    const v = verdict({ exit: ran.exit, output: ran.log, format, installExit: ran.installExit });
+    const receipt = { ...base, exit: ran.exit, summary: v.summary, durationMs: Date.now() - started, green: v.green, reasons: v.reasons, log: { sha256: sha256(ran.log), bytes: Buffer.byteLength(ran.log) } };
+    slot.assertCurrent("publication");
+    let receiptPath = null;
+    if (v.green) try { receiptPath = store(dir, { ...receipt, key, format, installExit: ran.installExit }, ran.log); } catch (e) { console.error(`suite-green: the receipt of ${full.slice(0, 7)} was not stored for reuse (${e.message})`); }
+    if (slot.finish) try { slot.finish({ green: v.green, receipt, receiptPath, text: ran.log, format, installExit: ran.installExit }); } catch (e) { console.error(`suite-green: generation g${slot.gen} of ${full.slice(0, 7)} was not recorded (${e.message})`); }
+    finished = true;
+    return { ...receipt, text: ran.log };
+  } finally { if (!finished && slot.finish && slot.isCurrent()) try { slot.finish({ aborted: true }); } catch {} }
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) cli(() => {
+// D-0061, design/suite-once.md#1
+export function lookupSuiteReceipt({ repo, sha, command, install = "", runtime = null, format = "auto" }) {
+  repo = resolve(repo);
+  const norm = normInstall(install), full = fullSha(repo, sha), tree = git(repo, ["rev-parse", `${full}^{tree}`]), execution = executionOf(command, norm);
+  if (!execution) return null;
+  const effectiveRuntime = runtime ?? execution.runtime, storeDir = suiteStore(repo);
+  const key = { repository: dirname(storeDir), tree, command, install: norm, runtime: effectiveRuntime, execution: execution.digest };
+  const hit = storedGreen(join(storeDir, keyHashOf(key)), key, format);
+  if (!hit) return null;
+  const receipt = { repository: repo, sha: full, tree, command, install: norm, runtime: effectiveRuntime, exit: hit.run.exit, summary: hit.judged.summary, durationMs: hit.run.durationMs, green: true, reasons: [], log: hit.run.log, reusedFrom: hit.path };
+  return { receipt, receiptPath: hit.path, logPath: hit.path.replace(/\.json$/, ".log.gz") };
+}
+
+export function purgeTreeReceipts(repo, tree) {
+  const storeDir = suiteStore(resolve(repo));
+  if (!existsSync(storeDir)) return { purged: 0 };
+  let purged = 0;
+  for (const sub of readdirSync(storeDir, { withFileTypes: true })) {
+    if (!sub.isDirectory()) continue;
+    const subDir = join(storeDir, sub.name);
+    if (sub.name === ".gen") { for (const e of readdirSync(subDir)) if (e.startsWith(`${tree}-`)) rmSync(join(subDir, e), { recursive: true, force: true }); continue; }
+    for (const entry of readdirSync(subDir).filter(n => n.endsWith(".json"))) {
+      const jsonPath = join(subDir, entry), run = tryJson(readFileSync(jsonPath, "utf8"));
+      if (!run || (run.tree !== tree && run.key?.tree !== tree)) continue;
+      rmSync(jsonPath, { force: true }); rmSync(jsonPath.replace(/\.json$/, ".log.gz"), { force: true });
+      purged++;
+    }
+    if (readdirSync(subDir).length === 0) rmSync(subDir, { recursive: true, force: true });
+  }
+  return { purged };
+}
+
+const writeEvidence = (prefix, receipt, gzBuf) => { mkdirSync(dirname(resolve(prefix)), { recursive: true }); writeFileSync(`${prefix}.log.gz`, gzBuf); writeFileSync(`${prefix}.json`, `${JSON.stringify(receipt, null, 1)}\n`); };
+const writeReadOnly = (path, data) => { rmSync(path, { force: true }); writeFileSync(path, data); chmodSync(path, 0o444); };
+
+export function stageSuiteWorkspace({ repo, sha, command, install = "", ws, mode = "lookup", format = "auto", outPrefix = null }) {
+  if (!["lookup", "ensure"].includes(mode)) throw new UsageError(`mode must be lookup or ensure (got ${mode})`);
+  const norm = normInstall(install), wsDir = resolve(ws), stagedPath = join(wsDir, "suite-receipt.json"), stagedLog = join(wsDir, "suite.log.gz");
+  const stageGreen = (receipt, gz, reused) => { mkdirSync(wsDir, { recursive: true }); writeReadOnly(stagedPath, `${JSON.stringify(receipt, null, 1)}\n`); writeReadOnly(stagedLog, gz); return { ok: true, reused, receipt, stagedPath }; };
+  const hit = lookupSuiteReceipt({ repo, sha, command, install: norm, format });
+  if (hit) { const gz = readFileSync(hit.logPath); if (outPrefix) writeEvidence(outPrefix, hit.receipt, gz); return stageGreen(hit.receipt, gz, true); }
+  if (mode === "lookup") return { ok: true, reused: false, receipt: null, stagedPath: null };
+  const { text, ...receipt } = suiteGreen({ repo, sha, command, install: norm, format }), gz = gzipSync(text);
+  if (outPrefix) writeEvidence(outPrefix, receipt, gz);
+  if (!receipt.green) { rmSync(stagedPath, { force: true }); rmSync(stagedLog, { force: true }); return { ok: false, reused: Boolean(receipt.reusedFrom), receipt, reasons: receipt.reasons }; }
+  return stageGreen(receipt, gz, Boolean(receipt.reusedFrom));
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) cli(() => {
   const args = parseArgs(process.argv.slice(2));
   need(args, "repo", "sha", "command");
   const format = args.format || "auto";
   if (!["auto", "node-test"].includes(format)) throw new UsageError("--format must be auto or node-test");
   if (args.out && (existsSync(`${args.out}.json`) || existsSync(`${args.out}.log.gz`))) throw new UsageError(`${args.out}.json or .log.gz exists; evidence is never overwritten`);
-  let receipt;
   if ("vary-version" in args) need(args, "vary-version");
-  try {
-    receipt = suiteGreen({ repo: args.repo, sha: args.sha, command: args.command, install: args.install || null, format,
-      timeoutMin: Number(args["timeout-min"] || 60), varyVersion: args["vary-version"] ?? null });
-  }
+  let receipt;
+  try { receipt = suiteGreen({ repo: args.repo, sha: args.sha, command: args.command, install: args.install || null, format, timeoutMin: Number(args["timeout-min"] || 60), varyVersion: args["vary-version"] ?? null }); }
   catch (e) { throw e instanceof UsageError ? e : new UsageError(e.message); }
   const { text, ...shown } = receipt;
   if (shown.reusedFrom) console.error(`reused ${shown.reusedFrom}`);
-  if (args.out) {
-    mkdirSync(dirname(resolve(args.out)), { recursive: true });
-    writeFileSync(`${args.out}.log.gz`, gzipSync(text));
-    writeFileSync(`${args.out}.json`, `${JSON.stringify(shown, null, 1)}\n`);
-  }
+  if (args.out) writeEvidence(args.out, shown, gzipSync(text));
   console.log(JSON.stringify(shown, null, 2));
   return receipt.green ? 0 : 2;
 });

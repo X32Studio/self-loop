@@ -1,6 +1,4 @@
-// A role run as a T3 child thread (runner `t3`): --prepare builds the same workspace as a CLI call and stops before any
-// model runs; `record` finds the child's transcript by the nonce in its first prompt, audits it and records the same
-// hand-off. Transcripts here are written in the shapes Codex and Claude Code write (lib/t3-child.mjs).
+// F-0008, D-0060
 import assert from "node:assert/strict";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -18,7 +16,6 @@ const handoffs = records => parseHandoffs(git(records, "show", "HEAD:metrics/han
 const allHandoffs = records => existsSync(join(records, "metrics/handoffs.jsonl"))
   ? parseHandoffs(git(records, "show", "HEAD:metrics/handoffs.jsonl")) : [];
 
-/** A Codex rollout of a child whose first prompt is `prompt` and which ran `commands` (shell strings) in `cwd`. */
 function codexRollout(home, prompt, commands, cwd) {
   const now = new Date();
   const dir = join(home, "sessions", String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0"));
@@ -37,7 +34,6 @@ function codexRollout(home, prompt, commands, cwd) {
   return file;
 }
 
-/** A Claude Code session of a child whose first prompt is `prompt` and which used `tools` ({ name, input }). */
 function claudeSession(home, prompt, tools, cwd) {
   const dir = join(home, "projects", cwd.replace(/[/.]/g, "-"));
   mkdirSync(dir, { recursive: true });
@@ -52,7 +48,6 @@ function claudeSession(home, prompt, tools, cwd) {
   return file;
 }
 
-/** An Antigravity session (untruncated transcript_full.jsonl) whose first prompt is `prompt` with batches of tool_calls. */
 function antigravitySession(appDir, convId, prompt, toolBatches, { model = "gemini-4-neon", extraRows = [], completed = true } = {}) {
   const logs = join(appDir, "brain", convId, ".system_generated", "logs");
   mkdirSync(logs, { recursive: true });
@@ -85,7 +80,6 @@ async function prepared(provider = "codex", role = "critic", setupOpts = {}) {
   return { s, r, homes };
 }
 
-// Linux can give a just-created transcript an mtime earlier than the recorded prepare timestamp.
 function coarseMtime(file, ws) {
   const { preparedAt } = JSON.parse(readFileSync(join(ws, "call.json"), "utf8"));
   const seconds = Math.floor((preparedAt - 1) / 1000);
@@ -140,7 +134,6 @@ test("confined t3 reviewer on antigravity and claude: prepare, liveWorkspace, an
     writeFileSync(join(p.ws, "out/report.md"), `# Frame (${provider})\n\nVERDICT: CONTINUE\n`);
     const session = provider === "antigravity" ? agId : claudeId;
     if (provider === "antigravity") {
-      // Pending transcript check: message says workspace, never worktree null.
       const pendingFile = antigravitySession(homes.antigravity, agId, p.prompt, [
         [{ name: "read_file", args: { Path: join(p.ws, "brief.md") } }],
       ], { completed: false });
@@ -176,7 +169,6 @@ test("confined t3 reviewer on antigravity and claude: prepare, liveWorkspace, an
 });
 
 test("confined t3 reviewer rejects outside file access, shell/MCP tools, and unparsed or insufficient audit evidence", async () => {
-  // 1. Outside file access (product, records, symlink escape) -> EXIT.violation
   for (const kind of ["product", "records", "symlink"]) {
     const { s, r, homes } = await prepared("antigravity", "reviewer", { frame: false });
     const { ws, prompt } = r.prepared;
@@ -197,7 +189,6 @@ test("confined t3 reviewer rejects outside file access, shell/MCP tools, and unp
     assert.deepEqual(allHandoffs(s.records), [], `${kind}: no handoff`);
   }
 
-  // 2. Shell tool (run_command on antigravity, Bash on claude) and read-only MCP tool -> EXIT.violation
   for (const toolCall of [
     { name: "run_command", args: { CommandLine: "ls" } },
     { name: "mcp_t3-code_t3_thread_read", args: { threadId: "t1" } },
@@ -214,7 +205,7 @@ test("confined t3 reviewer rejects outside file access, shell/MCP tools, and unp
   for (const tool of [
     { name: "Bash", input: { command: "ls" } },
     { name: "mcp__t3-code__t3_thread_read", input: { threadId: "t1" } },
-    { name: "Glob", input: { pattern: "**/*.js" } }, // no path with outside cwd
+    { name: "Glob", input: { pattern: "**/*.js" } },
   ]) {
     const { s, r, homes } = await prepared("claude", "reviewer", { frame: false });
     const { ws, prompt } = r.prepared;
@@ -226,7 +217,6 @@ test("confined t3 reviewer rejects outside file access, shell/MCP tools, and unp
     assert.deepEqual(allHandoffs(s.records), [], `claude ${tool.name}: no handoff`);
   }
 
-  // 3. Unparsed tool calls (missing GENERIC pairing or missing path) -> EXIT.violation
   {
     const { s, r, homes } = await prepared("antigravity", "reviewer", { frame: false });
     const { ws, prompt } = r.prepared;
@@ -244,7 +234,6 @@ test("confined t3 reviewer rejects outside file access, shell/MCP tools, and unp
     assert.deepEqual(allHandoffs(s.records), []);
   }
 
-  // 4. Unrecognized events with zero tool events -> EXIT.violation
   {
     const { s, r, homes } = await prepared("antigravity", "reviewer", { frame: false });
     const { ws, prompt } = r.prepared;
@@ -262,7 +251,6 @@ test("confined t3 reviewer rejects outside file access, shell/MCP tools, and unp
 });
 
 test("tampered call.json (non-null wt on prepared reviewer) is rejected with EXIT.records, and missing workspace dirs return EXIT.failure", async () => {
-  // Tampered with snapshot present
   {
     const { s, r, homes } = await prepared("antigravity", "reviewer", { frame: false });
     const { ws, prompt } = r.prepared;
@@ -278,7 +266,6 @@ test("tampered call.json (non-null wt on prepared reviewer) is rejected with EXI
     assert.equal(recordCall(s.cfg, ws, { session: agId }).code, EXIT.records);
   }
 
-  // Tampered legacy v1 without snapshot (non-null wt still caught by reviewer wt === null check)
   {
     const { s, r, homes } = await prepared("antigravity", "reviewer", { frame: false });
     const { ws, prompt } = r.prepared;
@@ -297,7 +284,6 @@ test("tampered call.json (non-null wt on prepared reviewer) is rejected with EXI
     assert.equal(preparedIn(s.cfg)[0].liveWorkspace, false);
   }
 
-  // Missing purpose/ or records/ directory -> EXIT.failure workspace gone, and liveWorkspace false when any required dir is gone
   {
     const { s, r, homes } = await prepared("antigravity", "reviewer", { frame: false });
     const { ws, prompt } = r.prepared;
@@ -311,7 +297,6 @@ test("tampered call.json (non-null wt on prepared reviewer) is rejected with EXI
     assert.match(missing.message, /prepared workspace .* is gone/);
   }
 
-  // Vector 5 fail-closed: when t.cwd is null (missing DB or omitted cwd), relative paths and implicit-cwd Glob fail closed with EXIT.violation while absolute ws paths still pass
   {
     const { s, r, homes } = await prepared("antigravity", "reviewer", { frame: false });
     const { ws, prompt } = r.prepared;
@@ -455,6 +440,9 @@ test("B12: discovery and explicit parsing skip Codex's injected AGENTS context",
   const { s, r, homes } = await prepared();
   const { ws, wt, prompt } = r.prepared;
   writeFileSync(join(ws, "out/report.md"), "report\n");
+  const missing = recordCall(s.cfg, ws);
+  assert.equal(missing.code, EXIT.failure);
+  assert.match(missing.message, /no transcript holds nonce/);
   const file = codexRollout(homes.codex, prompt, [], wt);
   const original = readFileSync(file, "utf8");
   const lines = original.trimEnd().split("\n");
@@ -462,8 +450,14 @@ test("B12: discovery and explicit parsing skip Codex's injected AGENTS context",
   writeFileSync(file, lines.join("\n") + "\n");
   coarseMtime(file, ws);
   assert.equal(transcriptEvents("fixture", { runner: "codex", file }).firstPrompt, prompt);
-  assert.match(recordCall(s.cfg, ws).message, /--session/);
-  const done = recordCall(s.cfg, ws, { session: codexId });
+  const duplicate = codexRollout(homes.codex, prompt, [], wt);
+  coarseMtime(duplicate, ws);
+  const ambiguous = recordCall(s.cfg, ws);
+  assert.equal(ambiguous.code, EXIT.failure);
+  assert.match(ambiguous.message, /2 transcripts hold nonce/);
+  assert.match(ambiguous.message, /--session/);
+  rmSync(duplicate);
+  const done = recordCall(s.cfg, ws);
   assert.equal(done.code, EXIT.done, done.message);
 });
 

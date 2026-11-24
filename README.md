@@ -10,7 +10,7 @@
   <a href="README.zh-CN.md">中文</a> · <b>English</b> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/METHODOLOGY.md">Methodology</a> · <a href="SKILL.md">Skill Spec</a>
 </p>
 
-<sub>By <a href="https://x32studio.com">X32 Studio</a> · MIT Licensed · v0.8.0</sub>
+<sub>By <a href="https://x32studio.com">X32 Studio</a> · MIT Licensed · v0.9.0</sub>
 
 </div>
 
@@ -34,6 +34,13 @@ On toy tasks, that works. On real software, an ungoverned agent mob fails in fou
 **`self-loop` turns chaotic coding-agent swarms (Claude Code, Codex, Antigravity, and T3 Code harnesses) into a trustworthy delivery organization.** It pairs a first-principles **Frame Reviewer** with a **cross-vendor Critic / Actor / Judge** hardening loop, trajectory-driven premise tests, SSOT authority verification, and Git-backed mechanical gates.
 
 ---
+
+## What's New in v0.9.0
+
+- **Mandatory Control Plane & Universal Commit-Graph Provenance (`provenance.mjs`, `gated-push.mjs`, `.githooks/pre-push`)** — Every commit above `provenanceBaseline` must come from a `PL-NNNN`-attested handoff or clean wave merge (`--no-replace-objects`). Both `call.mjs --base` and working-branch pushes (`loop/<phase>`) enforce full `PL + critic + actor + cross-vendor judge` provenance (exempting open `W-NNNN` refactoring windows); pre-judge remote CI pushes land on `ci/<handoff-id>`.
+- **Nonce-Bound Lead Delegation & Write Confinement (`lead-guard.mjs`, `git-push-command.mjs`)** — `PreToolUse` denies raw delegation tools without a live unrecorded 16-hex `call.json` nonce, narrows `--workspaces` writes strictly to `<workDir>/tasks/`, blocks `git push --no-verify` / `-n` / `-c core.hooksPath=...` / `--exec-path=...`, and fails closed on corrupt hook stdin.
+- **Once-Per-Tree Host Suite Verification (`suite-green.mjs`, `audit-access.mjs`)** — Runs `gates.suite` **once** per `(repo, HEAD^{tree}, command, install, runtime)` via an atomic `linkSync` monotonic generation chain (sharing both green and red outcomes across concurrent callers with zero TOCTOU), stages read-only `0444` `suite-receipt.json` into code Judges and read-only final Critics, purges unattested tree caches on `call.mjs record` to defeat pre-poisoning, auto-resolves receipts in `gated-push.mjs`, and removes duplicate full-suite re-runs from role briefs.
+- **Zero-Turn Owner Words, Delta-Scoped `T3`, & Ergonomics (`plan.mjs`, `cadence.mjs`, `t3-child.mjs`, `dispatch.mjs`)** — Substantive open owner words block immediately (0-turn grace, ignoring routine confirmations); `ci-absent` extinguishes once a same-phase descendant passes CI; `T3` compares deltas against the last `reviewer-architecture` baseline and blocks only hotspot-overlapping packages while async review is active; `call.mjs record --ws <ws>` auto-discovers sessions by nonce (`--session` optional), `call.mjs cancel` tears down dead workspaces, and `dispatch.mjs prepare|record` batches wave execution.
 
 ## What's New in v0.8.0
 

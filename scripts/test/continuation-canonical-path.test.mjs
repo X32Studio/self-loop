@@ -1,4 +1,4 @@
-// self-loop-records@ab79919:evidence/0011/brief-canonical-path-acceptance.md.
+// D-0060
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -34,12 +34,24 @@ function fixture(t) {
   };
   const pointer = path => ({ repository: f.records, commit: git(f.records, 'rev-parse', 'HEAD'), path,
     sha256: bytesHash(readFileSync(join(f.records, path))) });
-  write('plans/PL-0001.md', { id: 'PL-0001', phase: 'v1', scope: 'canonical/path', packages: [{
-    id: 'review', authority: ['D-0001'], goal: 'Review canonical path evidence', files: [],
-    interface: 'Review only', needs: [], role: 'actor', acceptance: 'Canonical evidence exists',
-    handoff: 'R-0001-actor-review', task: import.meta.filename,
-  }] });
-  write('decisions/D-0001.md', '# D-0001\nReview only; no runtime launch.\n');
+  write('plans/PL-0001.md', { id: 'PL-0001', phase: 'v1', scope: 'canonical/path', packages: [
+    {
+      id: 'review', authority: ['D-0001'], goal: 'Review canonical path evidence', files: [],
+      interface: 'Review only', needs: [], role: 'actor', acceptance: 'Canonical evidence exists',
+      handoff: 'R-0001-actor-review', task: import.meta.filename,
+    },
+    {
+      id: 'critic', authority: ['D-0001'], goal: 'Verify canonical path evidence', files: [],
+      interface: 'Review only', needs: ['review'], reviews: ['review'], role: 'critic', acceptance: 'Canonical evidence exists',
+      handoff: 'R-0001-critic-cr', task: import.meta.filename,
+    },
+    {
+      id: 'judge', authority: ['D-0001'], goal: 'Judge canonical path evidence', files: [],
+      interface: 'Review only', needs: ['critic'], role: 'judge', acceptance: 'Canonical evidence exists',
+      handoff: 'R-0001-judge', task: import.meta.filename,
+    },
+  ] });
+  write('decisions/D-0001.md', '# D-0001\n\nby: owner\nReview only; no runtime launch.\n');
   write('delegations/T-0001.md', '# T-0001\nCanonical path review coordinator.\n');
   write('records.json', { extraKinds: [{ kind: 'Continuation delivery', path: LEDGER,
     changes: 'append-only', settlesOwnerWords: false }] });

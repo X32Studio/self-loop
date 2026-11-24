@@ -1,7 +1,7 @@
-// self-loop-records@cc91f1d:evidence/0012/admitted-positive-evidence/effective-contract.json
+// D-0060
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { gzipSync } from 'node:zlib';
 import { join, dirname, basename } from 'node:path';
@@ -13,7 +13,7 @@ export const at = x => `2026-11-22T${x}:00Z`;
 export const canonical = x => x === null || typeof x !== 'object' ? JSON.stringify(x) : Array.isArray(x) ? `[${x.map(canonical).join(',')}]` : `{${Object.keys(x).sort().map(k => `${JSON.stringify(k)}:${canonical(x[k])}`).join(',')}}`;
 export const specIds = ['positive-on-time','positive-late','optional-deferral','timely-forecast-publication','late-publication-earlier-delivery','wrong-candidate','wrong-repository','wrong-host','missing-check','red-gate','wrong-suite-tree','incomplete-criterion','wrong-criterion-bytes','unavailable-artifact','wrong-recipient','required-deferral','self-optional-list','backdated-publication','untrusted-time','wrong-event-subject','gate-finished-after-event','unassigned-issuer','archive-mismatch','missing-history','foreign-promise','late-historical-handoff-proof','conflicting-assessments','current-regression'];
 export function positiveFixture(t, id = 'positive-on-time', { external = false, crossRepo = false } = {}) {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'self-loop-positive-')));
+  const dir = mkdtempSync(join(tmpdir(), 'self-loop-positive-'));
   t.after(() => rmSync(dir, {recursive:true, force:true}));
   const records = join(dir, 'records'), product = join(dir, 'product'), archiveRepo = crossRepo ? join(dir, 'archive') : records;
   const env = {...process.env, HOME:dir, GIT_CONFIG_NOSYSTEM:'1', GIT_CONFIG_GLOBAL:'/dev/null', GIT_TERMINAL_PROMPT:'0', GIT_NO_REPLACE_OBJECTS:'1', GIT_AUTHOR_NAME:'Synthetic archival root', GIT_COMMITTER_NAME:'Synthetic archival root', GIT_AUTHOR_EMAIL:'fixture@example.invalid', GIT_COMMITTER_EMAIL:'fixture@example.invalid'};
@@ -37,6 +37,7 @@ export function positiveFixture(t, id = 'positive-on-time', { external = false, 
   if(id==='json-authorization') authorityBytes = json({'grant/key':{'~assignment':initialAuthority}});
   if(id==='ambiguous-authorization') authorityBytes += '# Authority\nRepeated section\n';
   put('decisions/D-0001.md',authorityBytes);
+  put('decisions/D-0002.md','# D-0002\nid: D-0002\nby: owner\nstatus: active\n');
   put('metrics/handoffs.jsonl','');put('metrics/trajectory.jsonl','');
   for(const type of ['scope','release','event'])put(`tasks/request-${type}.md`,`features: F-0012\nIndependent ${type} assessment of PL-0001.\n`);
   const policy={product,records,phase:'positive',workDir:join(dir,'work'),briefs:{},agents:{},branch:'main',gates:{require:['github-actions/linux','github-actions/macos'],suite:'node --test synthetic.test.mjs'}};
@@ -45,7 +46,11 @@ export function positiveFixture(t, id = 'positive-on-time', { external = false, 
   put('loop.json',json(policy));
   commit('Synthetic policy before assigned assessment');
   const authority=ref('decisions/D-0001.md'), criteria=[ref('purpose/P-0001.md'),ref('purpose/P-0002.md')], foreign=ref('purpose/P-0003.md');
-  const plan={id:'PL-0001',scope:'usable-flow',phase:'positive',packages:[['core',[]],['restart',['core']],['polish',[]]].map(([id,needs])=>({id,needs,authority:['D-0001'],goal:`Deliver ${id}`,files:[`src/${id}/**`],interface:'artifact',role:'actor',acceptance:'usable outcome',handoff:`R-0001-actor-${id}`,settings:'current'})),time:{schema:'plan-time/v2',rootPlan:'PL-0001',baseline:{previousRoot:null,startedAt:at('00:00'),startRefs:[authority],deadline:{at:at('12:00'),authorityRefs:[authority]},minimum:{outcome:'usable artifact',criteriaRefs:criteria,authorityRefs:[authority]},promises:[{id:'P1',dueAt:at('12:00'),criteriaRefs:['foreign-promise','different-promise-complete'].includes(id)?[criteria[0],foreign]:criteria,authorityRefs:[authority]}]}}};
+  const plan={id:'PL-0001',scope:'usable-flow',phase:'positive',packages:[
+    ...[['core',[]],['restart',['core']],['polish',[]]].map(([id,needs])=>({id,needs,authority:['D-0002'],goal:`Deliver ${id}`,files:[`src/${id}/**`],interface:'artifact',role:'actor',acceptance:'usable outcome',handoff:`R-0001-actor-${id}`,settings:'current'})),
+    {id:'critic',needs:[],reviews:['core','restart','polish'],authority:['D-0002'],goal:'Verify positive flow',files:['test/**'],interface:'artifact',role:'critic',acceptance:'usable outcome',handoff:'R-0001-critic',settings:'current'},
+    {id:'judge',needs:['critic'],authority:['D-0002'],goal:'Judge positive flow',files:[],interface:'artifact',role:'judge',acceptance:'usable outcome',handoff:'R-0001-judge',settings:'current'},
+  ],time:{schema:'plan-time/v2',rootPlan:'PL-0001',baseline:{previousRoot:null,startedAt:at('00:00'),startRefs:[authority],deadline:{at:at('12:00'),authorityRefs:[authority]},minimum:{outcome:'usable artifact',criteriaRefs:criteria,authorityRefs:[authority]},promises:[{id:'P1',dueAt:at('12:00'),criteriaRefs:['foreign-promise','different-promise-complete'].includes(id)?[criteria[0],foreign]:criteria,authorityRefs:[authority]}]}}};
   put('plans/PL-0001.md',json(plan));const basedOn=commit('Immutable plan');const planRef=ref('plans/PL-0001.md');
   const estimate={asOf:at('10:00'),remaining:{lowSeconds:1800,highSeconds:2400},availableAfter:{lowSeconds:0,highSeconds:0},basisRefs:[authority],assumptions:['Synthetic fixed capacity'],unknowns:[]};
   const observation=(base=basedOn,parents=[],asOf=at('10:00'))=>({schema:'plan-forecast/v1',rootRef:planRef,planRef,parents,outlook:{asOf,observation:{observedAt:asOf,recordedAt:asOf,evidenceRefs:[authority]},basedOn:base,inputs:[authority,...criteria],releasePackages:['restart'],reserve:{remaining:{lowSeconds:0,highSeconds:0},covers:[],basisRefs:[authority],assumptions:['No additional reserve']},checkpointAt:at('11:00'),change:{reason:'Synthetic observation',authorityRefs:[authority],deferredPackages:[]},outcome:{state:'active',evidenceRefs:[],deliveredAt:null}},estimates:Object.fromEntries(plan.packages.map(p=>[p.id,{...estimate,asOf}])),promisesAdded:[]});

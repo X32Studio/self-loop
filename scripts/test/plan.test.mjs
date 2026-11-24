@@ -13,9 +13,15 @@ import { git, roomyStore, scripts, setup, temp } from './helpers.mjs';
 const pkg = (id, changes = {}) => ({ id, authority: ['D-0001'], goal: `Deliver ${id}`, files: [],
   interface: 'fixed contract', needs: [], role: 'actor', acceptance: 'accept the contract',
   handoff: `R-0001-actor-${id}`, ...changes });
+const covered = packages => {
+  const actorIds = packages.filter(p => p.role === 'actor').map(p => p.id);
+  return [...packages,
+    pkg('cr', { role: 'critic', handoff: 'R-0001-critic-cr', needs: actorIds, reviews: actorIds }),
+    pkg('j', { role: 'judge', handoff: 'R-0001-judge', needs: ['cr'] })];
+};
 const plan = packages => ({ id: 'PL-0001', scope: 'v1/round-1', phase: 'v1', packages });
 const state = (files = {}) => {
-  const contents = { 'decisions/D-0001.md': '# D-0001\n', ...files };
+  const contents = { 'decisions/D-0001.md': '# D-0001\nby: owner\n', ...files };
   return { revision: 'a'.repeat(40), files: new Set(Object.keys(contents)), read: path => contents[path] ?? '',
     bytes: path => contents[path] ?? null };
 };
@@ -39,28 +45,28 @@ test('flow: planner separates future file patterns; loss: wrong-result', () => {
 });
 
 test('flow: planner submits a Markdown read-only task and JSON plan; loss: false-verdict', () => {
-  const md = '# PL-0001 Plan\nscope: v1/round-1\nphase: v1\n## a\nauthority: D-0001\ngoal: Deliver a\nfiles: \ninterface: fixed contract\nneeds: \nrole: actor\nacceptance: accept the contract\nhandoff: R-0001-actor-a\n';
+  const md = '# PL-0001 Plan\nscope: v1/round-1\nphase: v1\n## a\nauthority: D-0001\ngoal: Deliver a\nfiles: \ninterface: fixed contract\nneeds: \nrole: actor\nacceptance: accept the contract\nhandoff: R-0001-actor-a\n## cr\nauthority: D-0001\ngoal: Deliver cr\nfiles: \ninterface: fixed contract\nneeds: a\nreviews: a\nrole: critic\nacceptance: accept the contract\nhandoff: R-0001-critic-cr\n## j\nauthority: D-0001\ngoal: Deliver j\nfiles: \ninterface: fixed contract\nneeds: cr\nrole: judge\nacceptance: accept the contract\nhandoff: R-0001-judge\n';
   assert.deepEqual(validatePlan(parsePlan(md), state()), []);
-  assert.deepEqual(validatePlan(parsePlan(JSON.stringify(plan([pkg('a')]))), state()), []);
+  assert.deepEqual(validatePlan(parsePlan(JSON.stringify(plan(covered([pkg('a')])))), state()), []);
 });
 
 test('flow: planner validates an authority and a dependency chain; loss: false-verdict', () => {
-  assert.deepEqual(validatePlan(plan([pkg('a'), pkg('b', { needs: ['a', 'D-0001'] })]), state()), []);
-  assert.match(validatePlan(plan([pkg('a', { authority: [] })]), state()).join(), /authority/);
-  assert.match(validatePlan(plan([pkg('a', { needs: ['D-0099'] })]), state()).join(), /D-0099/);
-  assert.match(validatePlan(plan([pkg('a', { needs: ['b'] }), pkg('b', { needs: ['a'] })]), state()).join(), /cycle/);
+  assert.deepEqual(validatePlan(plan(covered([pkg('a'), pkg('b', { needs: ['a', 'D-0001'] })])), state()), []);
+  assert.match(validatePlan(plan(covered([pkg('a', { authority: [] })])), state()).join(), /authority/);
+  assert.match(validatePlan(plan(covered([pkg('a', { needs: ['D-0099'] })])), state()).join(), /D-0099/);
+  assert.match(validatePlan(plan(covered([pkg('a', { needs: ['b'] }), pkg('b', { needs: ['a'] })])), state()).join(), /cycle/);
 });
 
 test('flow: planner fixes future ownership collisions while keeping read-only packages; loss: wrong-result', () => {
   const a = pkg('a', { files: ['scripts/**/plan*.mjs'] });
-  assert.deepEqual(validatePlan(plan([a, pkg('b')]), state()), []);
-  assert.match(validatePlan(plan([a, pkg('b', { files: ['scripts/new/planning.mjs'] })]), state()).join(), /overlap/);
+  assert.deepEqual(validatePlan(plan(covered([a, pkg('b')])), state()), []);
+  assert.match(validatePlan(plan(covered([a, pkg('b', { files: ['scripts/new/planning.mjs'] })])), state()).join(), /overlap/);
 });
 
 test('flow: planner revises a contract without replaying a prior completion; loss: false-verdict', () => {
-  const old = plan([pkg('a')]);
+  const old = plan(covered([pkg('a')]));
   const records = state({ 'plans/PL-0001.md': JSON.stringify(old) });
-  const changed = { ...old, id: 'PL-0002', supersedes: old.id, packages: [pkg('a', { interface: 'new contract' })] };
+  const changed = { ...old, id: 'PL-0002', supersedes: old.id, packages: covered([pkg('a', { interface: 'new contract' })]) };
   assert.match(validatePlan(changed, records).join(), /new handoff/);
   changed.packages[0].handoff = 'R-0001-actor-aa';
   assert.deepEqual(validatePlan(changed, records), []);
@@ -95,8 +101,8 @@ test('flow: a replaced writer blocks only its successor while independent work p
 });
 
 test('flow: a plan revision reorders declared sets without invalidating completed work; loss: false-verdict', () => {
-  const old = plan([pkg('a', { files: ['a.js', 'b.js'], needs: ['D-0001'] })]);
-  const next = { ...old, id: 'PL-0002', supersedes: old.id, packages: [pkg('a', { files: ['b.js', 'a.js'], needs: ['D-0001'], settings: {} })] };
+  const old = plan(covered([pkg('a', { files: ['a.js', 'b.js'], needs: ['D-0001'] })]));
+  const next = { ...old, id: 'PL-0002', supersedes: old.id, packages: covered([pkg('a', { files: ['b.js', 'a.js'], needs: ['D-0001'], settings: {} })]) };
   assert.deepEqual(validatePlan(next, state({ 'plans/PL-0001.md': JSON.stringify(old) })), []);
 });
 
@@ -113,30 +119,32 @@ test('flow: the lead runs a ready package whose role runs on a CLI runner; loss:
 });
 
 test('flow: the lead runs loop.mjs next after committing a plan; loss: stuck, settled independent packages idle because the ready set is never queried (I-0002)', async () => {
-  const s = await setup();
+  const s = await setup({}, { plans: false });
   const put = (root, path, data) => { mkdirSync(dirname(join(root, path)), { recursive: true }); writeFileSync(join(root, path), data); };
-  const section = (id, role, handoff, files, needs = '') => [`## ${id}`, 'authority: D-0001', `goal: Deliver ${id}`, `files: ${files}`,
-    'interface: the fixed contract', `needs: ${needs}`, `role: ${role}`, 'acceptance: its cases pass', `handoff: ${handoff}`, ''];
+  const section = (id, role, handoff, files, needs = '', extra = []) => [`## ${id}`, 'authority: D-0001', `goal: Deliver ${id}`, `files: ${files}`,
+    'interface: the fixed contract', `needs: ${needs}`, ...extra, `role: ${role}`, 'acceptance: its cases pass', `handoff: ${handoff}`, ''];
   put(s.records, 'loop.json', JSON.stringify(s.cfg));
-  put(s.records, 'decisions/D-0001.md', '# D-0001 Build the planned work\n');
+  put(s.records, 'decisions/D-0001.md', '# D-0001 Build the planned work\nby: owner\n');
   put(s.records, 'plans/PL-0001.md', ['# PL-0001 Round two', 'scope: S5/round-2', 'phase: S5', '',
-    ...section('build', 'actor', 'R-0002-actor-a', 'src/'), ...section('cases', 'critic', 'R-0002-critic-b', 'test/'),
-    ...section('follow', 'actor', 'R-0002-actor-c', 'docs/notes.md', 'build')].join('\n'));
-  for (const id of ['R-0002-actor-a', 'R-0002-critic-b', 'R-0002-actor-c']) put(s.cfg.workDir, `tasks/${id}.md`, `features: F-0001\n${id}\n`);
+    ...section('build', 'actor', 'R-0002-actor-a', 'src/'), ...section('cases', 'critic', 'R-0002-critic-b', 'test/', '', ['reviews: build, follow']),
+    ...section('follow', 'actor', 'R-0002-actor-c', 'docs/notes.md', 'build'),
+    ...section('verdict', 'judge', 'R-0002-judge', '', 'cases, follow')].join('\n'));
+  for (const id of ['R-0002-actor-a', 'R-0002-critic-b', 'R-0002-actor-c', 'R-0002-judge']) put(s.cfg.workDir, `tasks/${id}.md`, `features: F-0001\n${id}\n`);
   git(s.records, 'add', '-A'); git(s.records, 'commit', '-qm', 'plan');
   const config = join(s.records, 'loop.json');
   const run = () => spawnSync(process.execPath, [join(scripts, 'loop.mjs'), 'next', '--config', config], { encoding: 'utf8',
     env: { ...process.env, SELF_LOOP_LOAD_DIR: temp('self-loop-load-'), SELF_LOOP_OWNER_STORE: roomyStore() } });
   const out = run();
   assert.equal(out.status, 0, out.stderr);
-  assert.match(out.stdout, /^- plan PL-0001 \(S5\/round-2\): 2 ready, 1 waiting, 0 running, 0 done \[plans\//m);
+  assert.match(out.stdout, /^- plan PL-0001 \(S5\/round-2\): 2 ready, 2 waiting, 0 running, 0 done \[plans\//m);
   assert.match(out.stdout, /^ {4}node \S+call\.mjs \S+loop\.json actor --round 2 --step actor-a --task \S+R-0002-actor-a\.md$/m);
   assert.match(out.stdout, /^ {4}node \S+call\.mjs \S+loop\.json critic --round 2 --step critic-b --task \S+R-0002-critic-b\.md$/m);
   assert.match(out.stdout, /^ {2}follow \(R-0002-actor-c\) waits: package build; release: record successful handoff R-0002-actor-a$/m);
   assert.match(out.stdout, /^ {2}node \S+plan\.mjs ready --records \S+ --plan PL-0001$/m);
   assert.doesNotMatch(out.stdout, /plans\/PL-0001\.md \(undeclared\)/, 'RECORDS.md declares the Plan kind');
   put(s.records, 'plans/PL-0002.md', ['# PL-0002 Round two, revised', 'scope: S5/round-2', 'phase: S5', 'supersedes: PL-0001', '',
-    ...section('cases', 'critic', 'R-0002-critic-b', 'test/')].join('\n'));
+    ...section('cases', 'critic', 'R-0002-critic-bb', 'test/')].join('\n'));
+  put(s.cfg.workDir, 'tasks/R-0002-critic-bb.md', 'features: F-0001\nR-0002-critic-bb\n');
   git(s.records, 'add', '-A'); git(s.records, 'commit', '-qm', 'revise');
   const revised = run().stdout;
   assert.doesNotMatch(revised, /- plan PL-0001/);
@@ -215,26 +223,28 @@ test('A3 holds: a release of record IDs, capacity or a time is computed, any oth
 });
 
 test('A3 plan lists: a bracket glob is a file pattern, a JSON array is a list (flow: the lead gives the documents package the files [A-Z]*.md; loss: stuck, the plan cannot be validated at all)', () => {
-  const md = '# PL-0001 Plan\nscope: v1/round-1\nphase: v1\n## docs\nauthority: D-0001\ngoal: Deliver docs\nfiles: [A-Z]*.md, docs/\ninterface: fixed contract\nneeds: \nrole: actor\nacceptance: accept the contract\nhandoff: R-0001-actor-docs\n## code\nauthority: D-0001\ngoal: Deliver code\nfiles: ["scripts/**"]\ninterface: fixed contract\nneeds: \nrole: actor\nacceptance: accept the contract\nhandoff: R-0001-actor-code\n';
+  const md = '# PL-0001 Plan\nscope: v1/round-1\nphase: v1\n## docs\nauthority: D-0001\ngoal: Deliver docs\nfiles: [A-Z]*.md, docs/\ninterface: fixed contract\nneeds: \nrole: actor\nacceptance: accept the contract\nhandoff: R-0001-actor-docs\n## code\nauthority: D-0001\ngoal: Deliver code\nfiles: ["scripts/**"]\ninterface: fixed contract\nneeds: \nrole: actor\nacceptance: accept the contract\nhandoff: R-0001-actor-code\n## cr\nauthority: D-0001\ngoal: Review\nfiles: test/a.test.mjs\ninterface: fixed contract\nneeds: docs, code\nreviews: docs, code\nrole: critic\nacceptance: accept the contract\nhandoff: R-0001-critic-cr\n## j\nauthority: D-0001\ngoal: Judge\nfiles: \ninterface: fixed contract\nneeds: cr\nrole: judge\nacceptance: accept the contract\nhandoff: R-0001-judge\n';
   const parsed = parsePlan(md);
-  assert.deepEqual(parsed.packages.map(p => p.files), [['[A-Z]*.md', 'docs/'], ['scripts/**']]);
+  assert.deepEqual(parsed.packages.slice(0, 2).map(p => p.files), [['[A-Z]*.md', 'docs/'], ['scripts/**']]);
   assert.deepEqual(validatePlan(parsed, state()), []);
   parsed.packages[1].files = ['SKILL.md'];
   assert.match(validatePlan(parsed, state()).join(), /overlap/);
 });
 
 test('R8-2 a release in words stays a hold and is listed for review on every next reading; a computed release holds silently (flow: the lead holds one package until the owner says go and another until a ruling lands; loss: stuck, a wait no code can check silences the idle alarm for good)', async () => {
-  const s = await setup();
+  const s = await setup({}, { plans: false });
   const put = (root, path, data) => { mkdirSync(dirname(join(root, path)), { recursive: true }); writeFileSync(join(root, path), data); };
-  const section = (id, handoff, files, extra = []) => [`## ${id}`, 'authority: D-0001', `goal: Deliver ${id}`, `files: ${files}`,
-    'interface: the fixed contract', 'needs: ', 'role: actor', 'acceptance: its cases pass', `handoff: ${handoff}`, ...extra, ''];
+  const section = (id, handoff, files, extra = [], role = 'actor', needs = '') => [`## ${id}`, 'authority: D-0001', `goal: Deliver ${id}`, `files: ${files}`,
+    'interface: the fixed contract', `needs: ${needs}`, `role: ${role}`, 'acceptance: its cases pass', `handoff: ${handoff}`, ...extra, ''];
   put(s.records, 'loop.json', JSON.stringify(s.cfg));
-  put(s.records, 'decisions/D-0001.md', '# D-0001 Build the planned work\n');
+  put(s.records, 'decisions/D-0001.md', '# D-0001 Build the planned work\nby: owner\n');
   put(s.records, 'plans/PL-0001.md', ['# PL-0001 Round two', 'scope: S5/round-2', 'phase: S5', '',
     ...section('worded', 'R-0002-actor-a', 'src/a/', ['hold: the owner asked to wait', 'release: the owner says go']),
     ...section('ruled', 'R-0002-actor-b', 'src/b/', ['hold: waits for the ruling', 'release: D-0099']),
-    ...section('free', 'R-0002-actor-c', 'src/c/')].join('\n'));
-  for (const id of ['R-0002-actor-a', 'R-0002-actor-b', 'R-0002-actor-c']) put(s.cfg.workDir, `tasks/${id}.md`, `features: F-0001\n${id}\n`);
+    ...section('free', 'R-0002-actor-c', 'src/c/'),
+    ...section('cases', 'R-0002-critic-d', 'test/', ['reviews: worded, ruled, free'], 'critic', 'worded, ruled, free'),
+    ...section('verdict', 'R-0002-judge', '', [], 'judge', 'cases')].join('\n'));
+  for (const id of ['R-0002-actor-a', 'R-0002-actor-b', 'R-0002-actor-c', 'R-0002-critic-d', 'R-0002-judge']) put(s.cfg.workDir, `tasks/${id}.md`, `features: F-0001\n${id}\n`);
   git(s.records, 'add', '-A'); git(s.records, 'commit', '-qm', 'plan');
   const env = { ...process.env, SELF_LOOP_LOAD_DIR: temp('self-loop-load-'), SELF_LOOP_OWNER_STORE: roomyStore() };
   const next = spawnSync(process.execPath, [join(scripts, 'loop.mjs'), 'next', '--config', join(s.records, 'loop.json')], { encoding: 'utf8', env });

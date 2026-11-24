@@ -97,11 +97,13 @@ unparsed/insufficient evidence); Codex (CLI and `t3:codex`) is refused.
 
 ```
 node scripts/call.mjs <config.json> <role> --round N --task <file> [--step <role>-<mode>] [--view <records rev>] [--base <product rev>] [--plan PL-NNNN --package <id>] [--dry-run | --prepare]
-node scripts/call.mjs <config.json> record --ws <prepared workspace> --session <provider session ID> [--transcript <file>]
+node scripts/call.mjs <config.json> record --ws <prepared workspace> [--session <provider session ID>] [--transcript <file>]
+node scripts/call.mjs <config.json> cancel --ws <prepared workspace> --reason "<text>"
+node scripts/dispatch.mjs analyze|waves|integrate|prepare|record --records <dir> --plan PL-NNNN [--wave N] [--base <rev>] [--dry-run | --apply | --integrate] [--json]
 node scripts/ci-green.mjs --repo <product> --sha <commit> --require app/name,... [--remote origin] [--out <records>/evidence/NNNN/ci-<k>]
 node scripts/suite-green.mjs --repo <product> --sha <commit> --command "<full suite>" [--install "<cmd>"] [--format node-test] [--vary-version <V>] --out <records>/evidence/NNNN/suite-<k>
 node scripts/bench-gate.mjs --repo <product> --base <rev> --candidate <commit> --command "<benchmark printing one JSON object>" --metric <field> [--install "<cmd>"] [--require "f=v,g<=w"] [--pairs 24] [--warmup 1] [--max-ratio 1.10] [--confidence 0.95] --out <records>/evidence/NNNN/bench-<k>
-node scripts/gated-push.mjs --repo <product> --branch <b> --suite-receipt <receipt.json> [--sha <commit>] [--dry-run] [--owner-store <dir>]
+node scripts/gated-push.mjs --repo <product> --branch <b> [--suite-receipt <receipt.json>] [--sha <commit>] [--dry-run] [--verify-only] [--owner-store <dir>]
 node scripts/ssot-check.mjs [check] --config <loop.json> [--sha <commit>] [--strict] [--json] [--out <receipt.json>] [--owner-store <dir>]
 node scripts/ssot-check.mjs attest --config <loop.json> --id <entry-id> --sha <commit> --disposition <updated|no-contract-change> --by <role> --reason "<text>" [--round N] [--json] [--owner-store <dir>]
 node scripts/version-gate.mjs tip --version <V> [--on <commit>] [--branch <b>]
@@ -112,7 +114,7 @@ node scripts/self-loop.mjs next [--config <loop.json> | --all] [--owner-store <d
 node scripts/self-loop.mjs stall [--hours N] [--config <loop.json> | --all] [--now <ISO time>] [--json] [--owner-store <dir>]
 node scripts/self-loop.mjs tick [--hours N] [--now <ISO time>] [--json] [--owner-store <dir>]
 node scripts/self-loop.mjs ssot [check|attest] [--config <loop.json>] ...
-node scripts/self-loop.mjs dispatch analyze|waves|integrate --records <dir> --plan PL-NNNN ...
+node scripts/self-loop.mjs dispatch analyze|waves|integrate|prepare|record --records <dir> --plan PL-NNNN ...
 node scripts/self-loop.mjs window open|status|close --records <dir> ...
 node scripts/window.mjs open --records <dir> --phase <phase> --horizon <2..12> --goal "<text>" --invariant "<text>" [--invariant ...] [--start-round N] [--by <who>] [--json]
 node scripts/window.mjs status --records <dir> [--phase <phase>] [--json]
@@ -132,20 +134,17 @@ node scripts/decisions.mjs validate <decisions.json> | send --records R --file F
 node scripts/plan.mjs validate <plan file> [--records R] | ready --records R --plan PL-NNNN [--json] | measure --records R --plan PL-NNNN [--json]
 ```
 
-`call.mjs` (role: `reviewer`, `critic`, `actor`, `judge`): builds the role's view of the records from one commit by an
+`call.mjs` (role: `reviewer`, `critic`, `actor`, `judge`; `v0.9.0` single control plane per `D-0060` and `D-0061`): builds the role's view of the records from one commit by an
 allow-list of what is public by construction (never sealed records, evidence, briefs, symlinks, drafts, or round
-records no hand-off names); when `loop.json` configures `ssot`, also injects a read-only `ssot-status.md` (`runChecks: false` at the base SHA) and a one-line prompt pointer into `actor` and `judge` workspaces (`critic`, `reviewer`, and repos without `ssot` are unchanged), runs the agent once (Claude CLI always `--restricted`; Codex CLI and `t3:codex` never for the frame reviewer),
+records no hand-off names); enforces mandatory `--plan PL-NNNN --package <id>` (`exit 7`) on every `critic`, `actor`, and code `judge` call (exempting only `reviewer`, `judge-frame*`, and `judge-comments*`), verifies commit-graph provenance on `--base` (`verifyProvenance` above `provenanceBaseline`), enforces 0-turn substantive open owner words before `critic`/`actor` calls, extinguishes historical `ci-absent` alarms covered by a descendant green CI row (amended `D-0017`), evaluates delta-scoped `T3` breaches against the latest committed `reviewer-architecture` `arch-facts.json` baseline (scoping hard-block to hotspot-intersecting packages while an async `reviewer-architecture` is active; amended `D-0058`), and stages once-per-tree host suite receipts (`stageSuiteWorkspace`: `"ensure"` pre-launch suite gate with per-key singleflight locking exiting `2` on red before launching any code `judge` or planned read-only final `critic` with `files: []`, `"lookup"` zero-delay staging for `actor` and write-mode `critic` with non-empty `files`, `purgeTreeReceipts` on newly committed unattested product trees during `record`, and Rung-3 `duplicateSuiteRuns` screening in `audit-access.mjs`). When `loop.json` configures `ssot`, also injects a read-only `ssot-status.md` (`runChecks: false` at the base SHA) and a one-line prompt pointer into `actor` and `judge` workspaces (`critic`, `reviewer`, and repos without `ssot` are unchanged), runs the agent once (Claude CLI always `--restricted`; Codex CLI and `t3:codex` never for the frame reviewer),
 audits its tool events afterwards with canonical paths, and commits one hand-off: the round record (your task and the
 report verbatim; for the judge only `out/public.md`, its full record sealed), evidence (log, audit, every file under
-`out/`), the actor’s current `design/<area>.md` files, the line in `metrics/handoffs.jsonl` and the index of that exact tree. If the current design changed since the actor’s view, the hand-off retains the proposal in evidence and raises a design conflict. Critic and actor changes to owned paths
+`out/`, plus `arch-facts.json` for `reviewer-architecture`), the actor’s current `design/<area>.md` files, the line in `metrics/handoffs.jsonl` and the index of that exact tree. If the current design changed since the actor’s view, the hand-off retains the proposal in evidence and raises a design conflict. Critic and actor changes to owned paths
 become a product commit. After the records commit, `loop/<phase>` (`loop.json` `branch`) is fast-forwarded to it when
 the commit descends from the branch head, by compare-and-swap (a checkout of the branch is never rewritten; `next`
 reports a checkout whose index lags the moved ref); a commit that does not descend from it leaves the branch alone, and
-`next` names both heads. A `--base` branch other than the loop branch moves from the base by compare-and-swap. A
-critic or actor hand-off whose base does not descend from the last judged commit of the phase is recorded with a
-warning naming that commit. Exit 0 recorded, 1 the call failed (setup, agent exit, no
-report; only its evidence is committed), 6 certain access violation, 7 refused by the records rules (for example the
-round record already exists, or an alarm of the phase waits for its diagnosis; no model is called), 64 usage.
+`next` names both heads. A `--base` branch other than the loop branch moves from the base by compare-and-swap. Exit 0 recorded, 1 the call failed (setup, agent exit, no
+report; only its evidence is committed), 2 pre-judge or read-only final critic suite gate failed before model launch, 6 certain access violation, 7 refused by the records rules (for example missing `--plan`, unattested `--base`, 0-turn open substantive owner word, taken round record, or undiagnosed alarm; no model is called), 64 usage.
 
 **Comments are pointers or tool directives** (D-0016, D-0023 item 3). `lib/comments.mjs` owns
 admission at critic/actor hand-off and phase close. A successful whole-source ECMAScript parse establishes comment
@@ -207,14 +206,7 @@ each role live in T3 and stop it, the agent run moves to a T3 child thread while
    prompt, target }`. No model runs and nothing is recorded.
 2. Start one T3 child (`delegate_task`) with `target` (provider, model, effort) and exactly `prompt` as its task; give
    it full access when the role must run the product's real tests.
-3. Confirm the started child's provider-native session ID. It is `session_meta.payload.id` in the Codex rollout
-   or `sessionId` on the first user entry in the Claude session. The T3 thread ID identifies the thread in T3.
-   Run `call.mjs <config> record --ws <ws> --session <provider session ID>` after the child finishes. The command
-   checks the prepared repositories, phase, task and prompt against the lead's snapshot. Transcript discovery
-   searches only the prepared provider and supplied session. The first submitted prompt must contain
-   `t3-prompt.md` verbatim. Use `--transcript` to choose between copies of that session. A retry may omit the
-   session after it has been bound. A terminal failure records attempt evidence. A missing terminal event
-   keeps the worktree available for a retry.
+3. Run `call.mjs <config> record --ws <ws>` after the child finishes (`--session <provider session ID>` is optional when the prepared nonce uniquely matches one transcript of the prepared provider; `resolveChildSession` fails closed on `0` or `> 1` matches). The command checks the prepared repositories, phase, task and prompt against the lead's snapshot. The first submitted prompt must contain `t3-prompt.md` verbatim. Use `--session` / `--transcript` to disambiguate multiple matches. To cancel an abandoned workspace cleanly (removing its worktree and freeing `G3` / `Load N`), run `call.mjs <config> cancel --ws <ws> --reason "<text>"`; unstarted prior-round workspaces with no live PID also expire automatically from `preparedIn`. A terminal failure records attempt evidence; a missing terminal event keeps the worktree available for a retry. `lead-guard.mjs` (`PreToolUse`) refuses any structured delegation tool (`delegate_task`, `Agent`, `spawn_agent`, `invoke_subagent`, `t3_thread_launch`, `create_threads`, `run_workflow`, `swarm`) whose prompt lacks a live unrecorded `call.json` nonce, narrows workspace writes strictly to `<workDir>/tasks/`, blocks `git push` hook-bypass flags, and fails closed on malformed stdin. `gated-push.mjs` auto-resolves a verified cached green suite receipt for exact `sha^{tree}` via `lookupSuiteReceipt` when `--suite-receipt` is omitted (exiting `2` if missing or `gates.suite` is unconfigured), enforces `verifyProvenance` on pushes and `.githooks/pre-push` (`--verify-only`).
 
 ### Phase state and activity
 
@@ -756,11 +748,11 @@ the ruling that admits it (D-0032 item 1, R-0008-judge-frame-dispatch).
 8. **Asynchronous periodic outer loop (`arch-facts.mjs`, `anti-rot.mjs`, `reviewer-architecture`, `T1`–`T4`, P-0011, D-0058)**:
    - `scripts/lib/arch-facts.mjs` + `scripts/lib/anti-rot.mjs` compute deterministic whole-repo facts on a committed SHA (`largestFiles`, `growthFiles`, `churnHotspots`, `importHubs`, `parallelSiblings`, and `antiRot`: `compatRemnants`, `deadExports`, `hardcodedLiterals`, `testRot`, `commentBloat`) and `T3` breaches (`> 800` lines, `>= 35%` growth from `>= 100` lines, `>= 3`-commit churn since last outer loop, plus anti-rot `compat-remnant`, `hardcoded-literal`, `test-rot`, and `comment-bloat` breaches).
    - `T1` (periodic delivery cadence: `cadence.deliveries`, default `4` committed `actor` hand-off rounds since the latest `reviewer-frame`/`reviewer-architecture`/`judge-frame`, advancing even on 0-bug green streaks), `T2` (phase/milestone boundary), `T3` (`arch-facts` structural or anti-rot breach), and `T4` (window-horizon / trajectory alarm hard stop).
-   - On `T1` or `T3`, `loop.mjs next` emits an async read-only `reviewer-architecture` recommendation (`--step reviewer-architecture --base <sha>`) covering all four equal outer-loop mandates (first-principles evolution, single-control-plane convergence, anti-rot cleanup including zero bulky prose code comments, and code-to-design liveness QA + Occam reflexive audit) while in-flight inner-loop work finishes; `call.mjs` gives it a detached read-only product worktree + `arch-facts.json` under strict `FILE_TOOLS` confinement (`[ws, wt]`, zero Bash, zero writes to `wt`, `sealed/` and `records` forbidden, Codex/t3:codex refused, zero product commits). After `cadence.outerGrace` (default `2`) additional deliveries outside an active Bounded Window, `call.mjs actor` mechanically refuses (exit 7) until `reviewer-architecture` commits.
+   - On `T1` or `T3`, `loop.mjs next` emits an async read-only `reviewer-architecture` recommendation (`--step reviewer-architecture --base <sha>`) covering all four equal outer-loop mandates (first-principles evolution, single-control-plane convergence, anti-rot cleanup including zero bulky prose code comments, and code-to-design liveness QA + Occam reflexive audit) while in-flight inner-loop work finishes; `call.mjs` gives it a detached read-only product worktree + `arch-facts.json` under strict `FILE_TOOLS` confinement (`[ws, wt]`, zero Bash, zero writes to `wt`, `sealed/` and `records` forbidden, Codex/t3:codex refused, zero product commits). After `cadence.outerGrace` (default `2`) additional deliveries outside an active Bounded Window (or on a delta-scoped `T3` breach against the latest committed `reviewer-architecture` `arch-facts.json` baseline), `call.mjs actor` mechanically refuses (exit 7) until `reviewer-architecture` commits—except that while an async `reviewer-architecture` preparation is active for a `T3` breach, hard-blocking narrows strictly to packages whose declared `files` intersect the breaching hotspot paths, leaving non-overlapping packages free to proceed (`D-0060`).
 9. **Owner-word capture & distillation gate (`owner-words.mjs`, `reviewer-distill`, `self-loop.mjs start`, P-0011, D-0058)**:
    - `owner-words` deterministically filters T3/harness orchestration envelopes (`Delegated task node:delegated-task:`, `[T3 Code: the agent in T3 thread`, `<CONTEXT_SUMMARY>`, `<SYSTEM_MESSAGE>`) and distinguishes substantive owner words (`isSubstantiveOwnerWord`) from short routine acknowledgements.
    - `self-loop.mjs start` runs a read-only Antigravity hook health probe (`checkAntigravityHooks`) and surfaces missing `hooks.json` immediately in both text and `--json` (`hooks: { healthy, findings }`).
-   - Substantive open owner words trigger an async `reviewer-distill` recommendation in `loop.mjs next`; if ignored past 1-turn grace (older than the latest committed `actor` hand-off in the phase), `call.mjs actor` mechanically refuses (exit 7) until distilled into records or marked.
+   - Substantive open owner words trigger a `reviewer-distill` recommendation in `loop.mjs next` and refuse `plan.mjs validate` and `call.mjs critic|actor` immediately (`exit 7`, 0-turn grace per `D-0060`) until distilled into records or marked (`reviewer` calls remain open).
 
 ### 4. Phase close
 

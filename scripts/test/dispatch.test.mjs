@@ -1,13 +1,13 @@
-// SKILL.md#2b-planning-and-dispatch-f-0012-p-0006
+// P-0012, D-0059, design/parallel-dispatch.md#4
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { EXIT, preparedIn } from "../call.mjs";
+import { EXIT } from "../call.mjs";
 import { buildImportGraph } from "../lib/arch-facts.mjs";
 import {
-  analyzeDecoupling, checkLiveDispatchedOverlap, computeDispatchPlan,
+  analyzeDecoupling, computeDispatchPlan,
   integrateWave, readPlanWindow, renderDispatchLines, reviewCoverage, validateDispatchCall,
 } from "../lib/dispatch.mjs";
 import { validateHandoff } from "../lib/handoff.mjs";
@@ -34,8 +34,9 @@ const baseHandoff = (overrides = {}) => ({
 
 async function makeWorkspace(productFiles = {}, { agents = {}, scenario = {}, recordFiles = {} } = {}) {
   const s = await setup(scenario, {
+    plans: false,
     owns: { critic: ["test"], actor: ["src"] },
-    recordFiles: { "decisions/D-0001.md": "# D-0001 Dispatch contract\n", "design/api.md": "# API\n\n## v1\n", ...recordFiles },
+    recordFiles: { "decisions/D-0001.md": "# D-0001 Dispatch contract\nby: owner\n", "design/api.md": "# API\n\n## v1\n", ...recordFiles },
     ...(Object.keys(agents).length ? { agents } : {}),
   });
   if (Object.keys(productFiles).length) {
@@ -70,10 +71,11 @@ test("buildImportGraph extracts sorted static relative JS/TS edges and excludes 
 
 test("plan reviews field and handoff dispatch contract validation", () => {
   const files = {
-    "decisions/D-0001.md": "# D-0001\n",
+    "decisions/D-0001.md": "# D-0001\nby: owner\n",
     "plans/PL-0001.md": planMd("PL-0001", [
       pkgMd("a", { files: "src/a.js" }), pkgMd("b", { files: "src/b.js" }),
       pkgMd("c", { role: "critic", files: "test/c.test.js", needs: "a, b", reviews: "a, b" }),
+      pkgMd("j", { role: "judge", handoff: "R-0002-judge", needs: "c" }),
     ]),
   };
   const st = { revision: "a".repeat(40), files: new Set(Object.keys(files)), read: p => files[p] ?? "", bytes: p => files[p] ?? null };
@@ -85,10 +87,12 @@ test("plan reviews field and handoff dispatch contract validation", () => {
   assert.deepEqual(validatePlan(parsePlan(planMd("PL-0002", [
     pkgMd("a", { files: "src/a.js" }), pkgMd("b", { files: "src/b.js" }),
     pkgMd("c", { role: "critic", files: "test/c.test.js", needs: "a, b", reviews: "b, a" }),
+    pkgMd("j", { role: "judge", handoff: "R-0002-judge", needs: "c" }),
   ], { supersedes: "PL-0001" })), st), []);
   assert.match(validatePlan(parsePlan(planMd("PL-0002", [
     pkgMd("a", { files: "src/a.js" }), pkgMd("b", { files: "src/b.js" }),
     pkgMd("c", { role: "critic", files: "test/c.test.js", needs: "a, b", reviews: "a" }),
+    pkgMd("j", { role: "judge", handoff: "R-0002-judge", needs: "c" }),
   ], { supersedes: "PL-0001" })), st).join("\n"), /new handoff/);
 
   assert.equal(validateHandoff(baseHandoff({ dispatch: { plan: "PL-0001", package: "a", files: ["src/a.js"] } })).dispatch.package, "a");
@@ -150,6 +154,8 @@ test("G1 and G2 enforce plan/package binding, superseded refusal, and DAG/batch 
   );
   put(s.records, "plans/PL-0001.md", planMd("PL-0001", [
     pkgMd("a", { files: "src/a.js" }), pkgMd("b", { files: "src/b.js", needs: "a" }), pkgMd("gated", { files: "src/g.js", needs: "B-0001" }),
+    pkgMd("cr", { role: "critic", files: "test/cr.test.js", needs: "a, b, gated", reviews: "a, b, gated" }),
+    pkgMd("j", { role: "judge", handoff: "R-0002-judge", needs: "cr" }),
   ]));
   commitAll(s.records, "PL-0001");
 
@@ -163,7 +169,11 @@ test("G1 and G2 enforce plan/package binding, superseded refusal, and DAG/batch 
   assert.equal(unmetBatch.code, EXIT.records);
   assert.match(unmetBatch.message, /G2.*B-0001/);
 
-  put(s.records, "plans/PL-0002.md", planMd("PL-0002", [pkgMd("a", { files: "src/a.js" })], { supersedes: "PL-0001" }));
+  put(s.records, "plans/PL-0002.md", planMd("PL-0002", [
+    pkgMd("a", { files: "src/a.js" }),
+    pkgMd("cr", { role: "critic", handoff: "R-0002-critic-crb", files: "test/cr.test.js", needs: "a", reviews: "a" }),
+    pkgMd("j", { role: "judge", handoff: "R-0002-judge-b", needs: "cr" }),
+  ], { supersedes: "PL-0001" }));
   commitAll(s.records, "supersede");
   const sup = s.run("actor", { round: 2, step: "actor-a", plan: "PL-0001", package: "a" });
   assert.equal(sup.code, EXIT.records);
@@ -180,23 +190,34 @@ test("G3 and G4 refuse live writer overlap and undeclared concurrent import coup
     pkgMd("a", { files: "src/a.mjs", iface: "D-0001" }),
     pkgMd("b", { files: "src/b.mjs", iface: "uncommitted prose" }),
     pkgMd("c", { files: "src/c.mjs", iface: "independent" }),
+    pkgMd("cr", { role: "critic", files: "test/cr.test.mjs", needs: "a, b, c", reviews: "a, b, c" }),
+    pkgMd("j", { role: "judge", handoff: "R-0002-judge", needs: "cr" }),
   ]));
+  put(s.records, "plans/PL-0009.md", planMd("PL-0009", [
+    pkgMd("dup", { files: "src/a.mjs", iface: "D-0001" }),
+    pkgMd("cr", { role: "critic", handoff: "R-0002-critic-dup", files: "test/dup.test.mjs", needs: "dup", reviews: "dup" }),
+    pkgMd("j", { role: "judge", handoff: "R-0002-judge-dup", needs: "cr" }),
+  ], { scope: "S5/round-2-dup" }));
   commitAll(s.records, "PL-0001");
 
   assert.equal(s.run("actor", { round: 2, step: "actor-a", plan: "PL-0001", package: "a", prepare: true }).code, EXIT.done);
-  const nonPlan = s.run("actor", { round: 2, step: "actor-adhoc", prepare: true });
-  assert.equal(nonPlan.code, EXIT.records);
-  assert.match(nonPlan.message, /G3/);
+  const unplanned = s.run("actor", { round: 2, step: "actor-adhoc", plan: null, package: null, prepare: true });
+  assert.equal(unplanned.code, EXIT.records);
+  assert.match(unplanned.message, /requires --plan/);
+  const overlap = s.run("actor", { round: 2, step: "actor-dup", plan: "PL-0009", package: "dup", prepare: true });
+  assert.equal(overlap.code, EXIT.records);
+  assert.match(overlap.message, /G3/);
   const g4Blocked = s.run("actor", { round: 2, step: "actor-b", plan: "PL-0001", package: "b", prepare: true });
   assert.equal(g4Blocked.code, EXIT.records);
   assert.match(g4Blocked.message, /G4.*src\/b\.mjs -> src\/a\.mjs/);
   assert.equal(s.run("actor", { round: 2, step: "actor-c", plan: "PL-0001", package: "c", prepare: true }).code, EXIT.done);
-  assert.match(checkLiveDispatchedOverlap({ cfg: s.cfg, state: snapshot(s.records), role: "actor", round: 2, step: "actor-other", owns: ["src"], prepared: preparedIn(s.cfg) }), /G3/);
 
   put(s.records, "plans/PL-0002.md", planMd("PL-0002", [
     pkgMd("a", { files: "src/a.mjs", iface: "D-0001" }),
     pkgMd("b", { handoff: "R-0002-actor-bb", files: "src/b.mjs", iface: "design/api.md#v1" }),
     pkgMd("c", { files: "src/c.mjs", iface: "independent" }),
+    pkgMd("cr", { role: "critic", files: "test/cr.test.mjs", needs: "a, b, c", reviews: "a, b, c" }),
+    pkgMd("j", { role: "judge", handoff: "R-0002-judge", needs: "cr" }),
   ], { supersedes: "PL-0001" }));
   commitAll(s.records, "PL-0002 contracted");
   assert.equal(s.run("actor", { round: 2, step: "actor-bb", plan: "PL-0002", package: "b", prepare: true }).code, EXIT.done);
@@ -214,7 +235,11 @@ test("G5 confines actor commits to package globs and fails closed on peer-packag
       },
     },
   );
-  put(s.records, "plans/PL-0001.md", planMd("PL-0001", [pkgMd("a", { files: "src/a.js" }), pkgMd("b", { files: "src/b.js" })]));
+  put(s.records, "plans/PL-0001.md", planMd("PL-0001", [
+    pkgMd("a", { files: "src/a.js" }), pkgMd("b", { files: "src/b.js" }),
+    pkgMd("cr", { role: "critic", files: "test/cr.test.js", needs: "a, b", reviews: "a, b" }),
+    pkgMd("j", { role: "judge", handoff: "R-0002-judge", needs: "cr" }),
+  ]));
   commitAll(s.records, "PL-0001");
   const base = git(s.product, "rev-parse", "loop/s5");
 
@@ -328,19 +353,38 @@ test("G6 refuses conflicting wave integration and G7 respects bounded window sla
       },
     },
   );
+  put(s.records, "plans/PL-0010.md", planMd("PL-0010", [
+    pkgMd("a", { files: "src/shared.js" }),
+    pkgMd("cr", { role: "critic", handoff: "R-0002-critic-a", files: "test/a.test.js", needs: "a", reviews: "a" }),
+    pkgMd("j", { role: "judge", handoff: "R-0002-judge-a", needs: "cr" }),
+  ], { scope: "S5/round-2-a" }));
+  put(s.records, "plans/PL-0011.md", planMd("PL-0011", [
+    pkgMd("b", { files: "src/shared.js" }),
+    pkgMd("cr", { role: "critic", handoff: "R-0002-critic-b", files: "test/b.test.js", needs: "b", reviews: "b" }),
+    pkgMd("j", { role: "judge", handoff: "R-0002-judge-b", needs: "cr" }),
+  ], { scope: "S5/round-2-b" }));
+  commitAll(s.records, "actor plans");
+  const m0 = git(s.product, "rev-parse", "loop/s5");
+
+  const r1 = s.run("actor", { round: 2, step: "actor-a", plan: "PL-0010", package: "a", base: m0 });
+  const r2 = s.run("actor", { round: 2, step: "actor-b", plan: "PL-0011", package: "b", base: m0 });
+  assert.equal(r1.code, EXIT.done, r1.message);
+  assert.equal(r2.code, EXIT.done, r2.message);
+
   put(s.records, "plans/PL-0001.md", planMd("PL-0001", [
     pkgMd("a", { files: "src/a.js" }), pkgMd("b", { files: "src/b.js" }), pkgMd("j", { role: "judge", handoff: "R-0002-judge", needs: "a, b" }),
   ]));
   commitAll(s.records, "PL-0001");
-  const m0 = git(s.product, "rev-parse", "loop/s5");
 
-  const r1 = s.run("actor", { round: 2, step: "actor-a", base: m0 });
-  const r2 = s.run("actor", { round: 2, step: "actor-b", base: m0 });
-  assert.equal(r1.code, EXIT.done, r1.message);
-  assert.equal(r2.code, EXIT.done, r2.message);
+  const stNoWin = snapshot(s.records);
+  assert.throws(() => loadPlan(stNoWin, "PL-0001"), /lack critic coverage outside an open W-NNNN window/);
+  const g7NoCritic = validateDispatchCall({ cfg: s.cfg, state: stNoWin, planId: "PL-0001", packageId: "j", role: "judge", step: "judge", round: 2, base: r1.handoff.product.commit, prepared: [] });
+  assert.equal(g7NoCritic.ok, false);
+  assert.ok(g7NoCritic.errors.some(e => e.includes("lack critic coverage")));
 
-  const st = snapshot(s.records);
-  const direct = integrateWave({ cfg: s.cfg, state: st, plan: loadPlan(st, "PL-0001"), apply: false });
+  openWindow(s.records, { phase: "S5", startRound: 2, horizon: 4, goal: "refactor", invariants: ["green"] });
+  const stWin = snapshot(s.records);
+  const direct = integrateWave({ cfg: s.cfg, state: stWin, plan: loadPlan(stWin, "PL-0001"), apply: false });
   assert.equal(direct.ok, false);
   assert.equal(direct.disjoint, false);
   const conflictCli = selfLoop(["dispatch", "integrate", "--records", s.records, "--plan", "PL-0001", "--dry-run", "--json"]);
@@ -351,12 +395,6 @@ test("G6 refuses conflicting wave integration and G7 respects bounded window sla
   assert.equal(wavesCli.status, 0, wavesCli.stderr);
   assert.equal(JSON.parse(wavesCli.stdout).coverage.topology, "none");
 
-  const g7NoCritic = validateDispatchCall({ cfg: s.cfg, state: st, planId: "PL-0001", packageId: "j", role: "judge", step: "judge", round: 2, base: r1.handoff.product.commit, prepared: [] });
-  assert.equal(g7NoCritic.ok, false);
-  assert.ok(g7NoCritic.errors.some(e => e.includes("lack critic coverage")));
-
-  openWindow(s.records, { phase: "S5", startRound: 2, horizon: 4, goal: "refactor", invariants: ["green"] });
-  const stWin = snapshot(s.records);
   const win = readPlanWindow(stWin, "S5", 2);
   assert.equal(win.mode, "slack");
   const g7Slack = validateDispatchCall({ cfg: s.cfg, state: stWin, planId: "PL-0001", packageId: "j", role: "judge", step: "judge", round: 2, base: r1.handoff.product.commit, prepared: [], window: win });

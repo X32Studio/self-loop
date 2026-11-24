@@ -1,7 +1,4 @@
-// Remote CI facts for one exact commit in one exact repository, read from the push destination's own forge
-// (GitHub check runs or AWS CodeBuild builds — never from an agent's report), and the protected-branch push built on
-// them. One rule for `ci-green.mjs` and `gated-push.mjs`: lib/check-runs.mjs (checks by app/name, latest run wins).
-// design/codecommit-forge-ci.md
+// D-0014, D-0052, D-0060, design/codecommit-forge-ci.md#forges-registry-contract, design/mandatory-control-plane.md#1
 import "./unbind-git.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -14,16 +11,14 @@ import {
 } from "./ci-destination.mjs";
 import { gitOk } from "./git-plumbing.mjs";
 import { HANDOFFS, parseHandoffs } from "./handoff.mjs";
+import { verifyProvenance } from "./provenance.mjs";
 import { recordsSnapshot } from "./records-commit.mjs";
 import { checkSsot, formatSsotRefusal, ssotDriftWarnings } from "./ssot.mjs";
 import { tipCovers, tipProblem } from "./tip.mjs";
 
 export { DestinationError, parseDestination, shownUrl };
 
-/**
- * Every check run of one commit through `gh api` (all runs, every page; GH_TOKEN from the caller's environment).
- * Returns { runs: null } when they cannot be read (network, auth, unknown commit): "could not read" is not "never ran".
- */
+// design/codecommit-forge-ci.md#forges-registry-contract
 function fetchGitHubRuns(destination, sha) {
   try {
     const out = execFileSync("gh", ["api", "--hostname", destination.host, "--paginate",
@@ -118,14 +113,12 @@ function originalObjects(read) {
   }
 }
 
-/** The full SHA of a commit; throws when it does not name exactly one commit. */
 export function fullSha(repo, rev) {
   try { return git(repo, "rev-parse", "--verify", "--quiet", `${rev}^{commit}`); }
   catch { throw new Error(`${rev} does not name one commit in ${repo}`); }
 }
 
 const RUN_FIELDS = ["id", "build_id", "status", "conclusion", "started_at"];
-/** The fields of a run a receipt keeps: enough to order it against any other run of the same check. */
 const kept = run => Object.fromEntries(RUN_FIELDS.filter(key => run[key] !== undefined).map(key => [key, run[key]]));
 const allUnknown = require => Object.fromEntries(require.map(spec => [spec, "unknown"]));
 
@@ -227,7 +220,7 @@ export function receiptProblem(receipt, repo, full) {
   return null;
 }
 
-/** The full ruling is sealed. The public digest and copied trajectory fields cannot establish acceptance. */
+// D-0021, design/version-tip.md#the-protected-push
 export function judgeAccepted(handoff, { read, has }) {
   const round = String(handoff.round).padStart(4, "0");
   const file = `sealed/judge/${round}/${handoff.step}-${handoff.attempt}.md`;
@@ -241,10 +234,7 @@ export function judgeAccepted(handoff, { read, has }) {
   return verdict.length === 1 && verdict[0] === "CONVERGED" && acceptance.length === 1 && acceptance[0] === "pass";
 }
 
-/**
- * A protected push needs a committed judge verdict for its SHA, for an earlier SHA it follows with only VERSION changed
- * (D-0009 item 2), or for a same-tree second parent.
- */
+// D-0009, D-0021, design/version-tip.md#the-protected-push
 function hasConvergence(repo, records, full) {
   const { files, read } = recordsSnapshot(records);
   const handoffs = parseHandoffs(read(HANDOFFS));
@@ -262,8 +252,8 @@ function hasConvergence(repo, records, full) {
   return accepted(second) && git(repo, "rev-parse", `${full}^{tree}`) === git(repo, "rev-parse", `${second}^{tree}`);
 }
 
-// design/version-tip.md#the-protected-push
-export function pushCommit({ repo, records, remote = "origin", sha, branch, suite, protectedBranches = [], require = null, fetchRuns, dry = false, ssot, configFile }) {
+// design/version-tip.md#the-protected-push, D-0060, design/mandatory-control-plane.md#1
+export function pushCommit({ repo, records, remote = "origin", sha, branch, suite, protectedBranches = [], require = null, fetchRuns, dry = false, ssot, configFile, cfg = null }) {
   const full = fullSha(repo, sha);
   const problem = receiptProblem(suite, repo, full);
   if (problem) return { pushed: false, refused: problem };
@@ -274,6 +264,11 @@ export function pushCommit({ repo, records, remote = "origin", sha, branch, suit
     throw e;
   }
   const isProtected = protectedBranches.includes(branch);
+  if (records || cfg?.provenanceBaseline !== undefined) {
+    const provCfg = cfg ? { protected: protectedBranches, ...cfg } : (protectedBranches.length ? { protected: protectedBranches } : null);
+    const provenance = verifyProvenance({ repo, records, sha: full, branch, cfg: provCfg, mode: "push" });
+    if (!provenance.ok) return { pushed: false, provenance, refused: provenance.reasons.join("; ") };
+  }
   let ssotResult, warnings;
   if (ssot !== undefined) {
     ssotResult = checkSsot({ product: repo, records, configFile, ssot, sha: full, strict: isProtected, runChecks: true });

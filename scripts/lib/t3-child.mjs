@@ -1,12 +1,9 @@
-// A role run as a T3 child thread (runner `t3`): the prompt the lead starts it with, and its session transcript, found
-// by the provider session and the nonce that prompt carried, with its tool events in the shapes audit-access.mjs reads. Claude Code writes `<config>/projects/<cwd>/<session>.jsonl` (the same
-// `assistant` / `user` events as `claude -p --output-format stream-json`); Codex writes
-// `<home>/sessions/YYYY/MM/DD/rollout-*.jsonl` (moved to `<home>/archived_sessions/` when T3 archives the thread), whose rollouts include tool calls, results and completed commands.
-// Its first actual user message must hold the nonce: the lead's own session also names the
-// nonce (in the call that started the child), but never in its first message.
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+// F-0008, D-0060, design/mandatory-control-plane.md#5
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import {
   antigravityAppDirs,
   antigravityFirstPrompt,
@@ -16,8 +13,21 @@ import {
   readConversationSummaries,
   resolveAuthoritativeTranscript,
 } from "./antigravity.mjs";
+import { ARCH_STEP } from "./cadence.mjs";
+import { git, gitOk } from "./git-plumbing.mjs";
+import { HANDOFFS, recordOf, ROLES } from "./handoff.mjs";
+import { canonical } from "./path-canonical.mjs";
 
-/** Old prepared contexts carry the phase only in the generated role prompt. */
+const EXIT = { failure: 1, records: 7, usage: 64 };
+const TRAJECTORY = "metrics/trajectory.jsonl";
+const stop = (code, message) => Object.assign(new Error(message), { code });
+const digest = text => createHash("sha256").update(text).digest("hex");
+
+export const preparationFile = (cfg, ws) => join(cfg.workDir, ".prepared", `${basename(ws)}.json`);
+export const preparationScope = cfg => [canonical(cfg.records), canonical(cfg.product), cfg.phase, ...cfg.sealed.map(canonical)];
+const commonDir = repo => canonical(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"));
+const hasReviewerWorkspace = ws => existsSync(join(ws, "purpose")) && existsSync(join(ws, "records")) && existsSync(join(ws, "out"));
+
 export function preparedPhase(ctx, ws) {
   if (ctx.phase) return ctx.phase;
   const prompt = join(ws, "prompt.md");
@@ -52,7 +62,6 @@ const claudeFirstPrompt = rows => textOf(rows.find(claudePrompt)?.message?.conte
 const recent = (dir, since) => (existsSync(dir) ? readdirSync(dir).filter(n => n.endsWith(".jsonl")).map(n => join(dir, n)).filter(f => statSync(f).mtimeMs >= since) : []);
 
 function candidateFiles(runner, since) {
-  // File clocks can round down across prepare. The first prompt's nonce and native session ID still bind the child.
   since -= 2_000;
   if (runner === "claude") {
     const projects = join(claudeHome(), "projects");
@@ -72,7 +81,7 @@ function candidateFiles(runner, since) {
         const compact = join(logs, "transcript.jsonl");
         const file = existsSync(full) ? full : existsSync(compact) ? compact : null;
         if (!file) continue;
-        try { if (statSync(file).mtimeMs >= since) files.push(file); } catch { /* vanished */ }
+        try { if (statSync(file).mtimeMs >= since) files.push(file); } catch {}
       }
     }
     return files;
@@ -94,6 +103,16 @@ export function findTranscripts(runner, nonce, since, session = null) {
     const rows = lines(file), nativeId = identity(rows, file);
     return (!session || session === nativeId) && first(rows).includes(nonce) ? [{ runner, file, session: nativeId }] : [];
   });
+}
+
+// D-0060, design/mandatory-control-plane.md#5
+export function resolveChildSession(runner, nonce, since, explicitSession = null, explicitTranscript = null) {
+  if (explicitTranscript) return { runner, file: resolve(explicitTranscript), session: explicitSession || null };
+  const matches = findTranscripts(runner, nonce, since, explicitSession || null);
+  if (matches.length === 1) return matches[0];
+  throw stop(EXIT.failure, matches.length
+    ? `${matches.length} transcripts hold nonce ${nonce} (${matches.map(f => `${f.file} [${f.session}]`).join(", ")}); pass --session and, if needed, --transcript`
+    : `no transcript holds nonce ${nonce} for the prepared ${runner} child; check the provider session ID`);
 }
 
 function claudeStatus(rows) {
@@ -121,7 +140,7 @@ function codexStatus(rows) {
 }
 
 function codexTools(rows) {
-  const calls = new Map(), outputs = new Map(), legacy = [], fileEvents = [], unknown = [];
+  const calls = new Map(), outputs = new Map(), completedCommands = [], fileEvents = [], unknown = [];
   for (const r of rows) {
     const p = r.payload;
     if (r.type === "event_msg" && p?.type === "item_completed" && p.item?.type === "FileChange") {
@@ -132,7 +151,7 @@ function codexTools(rows) {
       const command = Array.isArray(argv)
         ? (argv.length >= 3 && /^-l?c$/.test(argv.at(-2)) ? argv.at(-1) : argv.join(" "))
         : argv;
-      if (typeof command === "string" && command.trim()) legacy.push({ command, exit: p.item.exit_code, call: p.item.call_id ?? p.item.id });
+      if (typeof command === "string" && command.trim()) completedCommands.push({ command, exit: p.item.exit_code, call: p.item.call_id ?? p.item.id });
       else unknown.push(p.item.id);
     }
     if (r.type !== "response_item" || !p) continue;
@@ -146,16 +165,15 @@ function codexTools(rows) {
     }
   }
   const execution = ({ command, call, exit }) => ({ type: "item.completed", item: { type: "command_execution", command, id: call, exit_code: exit ?? null } });
-  const events = [...legacy.map(execution), ...fileEvents];
-  const counted = new Set(legacy.map(item => item.call));
+  const events = [...completedCommands.map(execution), ...fileEvents];
+  const counted = new Set(completedCommands.map(item => item.call));
   for (const [id, call] of calls) {
     if (counted.has(id)) continue;
-    // Code-mode calls wrap provider work. Audit their structured command and file events instead of the wrapper text.
     if (outputs.has(id) && (call.name === "wait"
         || call.name === "exec" && call.type === "custom_tool_call" && typeof call.input === "string")) continue;
     let args;
     if (call.type === "function_call") {
-      try { args = JSON.parse(call.arguments); } catch { /* report insufficient evidence below */ }
+      try { args = JSON.parse(call.arguments); } catch {}
     }
     const command = args?.cmd ?? args?.command;
     if (["exec_command", "shell_command", "shell"].includes(call.name) && typeof command === "string" && command.trim()) {
@@ -178,19 +196,10 @@ export function transcriptEvents(id, { runner, file }) {
     const truncated = rows.some(r => Array.isArray(r.truncated_fields) && r.truncated_fields.length > 0);
     if (nonAuthoritative || truncated) {
       return {
-        nonAuthoritative,
-        truncated,
+        nonAuthoritative, truncated,
         refusalReason: "Antigravity child record requires an untruncated transcript_full.jsonl",
-        events: [],
-        session,
-        forked: false,
-        status: "failed",
-        firstPrompt: "",
-        observedModel: null,
-        observedModels: [],
-        seconds,
-        cwd: null,
-        text,
+        events: [], session, forked: false, status: "failed", firstPrompt: "",
+        observedModel: null, observedModels: [], seconds, cwd: null, text,
       };
     }
     const appDir = appDirFromTranscriptPath(actualFile);
@@ -203,20 +212,11 @@ export function transcriptEvents(id, { runner, file }) {
     const observedModels = [...new Set(
       rows
         .filter(r => r?.type === "PLANNER_RESPONSE" && typeof r.model === "string" && r.model.trim())
-        .map(r => r.model.trim())
+        .map(r => r.model.trim()),
     )];
-    const observedModel = observedModels[0] ?? null;
     return {
-      events: rows.map(event => ({ id, event })),
-      session,
-      forked,
-      status: antigravityStatus(rows, summary),
-      firstPrompt,
-      observedModel,
-      observedModels,
-      seconds,
-      cwd: summary?.workspaces?.[0] ?? null,
-      text,
+      events: rows.map(event => ({ id, event })), session, forked, status: antigravityStatus(rows, summary),
+      firstPrompt, observedModel: observedModels[0] ?? null, observedModels, seconds, cwd: summary?.workspaces?.[0] ?? null, text,
     };
   }
   if (runner === "claude") {
@@ -232,7 +232,6 @@ export function transcriptEvents(id, { runner, file }) {
     status: codexStatus(rows), firstPrompt: codexFirstPrompt(rows), observedModel, seconds, cwd: meta.cwd ?? null, text };
 }
 
-/** The prompt of a role run as a T3 child thread: the nonce that identifies its transcript, where to work, the role prompt. */
 export function t3Prompt({ id, nonce, wt, ws, text }) {
   return [`self-loop call ${id} · nonce ${nonce}`, "",
     "You run as a T3 child thread whose session starts in another directory. Work only in the folders below, by absolute path.",
@@ -242,4 +241,115 @@ export function t3Prompt({ id, nonce, wt, ws, text }) {
       : `- Confined reviewer mode: use file tools only (no shell, web, delegation, or MCP tools) and stay strictly inside ${ws} (write only under ${ws}/out). Any disallowed tool call or path outside ${ws} fails the access audit.`,
     "- Do not commit, push, stash or switch branches: when you finish, the lead records your work from this folder and your transcript.",
     "", text].filter(line => line !== null).join("\n");
+}
+
+// D-0060, design/mandatory-control-plane.md#5
+export function isStalePreparation(prep, currentMaxRound = null) {
+  if (!prep || typeof prep !== "object") return true;
+  if (prep.cancelled === true || prep.recorded === true) return true;
+  if (Number.isSafeInteger(currentMaxRound) && Number.isSafeInteger(prep.round) && prep.round < currentMaxRound) {
+    const pid = prep.pid;
+    if (Number.isInteger(pid) && pid > 0) {
+      try { process.kill(pid, 0); return false; } catch (e) { if (e.code === "EPERM") return false; }
+    }
+    return true;
+  }
+  return false;
+}
+
+function maxRecordedRound(cfg) {
+  if (!cfg?.records || !existsSync(cfg.records)) return null;
+  let max = 0;
+  for (const rel of [HANDOFFS, TRAJECTORY]) {
+    if (!gitOk(cfg.records, "cat-file", "-e", `HEAD:${rel}`)) continue;
+    try {
+      for (const line of git(cfg.records, "show", `HEAD:${rel}`).split("\n").filter(Boolean)) {
+        const row = JSON.parse(line);
+        if ((!cfg.phase || row.phase === cfg.phase) && Number.isSafeInteger(row.round) && row.round > max) max = row.round;
+      }
+    } catch {}
+  }
+  return max > 0 ? max : null;
+}
+
+export function readPreparation(cfg, ws) {
+  const manifest = join(ws, "call.json");
+  if (!existsSync(manifest)) throw stop(EXIT.usage, `${ws} holds no call.json: it was not prepared with --prepare`);
+  const bytes = readFileSync(manifest, "utf8"), ctx = JSON.parse(bytes);
+  if (ctx.cancelled === true) throw stop(EXIT.records, `${ws} was cancelled (${ctx.cancelReason ?? "no reason"}); prepare a new call`);
+  const expected = readFileSync(join(ws, "t3-prompt.md"), "utf8");
+  const task = readFileSync(join(ws, "task.md"), "utf8");
+  const snapshot = preparationFile(cfg, ws);
+  if (existsSync(snapshot)) {
+    const saved = JSON.parse(readFileSync(snapshot, "utf8"));
+    if (saved.manifest !== digest(bytes) || saved.task !== digest(task) || saved.prompt !== digest(expected)
+      || JSON.stringify(saved.scope) !== JSON.stringify(preparationScope(cfg)))
+      throw stop(EXIT.records, "the repositories, phase, or prepared files differ from the lead's preparation snapshot");
+  } else if (ctx.version !== 1 || preparedPhase(ctx, ws) !== cfg.phase || task !== ctx.task
+    || !gitOk(cfg.records, "cat-file", "-e", `${ctx.view}^{commit}`)) {
+    throw stop(EXIT.records, "the call has no matching preparation snapshot");
+  }
+  if (ctx.ws !== ws) throw stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
+  if (ctx.role === "reviewer") {
+    if (ctx.agent?.provider === "codex") throw stop(EXIT.records, "the frame reviewer cannot run on t3:codex");
+    if (ARCH_STEP.test(ctx.step ?? "")) {
+      if (ctx.wt !== join(ws, "wt")) throw stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
+      if (!existsSync(ctx.wt) || !hasReviewerWorkspace(ws)) throw stop(EXIT.failure, `the prepared workspace ${ws} is gone; prepare the call again`);
+      if (commonDir(ctx.wt) !== commonDir(cfg.product)) throw stop(EXIT.records, "the prepared worktree belongs to a different product repository");
+    } else {
+      if (ctx.wt !== null) throw stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
+      if (!hasReviewerWorkspace(ws)) throw stop(EXIT.failure, `the prepared workspace ${ws} is gone; prepare the call again`);
+    }
+  } else {
+    if (ctx.wt !== join(ws, "wt")) throw stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
+    if (!existsSync(ctx.wt)) throw stop(EXIT.failure, `the worktree ${ctx.wt} is gone; prepare the call again`);
+    if (commonDir(ctx.wt) !== commonDir(cfg.product)) throw stop(EXIT.records, "the prepared worktree belongs to a different product repository");
+  }
+  ctx.phase = preparedPhase(ctx, ws);
+  return { ctx, expected, binding: snapshot + ".session" };
+}
+
+export function preparedIn(cfg, { currentMaxRound = null, includeStale = false } = {}) {
+  if (!existsSync(cfg.workDir)) return [];
+  const maxRound = currentMaxRound ?? maxRecordedRound(cfg);
+  const found = [];
+  for (const entry of readdirSync(cfg.workDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const ws = join(cfg.workDir, entry.name);
+    const file = join(ws, "call.json");
+    if (!existsSync(file)) continue;
+    const ctx = JSON.parse(readFileSync(file, "utf8"));
+    if (![1, 2].includes(ctx.version) || ctx.ws !== ws || !ctx.nonce || !ROLES.includes(ctx.role) || !Number.isInteger(ctx.round)
+        || !/^[a-z]+(-[a-z]+)*$/.test(ctx.step) || ctx.record !== recordOf(ctx.round, ctx.step))
+      throw new Error(`${file} is not a supported prepared call`);
+    const phase = preparedPhase(ctx, ws);
+    const phaseMax = !cfg.phase || !phase || phase === cfg.phase ? maxRound : null;
+    if (!includeStale && isStalePreparation(ctx, phaseMax)) continue;
+    const liveWorkspace = ctx.role === "reviewer"
+      ? (ARCH_STEP.test(ctx.step)
+        ? ctx.wt === join(ws, "wt") && existsSync(ctx.wt) && hasReviewerWorkspace(ws)
+        : ctx.wt === null && hasReviewerWorkspace(ws))
+      : ctx.wt === join(ws, "wt") && existsSync(ctx.wt);
+    found.push({ ...ctx, phase, ws, liveWorkspace });
+  }
+  return found.sort((a, b) => a.round - b.round || a.step.localeCompare(b.step) || a.ws.localeCompare(b.ws));
+}
+
+export function cancelPreparedCall({ ws, product, reason, now = () => new Date() }) {
+  const wsDir = resolve(ws);
+  const manifest = join(wsDir, "call.json");
+  if (!existsSync(manifest)) throw stop(EXIT.usage, `${wsDir} holds no call.json: it was not prepared with --prepare`);
+  if (typeof reason !== "string" || !reason.trim()) throw stop(EXIT.usage, "--reason must be a non-empty string");
+  const ctx = JSON.parse(readFileSync(manifest, "utf8"));
+  if (ctx.ws !== wsDir || !ctx.id || !ctx.nonce) throw stop(EXIT.records, `${manifest} does not match workspace ${wsDir}`);
+  if (ctx.wt && existsSync(ctx.wt)) {
+    spawnSync("git", ["-C", product, "worktree", "remove", "--force", ctx.wt], { stdio: "ignore" });
+    if (existsSync(ctx.wt)) {
+      rmSync(ctx.wt, { recursive: true, force: true });
+      spawnSync("git", ["-C", product, "worktree", "prune"], { stdio: "ignore" });
+    }
+  }
+  const updated = { ...ctx, cancelled: true, cancelledAt: now().toISOString(), cancelReason: reason.trim() };
+  writeFileSync(manifest, `${JSON.stringify(updated, null, 1)}\n`);
+  return { id: ctx.id, ws: wsDir, cancelled: true, cancelReason: updated.cancelReason };
 }

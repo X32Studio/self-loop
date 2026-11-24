@@ -1,5 +1,4 @@
-// Unit & integration tests for F-0009 Antigravity harness adapter:
-// AG-GUARD-01..02, AG-HOOK-LIFE-01, AG-WORD-01..05, AG-AUDIT-01..05, and Critic v2 R4–R8 red tests.
+// F-0009, D-0060
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -73,6 +72,7 @@ test("AG-GUARD-01: PreToolUse handles Antigravity tool spellings, stdin cwd, and
   for (const [name, args] of [
     ["write_file", { Path: "src/a.js" }], ["edit_file", { Path: "src/a.js" }],
     ["write_to_file", { TargetFile: "src/new.js" }], ["replace_file_content", { AbsolutePath: join(product, "src/a.js") }],
+    ["write_file", { Path: join(wt, "src/a.js") }],
     ["run_command", { CommandLine: "git push origin loop/v1" }], ["shell_exec", { command: "git push origin main" }],
   ]) {
     const res = runGuard({ hookEventName: "PreToolUse", conversationId: "c1", cwd: product, toolCall: { name, args } });
@@ -86,7 +86,7 @@ test("AG-GUARD-01: PreToolUse handles Antigravity tool spellings, stdin cwd, and
   for (const payload of [
     { hookEventName: "PreToolUse", conversationId: "c1", workspacePaths: [product], toolCall: { name: "write_file", args: { Path: "docs/GUIDE.md" } } },
     { hookEventName: "PreToolUse", conversationId: "c1", cwd: product, toolCall: { name: "edit_file", args: { Path: ".agents/hooks.json" } } },
-    { hookEventName: "PreToolUse", conversationId: "c1", cwd: product, toolCall: { name: "write_file", args: { Path: join(wt, "src/a.js") } } },
+    { hookEventName: "PreToolUse", conversationId: "c1", cwd: product, toolCall: { name: "write_file", args: { Path: join(workspaces, "tasks/R-0001-actor.md") } } },
     { hookEventName: "PreToolUse", conversationId: "c1", cwd: product, toolCall: { name: "run_command", args: { CommandLine: "node scripts/gated-push.mjs --repo ." } } },
     { hookEventName: "PreToolUse", conversationId: "c1", cwd: product, toolCall: { name: "read_file", args: { Path: "src/a.js" } } },
     { hookEventName: "PreToolUse", conversationId: "c1", cwd: product, toolCall: { name: "mcp_t3-code_t3_thread_read", args: { threadId: "t1" } } },
@@ -98,12 +98,12 @@ test("AG-GUARD-01: PreToolUse handles Antigravity tool spellings, stdin cwd, and
   }
 });
 
-test("AG-GUARD-02 (R4, R5): malformed stdin/crash emit PRE_TOOL_USE_PASSTHROUGH; git timeout fails closed with deny", () => {
+test("AG-GUARD-02 (R4, R5, D-0060): malformed stdin and git timeout fail closed with deny; crash emits PRE_TOOL_USE_PASSTHROUGH", () => {
   const product = repo({ "src/a.js": "x\n" }), workspaces = temp("ag-wt-");
   const malformed = spawnSync(process.execPath, [join(scripts, "lead-guard.mjs"), "--harness", "antigravity", "--product", product, "--workspaces", workspaces], { input: "{bad json", encoding: "utf8" });
   assert.equal(malformed.status, 0);
-  assert.equal(malformed.stdout, PRE_TOOL_USE_PASSTHROUGH);
-  assert.doesNotMatch(malformed.stdout, /"decision"\s*:\s*"allow"/);
+  assert.equal(JSON.parse(malformed.stdout).decision, "deny");
+  assert.match(JSON.parse(malformed.stdout).reason, /malformed hook JSON/);
   assert.match(malformed.stderr, /lead-guard:/);
 
   const crash = spawnSync(process.execPath, [join(scripts, "lead-guard.mjs"), "--harness", "antigravity"], { input: "{}", encoding: "utf8" });
@@ -135,7 +135,6 @@ test("AG-HOOK-LIFE-01: 0-based PreInvocation fast path, SessionStart empty-cwd, 
   const capture = payload => spawnSync(process.execPath, [join(scripts, "owner-words.mjs"), "capture", "--harness", "antigravity", "--records", records, "--project", project],
     { input: JSON.stringify(payload), encoding: "utf8", env });
 
-  // Probed 0-based invocationNum: inv 0 (steps 1) commits; post-tool inv 1 (steps 6) & inv 2 (steps 8) take fast path.
   assert.deepEqual(JSON.parse(capture({ hookEventName: "PreInvocation", conversationId: convId, cwd: project, invocationNum: 0, initialNumSteps: 1, lastUserInput: ownerMsg, transcriptPath: transcript }).stdout), {});
   const commitsAfter0 = git(records, "rev-list", "--count", "HEAD");
   assert.equal(committedWords(records).length, 1);
@@ -144,7 +143,6 @@ test("AG-HOOK-LIFE-01: 0-based PreInvocation fast path, SessionStart empty-cwd, 
   }
   assert.equal(git(records, "rev-list", "--count", "HEAD"), commitsAfter0, "zero extra commits for invocationNum > 0");
 
-  // Pending capture queued on inv 0 is not duplicated on inv 1 (with higher initialNumSteps) and reconciles once transcript flushes.
   const pendingConv = "conv-pending-0based";
   const pendingFile = join(appDir, "brain", pendingConv, ".system_generated", "logs", "transcript_full.jsonl");
   const inv0 = capture({ hookEventName: "PreInvocation", conversationId: pendingConv, cwd: project, invocationNum: 0, initialNumSteps: 1, lastUserInput: "flush later", transcriptPath: pendingFile });
@@ -262,7 +260,6 @@ test("AG-WORD-04 (A10, R8): DB failures, missing row, sqlite unavailable, and br
     return { res, records, json: JSON.parse(res.stdout) };
   };
 
-  // Missing DB, missing row, broken step-0 (R8).
   const missingDb = temp("ag-missing-db-");
   writeAgConversation(missingDb, "c-missing", [userStep(0, wrapEnvelope("hi"))]);
   const rMissing = runSync(missingDb);
@@ -286,7 +283,6 @@ test("AG-WORD-04 (A10, R8): DB failures, missing row, sqlite unavailable, and br
   assert.match(rBroken.json.antigravity.reason, /unparseable first prompt/);
   assert.deepEqual(committedWords(rBroken.records).map(w => w.text), ["claude survives", "codex survives"]);
 
-  // Locked DB (exclusive writer).
   const lockedDir = temp("ag-locked-"), lockedDbPath = createSummaryDb(lockedDir, [{ id: "c-locked", workspaces: [project] }]);
   writeAgConversation(lockedDir, "c-locked", [userStep(0, wrapEnvelope("hi"))]);
   const locker = new DatabaseSync(lockedDbPath);
@@ -298,7 +294,6 @@ test("AG-WORD-04 (A10, R8): DB failures, missing row, sqlite unavailable, and br
     assert.deepEqual(rep.words.map(w => w.text), ["claude survives", "codex survives"]);
   } finally { locker.exec("ROLLBACK"); locker.close(); }
 
-  // Read-only WAL dir without -shm.
   if (typeof process.getuid === "function" && process.getuid() !== 0) {
     const roDir = temp("ag-ro-"), roDbPath = createSummaryDb(roDir, [{ id: "c-ro", workspaces: [project] }]);
     const w = new DatabaseSync(roDbPath); w.exec("PRAGMA journal_mode=WAL"); w.close();
@@ -312,7 +307,6 @@ test("AG-WORD-04 (A10, R8): DB failures, missing row, sqlite unavailable, and br
     } finally { chmodSync(roDir, 0o755); }
   }
 
-  // Simulated node:sqlite unavailable.
   const sq = transcriptWordsReport([project], {
     claudeHome, codexHome,
     env: isolatedEnv({ ANTIGRAVITY_APP_DATA_DIR: missingRow, GEMINI_HOME: temp("g-"), T3CODE_HOME: "" }),
@@ -341,7 +335,6 @@ test("AG-WORD-05 (N6, N1): repeated text across turns gets distinct step-N IDs; 
     { input: JSON.stringify(p), encoding: "utf8", env });
   assert.deepEqual(JSON.parse(cap({ hookEventName: "PreInvocation", conversationId: convId, cwd: project, invocationNum: 0, initialNumSteps: 1, lastUserInput: "继续", transcriptPath: file }).stdout), {});
   assert.match(JSON.parse(cap({ hookEventName: "PreInvocation", conversationId: convId, cwd: project, invocationNum: 0, initialNumSteps: 13, lastUserInput: "继续", transcriptPath: file }).stdout).injectSteps[0].systemMessage.systemMessage, /pending transcript confirmation/);
-  // J1: re-invocation before step-12 flushes must NOT clear pending using earlier step-0 (even within 10s window).
   const nowMs = Math.floor(Date.now() / 1_000) * 1_000;
   const freshRow0 = userStep(0, wrapEnvelope("继续"), { created_at: new Date(nowMs - 1_000).toISOString() });
   writeAgConversation(appDir, convId, [freshRow0]);
@@ -349,7 +342,6 @@ test("AG-WORD-05 (N6, N1): repeated text across turns gets distinct step-N IDs; 
   assert.deepEqual(committedWords(records).map(w => w.event), ["step-0"]);
   assert.equal(pendingOwnerPrompts(records, convId).length, 1, "turn-2 pending stays while only turn-1 step-0 is on disk");
 
-  // J1: once step-12 flushes within the same 10s window, sync commits both turns and reconciles turn-2 pending unambiguously.
   const rowsNear = [freshRow0, rows[1], rows[2], rows[3], rows[4], userStep(12, wrapEnvelope("继续"), { created_at: new Date(nowMs).toISOString() })];
   writeAgConversation(appDir, convId, rowsNear);
   const sync = spawnSync(process.execPath, [join(scripts, "owner-words.mjs"), "sync", "--records", records, "--project", project], { encoding: "utf8", env });
@@ -399,7 +391,6 @@ test("AG-AUDIT-01..05 (A5, A6, A7, R6): compact decode, T3 MCP allowlist, path s
     const a = audit([{ type: "PLANNER_RESPONSE", status: "DONE", tool_calls: [{ name, args }] }, { type: "GENERIC", status: "DONE" }, { type: "PLANNER_RESPONSE", status: "DONE" }]);
     assert.ok(a.violations.some(v => v.path.includes(sealed)), `expected sealed path violation for ${name}`);
   }
-  // B1 balanced-bracket URL extraction: parenthesized/bracketed sealed directory names stay intact while outer url(...) closes are stripped.
   const parenSealed = join(temp("ag-audit-paren-"), "sealed(cases)");
   const parenFile = join(parenSealed, "case.mjs");
   const parenAudit = evs => auditAccess([ws], evs.map(event => ({ id: "r", event })), { tools: null, forbidden: [parenSealed], cwd: ws });
@@ -415,7 +406,6 @@ test("AG-AUDIT-01..05 (A5, A6, A7, R6): compact decode, T3 MCP allowlist, path s
     { type: "GENERIC", status: "DONE" }, { type: "PLANNER_RESPONSE", status: "DONE" },
   ]).violations, [], "benign HTML without file:// passes cleanly");
 
-  // B2: allowlisted MCP tool with compact truncated path or truncated file:// HTML fails closed with a blocking violation.
   for (const args of [
     { path: `"/sealed/long\n<truncated 123 bytes>` },
     { html: `"<iframe src=\\"file:///sealed/case.mjs\n<truncated 123 bytes>` },
@@ -457,7 +447,6 @@ test("R7 & B5: single geminiHome resolver and single-source assets/antigravity/h
   mkdirSync(join(appDir, "brain"), { recursive: true });
   assert.deepEqual(antigravityAppDirs({ env }), [appDir]);
 
-  // B5: modifying template reflects directly in rendered output with safe shell quoting.
   const customTpl = join(temp("b5-tpl-"), "hooks.json");
   const tpl = JSON.parse(readFileSync(ANTIGRAVITY_TEMPLATE, "utf8"));
   tpl["self-loop"].SessionStart[0].timeout = 22;

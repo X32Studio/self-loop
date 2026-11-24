@@ -9,16 +9,73 @@ import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
 import { CI_WORDS } from "./lib/check-runs.mjs";
 import { ledgerRecords, notGreen, readCi, readingCause, recordsLoop, saveReceipt } from "./lib/ci-receipt.mjs";
 import { admit, blockerState, dispositions, FIELDS as LISTS, isKey, isRuling, readRuling, rulingRows, transition, withStatus } from "./lib/blockers.mjs";
+import { gitOk } from "./lib/git-plumbing.mjs";
 import { JUDGE_RECORD } from "./lib/judge-bar.mjs";
 import { checkSsot, defaultShaFor, formatSsotRefusal, ssotDriftAlarms } from "./lib/ssot.mjs";
 import { tipProblem } from "./lib/tip.mjs";
+
+const SHA = /^[0-9a-f]{40}$/;
+
+function isCommitAncestor(repo, ancestor, descendant, cache) {
+  if (!SHA.test(ancestor) || !SHA.test(descendant)) return false;
+  const key = `${ancestor}\0${descendant}`;
+  if (cache.has(key)) return cache.get(key);
+  const ok = gitOk(repo, "merge-base", "--is-ancestor", ancestor, descendant);
+  cache.set(key, ok);
+  return ok;
+}
+
+function findExtinguisher(row, rowIdx, greenRows, repo, cache) {
+  for (const g of greenRows) {
+    if (g.row.phase !== row.phase) continue;
+    if (g.row.round < row.round || (g.row.round === row.round && g.idx <= rowIdx)) continue;
+    if (!repo) {
+      if (g.row.round > row.round) return g.row;
+      continue;
+    }
+    if (isCommitAncestor(repo, row.commit, g.row.commit, cache)
+        || (g.row.tip && isCommitAncestor(repo, row.commit, g.row.tip, cache))) {
+      return g.row;
+    }
+  }
+  return null;
+}
+
+function attachExtinguished(list, extinguished) {
+  Object.defineProperty(list, "extinguished", { value: extinguished, enumerable: false });
+  return list;
+}
+
+// D-0060, D-0017, design/mandatory-control-plane.md#3
+export function extinguishedCiAbsent(rows, { repo = null, extinguishCiAbsent = Boolean(repo), _ancestorCache = null } = {}) {
+  if (!extinguishCiAbsent) return [];
+  const cache = _ancestorCache ?? new Map();
+  const greenRows = rows.map((row, idx) => ({ row, idx })).filter(({ row }) => row.ci === "success");
+  const extinguished = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!(r.role === "judge" && ["absent", "unknown"].includes(r.ci))) continue;
+    const by = findExtinguisher(r, i, greenRows, repo, cache);
+    if (!by) continue;
+    extinguished.push({
+      type: "ci-absent",
+      key: `ci-absent:${r.phase}:${r.round}`,
+      at: r.round,
+      phase: r.phase,
+      round: r.round,
+      commit: r.commit,
+      ci: r.ci,
+      extinguishedBy: { round: by.round, commit: by.commit, ...(by.tip ? { tip: by.tip } : {}) },
+    });
+  }
+  return extinguished;
+}
 
 export const TRAJECTORY = "metrics/trajectory.jsonl";
 export const VERDICTS = ["-", "CONTINUE", "CONVERGED", "REFRAME"];
 export const CI = ["-", ...CI_WORDS];
 export const DEFAULTS = { areaRounds: 3, recur: 2, growthRatio: 2, growthMin: 300, window: 4 };
 export const COLUMNS = ["time", "round", "phase", "area", "role", "model", "verdict", "opened", "closed", "suite", "owner", "commit", "ci"];
-// A blocker is `class:id`; any characters but whitespace, commas and (in the class) colons.
 const BLOCKER = /^[^\s,:]+:[^\s,]+$/u;
 const list = value => (!value || value === "-" ? [] : value.split(",").map(s => s.trim()).filter(Boolean));
 // design/trajectory.md#the-row
@@ -27,7 +84,6 @@ const ADDED_FIELDS = ["shelved", "carried"];
 const EXCLUSIVE = [["opened", "carried"], ["opened", "shelved"], ["closed", "shelved"]];
 const byRound = rows => [...rows].sort((a, b) => a.round - b.round);
 
-/** Validate a row (the TSV columns, as strings except round); returns it with defaults filled. */
 export function validateRow(fields, now = new Date()) {
   const r = { time: now.toISOString().slice(0, 19) + "Z", area: "-", model: "-", verdict: "-", opened: "-", closed: "-", suite: "-", owner: "0", commit: "-", ci: "-", ...fields };
   const fail = m => { throw new UsageError(m); };
@@ -51,7 +107,6 @@ export function validateRow(fields, now = new Date()) {
   return r;
 }
 
-/** The historical TSV form (one row per role per round). Every row must have every column. */
 export function parse(text) {
   const lines = text.split("\n").filter(Boolean);
   if (!lines.length) return [];
@@ -66,7 +121,6 @@ export function parse(text) {
   });
 }
 
-/** Rows from either form, by extension. A malformed JSON row is an error. */
 export function readRows(file) {
   if (!existsSync(file)) return [];
   const text = readFileSync(file, "utf8");
@@ -79,14 +133,10 @@ export function parseRows(text, source = TRAJECTORY) {
   });
 }
 
-/**
- * Alarms over the rows (and optional module sizes per commit). Each alarm has a stable `key`, a `type`, a message and
- * its evidence.
- */
-export function alarms(rows, { sizes = {}, ...options } = {}) {
+export function alarms(rows, { sizes = {}, repo = null, extinguishCiAbsent = Boolean(repo), _ancestorCache = null, ...options } = {}) {
   const o = { ...DEFAULTS, ...options };
   const out = [];
-  // 1. The same area in N or more rounds of one phase.
+  const extinguished = [];
   const areas = new Map();
   for (const r of rows) {
     if (r.area === "-" || !r.area) continue;
@@ -137,16 +187,33 @@ export function alarms(rows, { sizes = {}, ...options } = {}) {
         message: `area ${r.area} was ruled on ${n} times and ${still.length} of its ${earlier.length} earlier blocker(s) are still open after round ${r.round}`,
         evidence: { round: r.round, stillOpen: still, closed: now("closed"), ...(shelvedHere.length ? { shelved: shelvedHere } : {}) } });
   }
-  // 4. A judged round whose commit failed the remote CI (pending is a wait, not an alarm), and a judge row whose
-  //    candidate never reached real CI: never read (`absent`) or unreadable (`unknown`) (D-0015 item 4).
-  for (const r of rows) {
+  // D-0015, D-0017, D-0060
+  const ancestorCache = extinguishCiAbsent ? (_ancestorCache ?? new Map()) : null;
+  const greenRows = extinguishCiAbsent ? rows.map((row, idx) => ({ row, idx })).filter(({ row }) => row.ci === "success") : [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
     const absent = r.role === "judge" && ["absent", "unknown"].includes(r.ci);
     if (!absent && (r.verdict === "-" || r.ci !== "failure")) continue;
+    if (absent && extinguishCiAbsent) {
+      const by = findExtinguisher(r, i, greenRows, repo, ancestorCache);
+      if (by) {
+        extinguished.push({
+          type: "ci-absent",
+          key: `ci-absent:${r.phase}:${r.round}`,
+          at: r.round,
+          phase: r.phase,
+          round: r.round,
+          commit: r.commit,
+          ci: r.ci,
+          extinguishedBy: { round: by.round, commit: by.commit, ...(by.tip ? { tip: by.tip } : {}) },
+        });
+        continue;
+      }
+    }
     const type = absent ? "ci-absent" : "ci-not-green";
     out.push({ type, key: `${type}:${r.phase}:${r.round}`, count: 1, at: r.round, evidence: { round: r.round, commit: r.commit, ci: r.ci },
       message: `round ${r.round} was judged on ${r.commit.slice(0, 7)} but its remote CI ${absent ? (r.ci === "absent" ? "never ran or was never read" : "could not be read") : "failed"}` });
   }
-  // 5. A watched module or document that grew past the ratio within the last `window` judged rounds.
   const series0 = rows.filter(r => r.verdict !== "-" && r.commit !== "-").sort((a, b) => a.round - b.round);
   for (const [path, byCommit] of Object.entries(sizes)) {
     const series = series0.map(r => ({ round: r.round, commit: r.commit, size: lookup(byCommit, r.commit) })).filter(p => p.size !== undefined);
@@ -156,11 +223,11 @@ export function alarms(rows, { sizes = {}, ...options } = {}) {
       if (now.size >= o.growthMin && start.size > 0 && now.size / start.size >= o.growthRatio) {
         out.push({ type: "growth", key: `growth:${path}`, count: now.size, at: now.round,
           message: `${path} grew from ${start.size} to ${now.size} between rounds ${start.round} and ${now.round}`, evidence: { path, from: start, to: now } });
-        break; // the first crossing; the diagnosis covers the rest of the run
+        break;
       }
     }
   }
-  return out.sort((a, b) => a.at - b.at || a.type.localeCompare(b.type));
+  return attachExtinguished(out.sort((a, b) => a.at - b.at || a.type.localeCompare(b.type)), extinguished);
 }
 
 const lookup = (byCommit, commit) => {
@@ -168,14 +235,8 @@ const lookup = (byCommit, commit) => {
   return undefined;
 };
 
-/** Alarms raised by rows up to and including round `n` (what supervision would have seen after that round). */
 export const alarmsAfter = (rows, n, options) => alarms(rows.filter(r => r.round <= n), options);
 
-/**
- * Fill a row's CI from one reading of the loop that owns its ledger (`records`, from lib/ci-receipt.mjs
- * `ledgerRecords`), saved as a receipt the row names; or say why it cannot be appended (null when it can, and nothing is
- * saved then). See the header for the rules.
- */
 export function closeRow(row, records) {
   let loop = null;
   if (records) try { loop = recordsLoop(records); } catch (e) { return e.message; }
@@ -200,7 +261,7 @@ export function closeRow(row, records) {
   return null;
 }
 
-// D-0026, R-0007-judge (R7-2), design/round9-b.md#one-ruling-one-transition
+// D-0026, R-0007-judge, design/round9-b.md#one-ruling-one-transition
 function additionOrder(records, paths) {
   const r = spawnSync("git", ["-C", records, "log", "--reverse", "--diff-filter=A", "--format=%x00", "--name-only", "--", ...paths], { encoding: "utf8" });
   const order = new Map();
@@ -249,7 +310,6 @@ function effect(row, file) {
     ...idle.map(key => `${key} was not open in phase ${row.phase} before this row (no earlier ruling of the phase opened or carried it)`)].join("\n");
 }
 
-/** Flags that once named the loop or the CI word: the append derives them now, so passing one is a usage error. */
 const REMOVED = ["config", "repo", "remote", "ci", "ci-receipt"];
 const FIELDS = ["commit", "tip", "area", "verdict", "opened", "closed", "shelved", "carried", "suite", "owner", "model"];
 const APPEND = ["file", "round", "phase", "role", ...FIELDS];
@@ -297,13 +357,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) cli(() => {
       areaRounds: num("area-rounds"), recur: num("recur"), growthRatio: num("growth-ratio"), growthMin: num("growth-min"), window: num("window"),
     }).filter(([, v]) => v !== undefined));
     const sizes = args.sizes ? JSON.parse(readFileSync(args.sizes, "utf8")) : {};
-    const found = alarms(rows, { sizes, ...options });
     let recordsDir = null, rawLoop = null;
     try {
       recordsDir = ledgerRecords(args.file, TRAJECTORY).records;
       const cfgPath = recordsDir ? join(recordsDir, "loop.json") : null;
       if (cfgPath && existsSync(cfgPath)) rawLoop = JSON.parse(readFileSync(cfgPath, "utf8"));
     } catch { rawLoop = null; }
+    const repoOpt = args.repo || (rawLoop && typeof rawLoop.product === "string" && existsSync(rawLoop.product) ? rawLoop.product : null);
+    const found = alarms(rows, { sizes, ...(repoOpt ? { repo: repoOpt } : {}), ...options });
     if (rawLoop !== null && typeof rawLoop === "object" && !Array.isArray(rawLoop) && Object.hasOwn(rawLoop, "ssot")) {
       try {
         const loop = recordsLoop(recordsDir);
@@ -317,7 +378,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) cli(() => {
     if ("json" in args) console.log(JSON.stringify(found, null, 2));
     else for (const a of found) console.log(`ALARM ${a.type}  ${a.message}${a.evidence?.command ? `\n  run: ${a.evidence.command}` : ""}`);
     if (!found.length && !("json" in args)) console.log("no alarms");
-    return 0; // screening: never blocks
+    return 0;
   }
   throw new UsageError(USAGE);
 });

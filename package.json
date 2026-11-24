@@ -1,6 +1,6 @@
 {
   "name": "self-loop",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Ship coding-agent projects to truly done with a fraction of your attention: first-principles framing, cross-vendor adversarial judging, and Git-backed mechanical gates.",
   "license": "MIT",
   "author": "Ruiyuan Kang <kang@x32studio.com>",

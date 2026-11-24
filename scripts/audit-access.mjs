@@ -1,17 +1,4 @@
-// The access audit of one agent call, from its structured tool events. Two tiers, so the gate never kills legitimate
-// work:
-// - violations (certain, blocking): structured tool fields only. Confined mode (the frame reviewer, backtests): a file
-//   tool given a path outside `visible`, or a tool that is not allowed. Worktree mode (critic, actor, judge, who need a
-//   shell): a file tool given a path inside a `forbidden` root; other outside paths are flags, since a test run may
-//   legitimately leave output in a temporary directory.
-//   A file-tool call the permission layer refused (its tool_result is an error) accessed nothing: it is `denied`.
-// - flags (screening): shell command text that seems to name an outside path, a parent directory or a forbidden root
-//   (text can name paths that are never opened); a log of unknown shape with no recognised tool event.
-// Paths are compared canonically: relative paths resolve against the call's working directory, then every path and
-// root is resolved through the file system (`/tmp` and `/private/tmp`, symlinked folders), the part that does not exist
-// yet (a file about to be written) appended to its deepest existing folder. So the same approved file is never a
-// violation however it is spelled, and a symlink inside a visible root that leads outside it is.
-// Module: auditAccess(visible, [{ id, event }], options). CLI: node audit-access.mjs <work-dir> (reads logs/*.jsonl).
+// D-0061, design/suite-once.md#2
 import { readFileSync, readdirSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,18 +19,16 @@ export { canonical };
 const system = /^\/(bin|usr|dev\/null|opt\/homebrew|System|Library\/Developer)(\/|$)/;
 export const FILE_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep"];
 const SHELL_TOOLS = ["Bash"];
+const WRITE_TOOLS = new Set(["Write", "Edit"]);
+const normCommand = cmd => String(cmd).trim().replace(/\s+/g, " ");
 
-/**
- * @param visible one root or several
- * @param options.tools allowed tool names (default: file tools only); null allows every tool
- * @param options.forbidden roots whose access is a violation; when given, other outside paths are only flagged
- * @param options.cwd the call's working directory, for relative paths (default: the first visible root)
- */
-export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = null, cwd = undefined } = {}) {
+export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = null, cwd = undefined, stagedSuiteCommand = null } = {}) {
   const roots = [visible].flat().map(canonical);
   const banned = forbidden ? [forbidden].flat().map(canonical) : [];
   const unknownCwd = cwd === null;
   const base = cwd === undefined ? [visible].flat()[0] : cwd;
+  const baseCanonical = !unknownCwd && base ? canonical(base) : null;
+  const outRoot = join(roots[0], "out");
   const isAbsOrHome = p => { const s = String(p); return isAbsolute(s) || s.startsWith("~/"); };
   const where = p => canonical(resolve(base, String(p).replace(/^~\//, `${process.env.HOME}/`)));
   const within = (list, p) => {
@@ -54,18 +39,42 @@ export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = n
   const violations = [];
   const denied = [];
   const flags = [];
+  const duplicateSuiteRuns = [];
+  const stagedTarget = typeof stagedSuiteCommand === "string" && stagedSuiteCommand.trim() ? normCommand(stagedSuiteCommand) : null;
+  let worktreeModified = false;
+  const noteWrite = (p, rejected) => {
+    if (rejected || !baseCanonical) return;
+    const abs = where(p);
+    if ((abs === baseCanonical || abs.startsWith(`${baseCanonical}/`)) && abs !== outRoot && !abs.startsWith(`${outRoot}/`)) {
+      worktreeModified = true;
+    }
+  };
+  const isDuplicateSuite = command => {
+    if (!stagedTarget || worktreeModified) return false;
+    const normalized = normCommand(command);
+    if (normalized === stagedTarget) return true;
+    const cdMatch = /^cd\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*(?:&&|;)\s*(.+)$/.exec(normalized);
+    if (!cdMatch) return false;
+    const cdTarget = cdMatch[1] ?? cdMatch[2] ?? cdMatch[3];
+    return normCommand(cdMatch[4]) === stagedTarget && within(roots, cdTarget);
+  };
   const refused = new Set();
   for (const { event } of events)
     if (event.type === "user") for (const part of event.message?.content ?? []) if (part.type === "tool_result" && part.is_error) refused.add(part.tool_use_id);
   const KNOWN = new Set(["assistant", "user", "system", "result", "rate_limit_event", "stream_event", "thread.started", "turn.started", "turn.completed", "turn.failed", "item.started", "item.updated", "item.completed", "error", ...ANTIGRAVITY_STEP_TYPES]);
   let unrecognized = 0, toolEvents = 0, unparsedCalls = 0;
-  const screenCommand = (id, command) => {
+  const screenCommand = (id, command, rejected = false) => {
     for (const match of command.matchAll(/(?:^|[\s'"=])((?:\/|~\/)[^\s'"]*)/g)) {
       const path = match[1];
       if (banned.length && within(banned, path)) flags.push({ id, command, path, forbidden: true });
       else if (!system.test(path) && !within(roots, path)) flags.push({ id, command, path });
     }
     if (/(^|[\s'"/])\.\.(\/|$|[\s'"])/.test(command)) flags.push({ id, command, path: "(parent directory reference)" });
+    if (!rejected && isDuplicateSuite(command)) {
+      const entry = { id, command, path: "(duplicate suite run)", detail: `re-ran staged suite command "${stagedTarget}" on unchanged worktree` };
+      duplicateSuiteRuns.push(entry);
+      flags.push(entry);
+    }
   };
   const filePath = (id, tool, path, rejected) => {
     const record = rejected ? denied : violations;
@@ -86,9 +95,12 @@ export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = n
         const record = rejected ? denied : violations;
         if (isDisallowedRoleTool(part.name)) record.push({ id, tool: part.name, path: "(delegation/disallowed tool not allowed in role audit)" });
         if (tools && !tools.includes(part.name)) record.push({ id, tool: part.name, path: "(tool not allowed)" });
-        if (SHELL_TOOLS.includes(part.name) && typeof part.input?.command === "string") screenCommand(id, part.input.command);
+        if (SHELL_TOOLS.includes(part.name) && typeof part.input?.command === "string") screenCommand(id, part.input.command, rejected);
         const paths = extractToolPaths(part.input);
-        for (const value of paths) filePath(id, part.name, value, rejected);
+        for (const value of paths) {
+          filePath(id, part.name, value, rejected);
+          if (WRITE_TOOLS.has(part.name)) noteWrite(value, rejected);
+        }
         if (tools && !forbidden && FILE_TOOLS.includes(part.name) && paths.length === 0) filePath(id, part.name, ".", rejected);
       }
     }
@@ -114,7 +126,6 @@ export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = n
         }
         toolEvents++;
         const outcome = canCreditDenied ? generics[k] : null;
-        // CANCELED and RUNNING count as executed (rejected === false).
         const rejected = outcome?.status === "ERROR";
         const record = rejected ? denied : violations;
         let decodedArgs = tc.args;
@@ -142,7 +153,10 @@ export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = n
           record.push({ id, tool: tc.name, path: "(tool not allowed)" });
         }
         const paths = extractToolPaths(decodedArgs);
-        for (const p of paths) filePath(id, tc.name, p, rejected);
+        for (const p of paths) {
+          filePath(id, tc.name, p, rejected);
+          if (fileSpec && WRITE_TOOLS.has(fileSpec.canonical)) noteWrite(p, rejected);
+        }
         if (pathOrUrlDecodeFailed) {
           unparsedCalls++;
           record.push({ id, tool: tc.name, path: "(truncated/unparseable tool argument)" });
@@ -156,13 +170,13 @@ export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = n
             unparsedCalls++;
             if (stepTruncated) record.push({ id, tool: tc.name, path: "(truncated/unparseable tool argument)" });
           } else {
-            screenCommand(id, cmd);
+            screenCommand(id, cmd, rejected);
           }
         }
       }
     }
     if (event.type !== "item.completed") continue;
-    if (event.item?.type === "command_execution") { toolEvents++; screenCommand(id, event.item.command); }
+    if (event.item?.type === "command_execution") { toolEvents++; screenCommand(id, event.item.command, false); }
     if (event.item?.type === "file_change") {
       const { changes, status } = event.item;
       const entries = Array.isArray(changes) ? changes.map(change => [change?.path, change])
@@ -174,15 +188,17 @@ export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = n
       }
       toolEvents++;
       const paths = new Set(entries.flatMap(([path, change]) => [path, change?.move_path]));
-      for (const path of paths) if (typeof path === "string" && path) filePath(id, "Edit", path, status === "failed");
+      for (const path of paths) if (typeof path === "string" && path) {
+        filePath(id, "Edit", path, status === "failed");
+        noteWrite(path, status === "failed");
+      }
     }
   }
   if (unparsedCalls) flags.push({ id: events[0]?.id ?? "-", path: "(insufficient evidence)", detail: `${unparsedCalls} tool call record(s) could not be audited` });
   else if (unrecognized && !toolEvents) flags.push({ id: events[0]?.id ?? "-", path: "(insufficient evidence)", detail: `${unrecognized} event(s) of an unknown shape and no recognised tool event` });
-  return { violations, denied, flags, unrecognized, unparsedCalls, toolEvents };
+  return { violations, denied, flags, duplicateSuiteRuns, unrecognized, unparsedCalls, toolEvents };
 }
 
-/** JSON events from a CLI's stream output (Claude stream-json or Codex --json); other lines are ignored. */
 export function eventsOf(id, text) {
   const events = [];
   for (const line of text.split("\n")) {

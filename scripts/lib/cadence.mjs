@@ -1,5 +1,7 @@
-// D-0032, D-0030, design/generative-engine-b.md#the-cadence
+// D-0032, D-0030, D-0058, D-0060, design/generative-engine-b.md#the-cadence, design/mandatory-control-plane.md#3
+import { compareArchFacts, structuralBreaches } from "./arch-facts.mjs";
 import { UsageError } from "./args.mjs";
+import { globMatch } from "./plan-globs.mjs";
 
 export const CADENCE_DEFAULTS = Object.freeze({ adversarial: 3, deliveries: 4, outerGrace: 2 });
 export const FRAME_STEP = /^reviewer-frame(?:-[a-z]+)*$/;
@@ -41,7 +43,7 @@ export function cadenceOf(cfg) {
   return out;
 }
 
-/** Resolve outer-loop delivery cadence and grace settings with defaults (P-0011, D-0058). */
+// P-0011, D-0058
 export function outerCadenceOf(cfg) {
   cadenceOf(cfg);
   const given = cfg.cadence ?? {};
@@ -153,17 +155,33 @@ export function advancingAction(cadence, callFor) {
 
 const isOuterBaseline = step => FRAME_STEP.test(step) || ARCH_STEP.test(step) || JUDGE_FRAME_STEP.test(step);
 
-/** Asynchronous periodic outer-loop state over committed deliveries and deterministic arch breaches (P-0011, D-0058). */
+function intersectsHotspots(packageFiles, hotspotPaths) {
+  if (!packageFiles.length || !hotspotPaths.length) return false;
+  for (const pattern of packageFiles) {
+    for (const target of hotspotPaths) {
+      if (pattern === target || globMatch(pattern, target)) return true;
+    }
+  }
+  return false;
+}
+
+// P-0011, D-0058, D-0060, design/mandatory-control-plane.md#3
 export function outerLoopState({
   handoffs = [],
   rows = [],
-  archBreaches = [],
+  archBreaches,
+  baselineFacts = null,
+  currentFacts = null,
+  facts = null,
+  prepared = [],
+  packageFiles = null,
   deliveries = CADENCE_DEFAULTS.deliveries,
   outerGrace = CADENCE_DEFAULTS.outerGrace,
   phase = null,
   targetSha = null,
 } = {}) {
   const scoped = phase ? handoffs.filter(h => h.phase === phase) : handoffs;
+  const recordedIds = new Set(scoped.map(h => h.id).filter(Boolean));
   let baseline = null;
   let baselineIdx = -1;
   for (let i = 0; i < scoped.length; i++) {
@@ -185,13 +203,34 @@ export function outerLoopState({
     baseline && ARCH_STEP.test(baseline.step) && targetSha
     && baseline.product?.base === targetSha && deliveriesSince === 0,
   );
-  const effectiveBreaches = reviewedExactTarget ? [] : archBreaches;
+  const resolvedFacts = currentFacts ?? facts;
+  const computedBreaches = resolvedFacts && baselineFacts
+    ? compareArchFacts(resolvedFacts, baselineFacts)
+    : resolvedFacts && archBreaches === undefined
+      ? structuralBreaches(resolvedFacts)
+      : (archBreaches ?? []);
+  const effectiveBreaches = reviewedExactTarget ? [] : computedBreaches;
+  const hotspotPaths = [...new Set(effectiveBreaches.map(b => b.path).filter(Boolean))].sort();
+  const activeArch = (prepared ?? []).filter(
+    p => ARCH_STEP.test(p?.step ?? "")
+      && (!phase || !p.phase || p.phase === phase)
+      && p.cancelled !== true
+      && p.liveWorkspace !== false
+      && !(p.id && recordedIds.has(p.id)),
+  );
+  const archReviewActive = activeArch.length > 0;
   const t1Due = deliveriesSince >= deliveries;
   const t3Due = effectiveBreaches.length > 0;
   const triggered = t1Due || t3Due;
-  const graceExceeded = (t1Due && deliveriesSince >= deliveries + outerGrace)
-    || (t3Due && deliveriesSince >= outerGrace);
+  const t1HardDue = t1Due && deliveriesSince >= deliveries + outerGrace;
+  const t3HardDue = t3Due && deliveriesSince >= outerGrace;
+  const graceExceeded = t1HardDue || t3HardDue;
   const status = !triggered ? "ok" : graceExceeded ? "hard-due" : "async-due";
+  const blocked = !graceExceeded
+    ? false
+    : t3HardDue && archReviewActive && Array.isArray(packageFiles)
+      ? intersectsHotspots(packageFiles, hotspotPaths)
+      : true;
   const graceRemaining = !triggered
     ? outerGrace
     : Math.max(0, Math.min(
@@ -203,6 +242,9 @@ export function outerLoopState({
     triggered,
     t1Due,
     t3Due,
+    blocked,
+    archReviewActive,
+    hotspotPaths,
     deliveriesSince,
     deliveries,
     outerGrace,
@@ -213,7 +255,6 @@ export function outerLoopState({
   };
 }
 
-/** Human-readable header lines for outerLoopState in `loop.mjs next`. */
 export function outerLoopLines(outer) {
   const baseLabel = outer.baseline ? outer.baseline.id : "phase start";
   const triggers = [...(outer.t1Due ? ["T1"] : []), ...(outer.t3Due ? ["T3"] : [])].join("+");

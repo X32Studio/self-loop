@@ -1,15 +1,18 @@
-// SKILL.md#2b-planning-and-dispatch-f-0012-p-0006
+// P-0012, D-0059, D-0060, design/parallel-dispatch.md#1, design/mandatory-control-plane.md#4
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { call, preparedIn, recordCall } from "../call.mjs";
 import { batchesFrom } from "../decisions.mjs";
 import { parseRows, TRAJECTORY } from "../trajectory.mjs";
 import { buildImportGraph } from "./arch-facts.mjs";
 import { node as nodeCommand } from "./commands.mjs";
 import { git, gitOk, regularFiles } from "./git-plumbing.mjs";
 import { HANDOFFS, idOf, parseHandoffs } from "./handoff.mjs";
-import { HANDOFF_ID, loadPlan, PLAN_ID, planContext, plansFrom, readyPlan, recordPath } from "./plan.mjs";
+import { HANDOFF_ID, loadPlan, PLAN_ID, planContext, plansFrom, readyPlan, recordPath, snapshot } from "./plan.mjs";
 import { fileOverlap, globMatch } from "./plan-globs.mjs";
 import { hostLoad, resolveOwnerStore } from "./registry.mjs";
+import { findTranscripts, transcriptEvents } from "./t3-child.mjs";
 import { parseWindows, WINDOWS, windowState } from "./window.mjs";
 
 const CONTRACT_PTR_RE = /(?:D|F|P)-\d{4}|R-\d{4}-judge(?:-[a-z]+)*|design\/[a-z0-9._-]+\.md(?:#\S+)?/gi;
@@ -30,7 +33,7 @@ function hasValidContract(text, state) {
 const matchPackageFiles = (allFiles, patterns) =>
   Array.isArray(patterns) && patterns.length ? allFiles.filter(fp => patterns.some(pat => globMatch(pat, fp))).sort() : [];
 
-function computeWaves(plan) {
+export function computeWaves(plan) {
   const byId = new Map(plan.packages.map(p => [p.id, p])), memo = new Map(), visiting = new Set();
   const depth = id => {
     if (memo.has(id)) return memo.get(id);
@@ -58,7 +61,7 @@ function activePreparedFor(prepared, phase, handoffs, excludeId = null) {
 function liveWriteGlobs(w, allPlans) {
   if (Array.isArray(w.dispatch?.files)) return w.dispatch.files;
   const fromPlan = allPlans.flatMap(q => q.packages).find(q => q.handoff === w.id);
-  return fromPlan ? (fromPlan.files ?? []) : (w.owns ?? []).flatMap(f => [f, `${f.replace(/\/$/, "")}/**`]);
+  return fromPlan ? (fromPlan.files ?? []) : [];
 }
 
 function pairLookup(pairs) {
@@ -76,7 +79,7 @@ function dispatchCommand(cfg, planId, pkg, { base = null } = {}) {
     ...baseArgs, "--plan", planId, "--package", pkg.id, "--task", task, ...prepare);
 }
 
-// SKILL.md#2b-planning-and-dispatch-f-0012-p-0006
+// P-0012, D-0059, design/parallel-dispatch.md#2
 export function analyzeDecoupling({ plan, product, base, state = null }) {
   const allFiles = regularFiles(product, base).map(f => f.path);
   const matchedFiles = Object.fromEntries(plan.packages.map(p => [p.id, matchPackageFiles(allFiles, p.files)]));
@@ -106,7 +109,7 @@ export function analyzeDecoupling({ plan, product, base, state = null }) {
   };
 }
 
-// SKILL.md#2b-planning-and-dispatch-f-0012-p-0006
+// P-0012, D-0059, design/parallel-dispatch.md#3
 export function reviewCoverage(plan, { window = null } = {}) {
   const actors = plan.packages.filter(p => p.role === "actor");
   const critics = plan.packages.filter(p => p.role === "critic");
@@ -123,10 +126,11 @@ export function reviewCoverage(plan, { window = null } = {}) {
     }
     return actors.map(a => a.id).filter(id => found.has(id));
   };
-  const criticRows = critics.map(c => ({
-    id: c.id, handoff: c.handoff, files: c.files ?? [],
-    targets: Array.isArray(c.reviews) && c.reviews.length ? [...new Set(c.reviews.filter(id => actorIds.has(id)))] : reachable(c.id),
-  }));
+  const criticRows = critics.map(c => {
+    const explicit = Array.isArray(c.reviews) && c.reviews.length ? [...new Set(c.reviews.filter(id => actorIds.has(id)))] : null;
+    const preActors = actors.filter(a => (a.needs ?? []).includes(c.id)).map(a => a.id);
+    return { id: c.id, handoff: c.handoff, files: c.files ?? [], targets: explicit ?? [...new Set([...reachable(c.id), ...preActors])] };
+  });
   const criticPairsOverlap = [];
   for (let i = 0; i < critics.length; i++) {
     for (let j = i + 1; j < critics.length; j++) {
@@ -144,7 +148,7 @@ export function reviewCoverage(plan, { window = null } = {}) {
   return { topology, required: window?.mode !== "slack", actors: actorList, critics: criticRows, coveredActors, uncoveredActors, criticPairsOverlap };
 }
 
-// SKILL.md#2b-planning-and-dispatch-f-0012-p-0006
+// P-0012, D-0059, design/parallel-dispatch.md#3
 export function readPlanWindow(state, phase, nextRound = 1) {
   if (!state.files.has(WINDOWS)) return { mode: "normal", active: null, actorBlocked: false };
   const windows = parseWindows(state.read(WINDOWS), WINDOWS);
@@ -152,7 +156,7 @@ export function readPlanWindow(state, phase, nextRound = 1) {
   return windowState({ windows, handoffs: handoffsOf(state, phase), rows, phase, nextRound });
 }
 
-// SKILL.md#2b-planning-and-dispatch-f-0012-p-0006
+// P-0012, D-0059, design/parallel-dispatch.md#3
 export function computeDispatchPlan({ state, plan, context, ready = null, product, base, host, window = null, now = Date.now() }) {
   const ctx = context ?? planContext(state, plan);
   const repo = product ?? ctx.cfg.product;
@@ -234,20 +238,7 @@ export function computeDispatchPlan({ state, plan, context, ready = null, produc
   };
 }
 
-// SKILL.md#2b-planning-and-dispatch-f-0012-p-0006
-export function checkLiveDispatchedOverlap({ cfg, state, role, round, step, owns, prepared }) {
-  if (!["actor", "critic"].includes(role)) return null;
-  const ownGlobs = (owns ?? []).flatMap(f => [f, `${f.replace(/\/$/, "")}/**`]);
-  if (!ownGlobs.length) return null;
-  for (const w of activePreparedFor(prepared, cfg.phase, handoffsOf(state, cfg.phase), idOf(round, step))) {
-    const liveFiles = Array.isArray(w.dispatch?.files) ? w.dispatch.files : [];
-    const overlap = liveFiles.length ? fileOverlap(ownGlobs, liveFiles) : null;
-    if (overlap) return `G3 live writer overlap with dispatched ${w.id} (${w.dispatch.plan}/${w.dispatch.package}): ${overlap.left} overlaps ${overlap.right}`;
-  }
-  return null;
-}
-
-// SKILL.md#2b-planning-and-dispatch-f-0012-p-0006
+// P-0012, D-0059, design/parallel-dispatch.md#4
 export function validateDispatchCall({ cfg, state, planId, packageId, role, step, round, base, prepared, window = null }) {
   const failEarly = msg => ({ ok: false, errors: [msg], plan: null, pkg: null, peerFiles: [], scopeFiles: [] });
   if (!PLAN_ID.test(planId ?? "") || !state.files.has(`plans/${planId}.md`)) return failEarly(`G1 missing committed plan ${planId}`);
@@ -330,7 +321,7 @@ export function validateDispatchCall({ cfg, state, planId, packageId, role, step
   return { ok: errors.length === 0, errors, plan, pkg, peerFiles, scopeFiles };
 }
 
-// SKILL.md#2b-planning-and-dispatch-f-0012-p-0006
+// P-0012, D-0059, design/parallel-dispatch.md#4
 export function integrateWave({ cfg, state, plan, wave = null, apply = false }) {
   const waveMap = computeWaves(plan);
   const planActors = plan.packages.filter(p => p.role === "actor" && (wave === null || waveMap.get(p.id) === wave));
@@ -388,7 +379,7 @@ export function integrateWave({ cfg, state, plan, wave = null, apply = false }) 
   return { ok: true, dryRun: false, base, commit, parents, mergedTree, branch: branchRef, commits: landed, disjoint: true };
 }
 
-// SKILL.md#2b-planning-and-dispatch-f-0012-p-0006
+// P-0012, D-0059, design/parallel-dispatch.md#5
 export function renderDispatchLines(dp) {
   const lines = [`Plan ${dp.plan} (${dp.scope}) · review topology: ${dp.coverage.topology} · decoupled pairs: ${dp.decoupling.decoupledCount}, undeclared-coupled: ${dp.decoupling.undeclaredCoupled.length}, write-coupled: ${dp.decoupling.writeCoupled.length}`];
   if (dp.parallelBatch.actors.length) {
@@ -401,4 +392,84 @@ export function renderDispatchLines(dp) {
   }
   if (dp.judgeBlockedReasons.length) lines.push(`Judge join barrier: ${dp.judgeBlockedReasons.join("; ")}`);
   return lines;
+}
+
+// D-0060, design/mandatory-control-plane.md#4
+function materializeTask(cfg, state, plan, pkg) {
+  const taskFile = resolve(cfg.workDir, pkg.task ?? `tasks/${pkg.handoff}.md`);
+  if (existsSync(taskFile)) return taskFile;
+  const raw = [pkg.features, plan.features, pkg.goal, pkg.interface, pkg.acceptance].filter(Boolean).join(" ");
+  const cited = [...new Set([...raw.matchAll(/(?<![\w-])F-\d{4}(?![\w-])/g)].map(m => m[0]))].filter(id => state.files.has(`blueprint/${id}.md`));
+  const bp = cited.length ? [] : [...state.files].filter(f => /^blueprint\/F-\d{4}\.md$/.test(f)).sort();
+  const phaseRe = new RegExp(`^phase:\\s*${plan.phase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "m");
+  const samePhase = bp.filter(f => phaseRe.test(state.read(f)));
+  const inferred = (samePhase.length ? samePhase : bp).map(f => f.slice(10, 16));
+  const features = cited.length ? cited : inferred.length ? inferred : (pkg.role === "reviewer" ? ["none"] : []);
+  mkdirSync(dirname(taskFile), { recursive: true });
+  writeFileSync(taskFile, [
+    `features: ${features.join(", ")}`, "", `# ${pkg.handoff} (${plan.id} :: ${pkg.id})`, "",
+    `goal: ${pkg.goal}`, `files: ${(pkg.files ?? []).join(", ")}`, `interface: ${pkg.interface}`, `acceptance: ${pkg.acceptance}`, "",
+  ].join("\n"));
+  return taskFile;
+}
+
+// D-0060, design/mandatory-control-plane.md#4
+export function prepareWave({ cfg, state, plan, context = null, wave = null, base = null, readyBase = undefined, host = null, now = Date.now(), log = () => {} }) {
+  const ctx = context ?? { ...planContext(state, plan), cfg };
+  const resolvedBase = readyBase !== undefined ? readyBase : base;
+  const ready = readyPlan(state, plan, { context: ctx, host: host ?? hostLoad({ cfg, store: resolveOwnerStore() }), base: resolvedBase, now });
+  const waveMap = computeWaves(plan), pkgById = new Map(plan.packages.map(p => [p.id, p]));
+  const eligible = ready.packages
+    .filter(r => r.status === "ready" || (r.status === "waiting" && r.holds.length > 0 && r.holds.every(h => h.kind === "task")))
+    .filter(r => wave === null || waveMap.get(r.id) === wave)
+    .sort((a, b) => waveMap.get(a.id) - waveMap.get(b.id));
+  const prepared = [], errors = [];
+  for (const row of eligible) {
+    const pkg = pkgById.get(row.id), taskFile = materializeTask(cfg, state, plan, pkg);
+    const [, round, role, suffix] = HANDOFF_ID.exec(pkg.handoff);
+    const callBase = base ?? (role === "judge" ? resolvedBase : null) ?? undefined;
+    const res = call(cfg, role, {
+      round: Number(round), step: role + suffix, task: readFileSync(taskFile, "utf8"),
+      base: callBase, prepare: cfg.agents[role]?.runner === "t3", plan: plan.id, package: pkg.id,
+    }, { log });
+    if (res.code !== 0) errors.push({ id: pkg.id, handoff: pkg.handoff, role, code: res.code, message: res.message });
+    else if (res.prepared) prepared.push({ ...res.prepared, id: pkg.id, handoff: pkg.handoff, role, wave: waveMap.get(pkg.id), taskFile });
+    else prepared.push({ id: pkg.id, handoff: pkg.handoff, role, wave: waveMap.get(pkg.id), ws: res.ws ?? null, handoffRecord: res.handoff ?? null, taskFile });
+  }
+  return { ok: errors.length === 0, plan: plan.id, wave, prepared, errors };
+}
+
+// D-0060, R-0019-reviewer-architecture, design/mandatory-control-plane.md#4
+export function recordWave({ cfg, state, plan, wave = null, integrate = false, log = () => {} }) {
+  const waveMap = computeWaves(plan), pkgById = new Map(plan.packages.map(p => [p.id, p])), pkgByHandoff = new Map(plan.packages.map(p => [p.handoff, p]));
+  const done = new Set(handoffsOf(state, plan.phase).map(h => h.id));
+  const candidates = preparedIn(cfg).filter(w => {
+    if (!w.liveWorkspace || done.has(w.id)) return false;
+    const pkg = (w.dispatch?.plan === plan.id && pkgById.get(w.dispatch.package)) || (!w.dispatch && pkgByHandoff.get(w.id)) || null;
+    return Boolean(pkg && (wave === null || waveMap.get(pkg.id) === wave));
+  });
+  const recorded = [], pending = [], errors = [];
+  for (const w of candidates) {
+    const pkg = pkgById.get(w.dispatch?.package) ?? pkgByHandoff.get(w.id), provider = w.agent?.provider;
+    if (!provider) { errors.push({ id: pkg.id, handoff: w.id, ws: w.ws, code: 1, message: "prepared call has no t3 provider" }); continue; }
+    const matches = findTranscripts(provider, w.nonce, w.preparedAt);
+    if (!matches.length) { pending.push({ id: pkg.id, handoff: w.id, ws: w.ws, reason: "no matching transcript" }); continue; }
+    if (matches.length > 1) { errors.push({ id: pkg.id, handoff: w.id, ws: w.ws, code: 1, message: `ambiguous: ${matches.length} transcripts match nonce ${w.nonce}` }); continue; }
+    if (transcriptEvents(w.id, matches[0]).status === "pending") { pending.push({ id: pkg.id, handoff: w.id, ws: w.ws, session: matches[0].session, reason: "transcript pending" }); continue; }
+    const res = recordCall(cfg, w.ws, { session: matches[0].session, transcript: matches[0].file, log });
+    if (res.code === 0) recorded.push({ id: pkg.id, handoff: w.id, role: pkg.role, wave: waveMap.get(pkg.id), ws: w.ws, session: matches[0].session, handoffRecord: res.handoff });
+    else errors.push({ id: pkg.id, handoff: w.id, ws: w.ws, session: matches[0].session, code: res.code, message: res.message });
+  }
+  let integration = null;
+  if (integrate && !errors.length) {
+    const fresh = snapshot(cfg.records), doneAfter = new Set(handoffsOf(fresh, plan.phase).map(h => h.id));
+    const actorWaves = [...new Set(recorded.filter(r => r.role === "actor").map(r => r.wave))];
+    const targetWave = wave ?? (actorWaves.length === 1 ? actorWaves[0] : null);
+    const actors = plan.packages.filter(p => p.role === "actor" && (targetWave === null || waveMap.get(p.id) === targetWave));
+    if (actors.length && actors.every(p => doneAfter.has(p.handoff))) {
+      integration = integrateWave({ cfg, state: fresh, plan, wave: targetWave, apply: true });
+      if (!integration.ok) errors.push({ id: "integrate", handoff: null, code: 1, message: integration.message });
+    }
+  }
+  return { ok: errors.length === 0, plan: plan.id, wave, recorded, pending, errors, ...(integration ? { integration } : {}) };
 }

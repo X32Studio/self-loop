@@ -1,92 +1,60 @@
 #!/usr/bin/env node
-// One isolated role call, and nothing else: build the role's view, run the agent once, audit what it accessed, record
-// one hand-off. It never decides what happens next (convergence, closing, retries, owner batches are the lead's;
-// SKILL.md). Every behaviour below is certain: decided from git objects, paths and structured events.
-//
-// - View. The role reads a folder built from one records commit by an allow-list of what is public by construction:
-//   regular files (no symlinks) of the public kinds (PUBLIC_KINDS; never Sealed, Evidence, Engines, Backtests), and of
-//   the Rounds kind only the records a hand-off at that commit names as public, or that the commit's records.json lists
-//   in `publicImports` (older records the lead declared public); for the judge alone, also its own earlier private
-//   records (`sealed/judge/`). Nothing ignored, staged, uncommitted, undeclared or
-//   from another commit; never a redaction of a larger copy. The view's INDEX.md lists exactly what it holds. Briefs
-//   and the lead's task are files of the same commit / given verbatim. The frame reviewer also gets the product's
-//   purpose documents at the base commit.
-// - Agent. Claude CLI always runs `--restricted` (no project or session memory) with --strict-mcp-config; the frame
-//   reviewer gets file tools only and its folder as working directory (confined reads). On `t3`, the frame reviewer may
-//   also run on `antigravity` or `claude`, verified fail-closed by confined transcript auditing (`auditAccess([ws])`,
-//   file tools only, rejecting outside paths, disallowed tools, and unparsed/insufficient evidence). Codex (CLI and
-//   `t3:codex`) is refused for the frame reviewer: its sandbox confines writes, not reads, and its transcripts use shell
-//   `command_execution` rather than structured file-only tools; critic, actor and judge may run on it, their reads
-//   screened by the audit. The `cmd` runner is a test stand-in, refused unless SELF_LOOP_TEST=1.
-//   Critic, actor and judge work in a detached worktree of the product at the base commit (setup commands run first; a
-//   failing setup stops the call before any model runs). Only the judge is given the sealed roots.
-// - Audit. Afterwards, from the structured tool events, with canonical paths (audit-access.mjs). A certain violation
-//   fails the call (exit 6); flags and denied calls are recorded for the lead.
-// - Hand-off. On success one records commit holds exactly: the public round record, the evidence (log, audit, every
-//   other file the role wrote under out/), the actor's current design files, for the judge its full record in sealed/judge/, one line of
-//   metrics/handoffs.jsonl and the INDEX.md generated from that exact tree. Nothing else staged rides along. Critic and
-//   actor changes to the paths they own become a product commit on top of the base; only after the records commit
-//   holds its hand-off does the base branch move to it, by compare-and-swap. Other changes are reported, not taken.
-//   A failed call commits only its numbered evidence and gets no line.
-// - Refusals before any model runs: the round record already exists; an uncommitted change to the hand-off record;
-//   missing phase frame before an adversarial call; missing or unknown task features; a brief missing at the view
-//   commit; a protected base branch; an unknown runner or role; for a critic, actor or judge (dry runs and preparations
-//   included), an alarm of the phase in the view's trajectory that no reviewer-diagnosis hand-off recorded after it
-//   names (lib/diagnosis.mjs). The reviewer and `record` are never refused by an alarm.
-//
-// - T3 child threads (runner `t3`; `codex`, `claude`, or `antigravity`, with `t3:codex` refused for the frame reviewer):
-//   `--prepare` does everything up to the agent run and writes the child's prompt with a nonce; the lead starts the
-//   child; `record --ws` then audits the child's own transcript (bound to the supplied provider session ID, with the
-//   prepared prompt in its first submission; confined mode for `reviewer` fails closed on disallowed tools, outside
-//   paths, or unparsed/insufficient audit evidence) and records the hand-off.
-//
-// node call.mjs <config.json> <role> --round N --task <file> [--step <role[-mode]>] [--view <records rev>]
-//   [--base <product rev or branch>] [--dry-run | --prepare]
-// node call.mjs <config.json> record --ws <prepared workspace> [--session <provider session ID>] [--transcript <file>]
-// role: reviewer | critic | actor | judge. Exit 0 hand-off recorded, 1 the call failed (setup, agent exit, no report),
-// 6 certain access violation, 7 refused by the records rules, 64 usage. Prints the hand-off line.
+// F-0008, D-0015, D-0016, D-0058, D-0060, D-0061, design/mandatory-control-plane.md#5, design/suite-once.md#2
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import "./lib/unbind-git.mjs";
 import { auditAccess, canonical, eventsOf, FILE_TOOLS } from "./audit-access.mjs";
 import { collectArchFacts, structuralBreaches } from "./lib/arch-facts.mjs";
-import { addedProse, commentResolutions } from "./lib/comments.mjs";
-import { blobs, git, gitOk, regularFiles, writeFiles } from "./lib/git-plumbing.mjs";
-import { appendJsonLines, commitRecords, RecordsConflict } from "./lib/records-commit.mjs";
-import { findTranscripts, preparedPhase, t3Prompt, transcriptEvents } from "./lib/t3-child.mjs";
-import { taskFeatures } from "./lib/blueprint.mjs";
 import { parseArgs } from "./lib/args.mjs";
-import { ARCH_STEP, outerCadenceOf, outerLoopState } from "./lib/cadence.mjs";
+import { taskFeatures } from "./lib/blueprint.mjs";
+import { ARCH_STEP, JUDGE_FRAME_STEP, outerCadenceOf, outerLoopState } from "./lib/cadence.mjs";
 import { node as nodeCommand } from "./lib/commands.mjs";
+import { addedProse, commentResolutions } from "./lib/comments.mjs";
 import { undiagnosedAlarms } from "./lib/diagnosis.mjs";
-import { checkLiveDispatchedOverlap, validateDispatchCall } from "./lib/dispatch.mjs";
+import { validateDispatchCall } from "./lib/dispatch.mjs";
+import { blobs, git, gitOk, regularFiles, writeFiles } from "./lib/git-plumbing.mjs";
 import { HANDOFFS, hasPhaseFrame, idOf, parseHandoffs, recordOf, ROLES, validateHandoff } from "./lib/handoff.mjs";
 import { isSubstantiveOwnerWord } from "./lib/owner-words.mjs";
 import { snapshot as planSnapshot } from "./lib/plan.mjs";
 import { globMatch } from "./lib/plan-globs.mjs";
+import { verifyProvenance } from "./lib/provenance.mjs";
+import { appendJsonLines, commitRecords, RecordsConflict } from "./lib/records-commit.mjs";
 import { DISPLAY_SHA_LEN, renderSsotStatusMarkdown } from "./lib/ssot.mjs";
+import {
+  cancelPreparedCall,
+  preparationFile,
+  preparationScope,
+  preparedIn,
+  readPreparation,
+  resolveChildSession,
+  t3Prompt,
+  transcriptEvents,
+} from "./lib/t3-child.mjs";
 import { parseWindows, windowAlarmKey, WINDOWS, windowState } from "./lib/window.mjs";
 import { classify, DEFAULT_LAYOUT, inspect, isPublicKind, openWords, parseLayout, renderIndex } from "./records-check.mjs";
+import { purgeTreeReceipts, stageSuiteWorkspace } from "./suite-green.mjs";
 import { parseRows, TRAJECTORY } from "./trajectory.mjs";
 
-export const EXIT = { done: 0, failure: 1, violation: 6, records: 7, usage: 64 };
+export const EXIT = { done: 0, failure: 1, gate: 2, violation: 6, records: 7, usage: 64 };
 export const HEAVY_ROLES = ["critic", "actor", "judge"];
 export const LOAD_ENV = "SELF_LOOP_LOAD_DIR";
 export const loadDir = (env = process.env, home = homedir()) => env[LOAD_ENV] ? resolve(env[LOAD_ENV]) : join(home, ".self-loop", "load");
 export { PUBLIC_KINDS } from "./records-check.mjs";
-// Kinds whose text the index or the check reads; the others are listed by path only.
+export { preparedIn } from "./lib/t3-child.mjs";
+
 const QUOTED = new Set(["Backtests", "Evidence", "Blueprint evidence", "Sealed"]);
+const JUDGE_COMMENTS_STEP = /^judge-comments(?:-[a-z]+)*$/;
+const isMetaJudge = (role, step) => role === "judge" && (JUDGE_FRAME_STEP.test(step) || JUDGE_COMMENTS_STEP.test(step));
+const requiresPlan = (role, step) => role !== "reviewer" && !isMetaJudge(role, step);
 const digest = text => createHash("sha256").update(text).digest("hex");
 const pad = n => String(n).padStart(4, "0");
 
 export class Stop extends Error { constructor(code, message) { super(message); this.code = code; } }
-
-// ---------- config ----------
 
 export function load(configPath) {
   const abs = resolve(configPath);
@@ -108,9 +76,6 @@ export function normalize(cfg, base = process.cwd()) {
   return out;
 }
 
-// ---------- the view ----------
-
-/** Paths of the records commit a role may read (see the header). */
 export function publicPaths(cfg, commit, layout, role = null, files = regularFiles(cfg.records, commit)) {
   const has = new Set(files.map(f => f.path));
   const text = path => (has.has(path) ? git(cfg.records, "show", `${commit}:${path}`) : "");
@@ -128,7 +93,6 @@ export function publicPaths(cfg, commit, layout, role = null, files = regularFil
   });
 }
 
-/** Build a role's view of the records at `commit` into `into`; returns the paths it holds. */
 export function buildView(cfg, commit, into, layout, extraKinds = [], role = null, files) {
   const entries = publicPaths(cfg, commit, layout, role, files);
   mkdirSync(into, { recursive: true });
@@ -142,41 +106,33 @@ function recordsConfig(cfg, commit) {
   return gitOk(cfg.records, "cat-file", "-e", `${commit}:records.json`) ? JSON.parse(git(cfg.records, "show", `${commit}:records.json`)) : {};
 }
 
-// ---------- the agent ----------
-
-/** Command and arguments of one agent run. */
 export function argv(agent, { confined, cwd, addDirs }) {
   if (agent.runner === "claude") return ["claude", ["-p", "--restricted", "--strict-mcp-config",
     ...(confined ? ["--tools", FILE_TOOLS.join(",")] : ["--tools", [...FILE_TOOLS, "Bash"].join(","), "--allowedTools", "Bash"]),
     "--permission-mode", "acceptEdits", ...addDirs.flatMap(d => ["--add-dir", d]),
     ...(agent.model ? ["--model", agent.model] : []), ...(agent.effort ? ["--effort", agent.effort] : []),
     "--output-format", "stream-json", "--verbose"]];
-  // Codex sandbox: workspace-write by default. A role that must run the product's real tests (listening sockets,
-  // boot identity, signed native apps) may set `sandbox: "danger-full-access"` in its agent config; its reads were
-  // never confined (screening only), and the frame reviewer never runs on Codex. Measured 2026-11-20: R-0035-judge in
-  // workspace-write could not listen or read the boot identity and got 54/203 instead of the host's 518/559.
   if (agent.runner === "codex" && agent.sandbox && !["workspace-write", "danger-full-access"].includes(agent.sandbox))
     throw new Stop(EXIT.usage, `unknown codex sandbox ${agent.sandbox} (workspace-write or danger-full-access)`);
   if (agent.runner === "codex") return ["codex", ["exec", "--json", "--skip-git-repo-check", "-C", cwd,
     "-c", `sandbox_mode="${agent.sandbox ?? "workspace-write"}"`, ...addDirs.flatMap(d => ["--add-dir", d]),
     ...(agent.model ? ["-m", agent.model] : []), ...(agent.effort ? ["-c", `model_reasoning_effort="${agent.effort}"`] : []), "-"]];
-  if (agent.runner === "t3") { // a T3 child thread the lead starts from --prepare's prompt; recorded by `record`
+  if (agent.runner === "t3") {
     if (!["codex", "claude", "antigravity"].includes(agent.provider)) throw new Stop(EXIT.usage, "a t3 agent needs provider codex, claude or antigravity");
     return null;
   }
-  if (agent.runner === "cmd") { // a stand-in for tests: it confines nothing itself
+  if (agent.runner === "cmd") {
     if (process.env.SELF_LOOP_TEST !== "1") throw new Stop(EXIT.usage, "the cmd runner is a test stand-in and is refused unless SELF_LOOP_TEST=1; use claude or codex");
     return [agent.cmd[0], agent.cmd.slice(1)];
   }
   throw new Stop(EXIT.usage, `unknown runner ${agent.runner} (claude, codex, t3 or cmd)`);
 }
 
-function prompt({ role, step = role, round, phase, ws, view, base, owns, sealed, wt = null, ssotHint = null }) {
+function prompt({ role, step = role, round, phase, ws, view, base, owns, sealed, wt = null, ssotHint = null, suiteHint = null }) {
   const isArchReviewer = role === "reviewer" && ARCH_STEP.test(step);
   return [
     `You are the ${role} of a self-loop, round ${round}, phase ${phase}. Your working folder is ${ws}.`,
-    "Read brief-shared.md, brief.md and task.md there first and follow them. records/ is a read-only view of the loop's records at commit " +
-      `${view}; read records/INDEX.md before anything else in it. Write only under out/.`,
+    `Read brief-shared.md, brief.md and task.md there first and follow them. records/ is a read-only view of the loop's records at commit ${view}; read records/INDEX.md before anything else in it. Write only under out/.`,
     isArchReviewer
       ? `Read-only product worktree is ${wt ?? join(ws, "wt")}, detached at ${base}. Deterministic whole-repo metrics are in arch-facts.json. purpose/ holds the product's purpose documents. File tools only; never modify the product worktree.`
       : role === "reviewer"
@@ -185,11 +141,10 @@ function prompt({ role, step = role, round, phase, ws, view, base, owns, sealed,
     "Write your report to out/report.md. Questions only the owner can decide go to out/decisions.json (see your brief).",
     role === "judge" ? "out/report.md is your full ruling and stays private to you and the lead. out/public.md is the only part the other roles read: properties broken, blockers by class and id, to-do lists; never held-out content, names or paths." : "",
     role === "judge" && sealed.length ? `Held-out cases (yours alone): ${sealed.join(", ")}.` : "",
+    suiteHint ?? "",
     ssotHint ?? "",
   ].filter(Boolean).join("\n");
 }
-
-// ---------- product ----------
 
 function changedPaths(wt) {
   const out = spawnSync("git", ["-C", wt, "status", "--porcelain=v1", "-z", "--untracked-files=all"], { encoding: "utf8", maxBuffer: 1 << 28 }).stdout;
@@ -209,9 +164,6 @@ function commitOwned(wt, base, { inside, outside }, message) {
   return { commit: git(wt, "rev-parse", "HEAD"), outside };
 }
 
-// ---------- records commits ----------
-
-/** Check and index the exact candidate tree for this attempt. */
 function indexHandOff(records, own, { tree, add, read }, { layoutText, extraKinds, sealed }) {
   const layout = parseLayout(layoutText, extraKinds);
   const all = regularFiles(records, tree()).filter(e => e.path !== "INDEX.md");
@@ -226,13 +178,11 @@ function indexHandOff(records, own, { tree, add, read }, { layoutText, extraKind
   return state.screening.filter(s => own.includes(s.path));
 }
 
-/** Every file under `dir`, relative. */
 function walk(dir, prefix = "") {
   if (!existsSync(dir)) return [];
   return readdirSync(dir).flatMap(n => (statSync(join(dir, n)).isDirectory() ? walk(join(dir, n), `${prefix}${n}/`) : [`${prefix}${n}`]));
 }
 
-/** Validate the reserved output directory before reading any of its files as evidence. */
 function designOutputs(ws, role, layout) {
   const dir = join(ws, "out", "design");
   const stat = lstatSync(dir, { throwIfNoEntry: false });
@@ -246,22 +196,15 @@ function designOutputs(ws, role, layout) {
   });
 }
 
-// ---------- the call ----------
-
-/**
- * One role call. Returns { code, message, handoff?, ws? }; never throws for the agent's behaviour.
- * @param opts { round, step?, task (text), view? (records rev), base? (product rev or branch), dry? }
- */
 export function call(cfg, role, opts, { log = () => {}, now = () => new Date() } = {}) {
   try { return callInner(cfg, role, opts, { log, now }); }
   catch (e) {
-    if (e instanceof Stop) return { code: e.code, message: e.message };
+    if (e instanceof Stop || Number.isInteger(e?.code)) return { code: e.code, message: e.message };
     return { code: EXIT.failure, message: String(e.stack ?? e) };
   }
 }
 
 function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD", base: baseRev, dry = false, prepare = false, plan: planId = null, package: pkgOpt = null, pkg: pkgArg = null }, { log, now }) {
-  // ----- refusals before any model runs -----
   const packageId = pkgArg ?? pkgOpt ?? null;
   if (Boolean(planId) !== Boolean(packageId)) throw new Stop(EXIT.usage, "--plan and --package must be passed together");
   if (!ROLES.includes(role)) throw new Stop(EXIT.usage, `role must be one of ${ROLES.join(", ")}`);
@@ -276,7 +219,7 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
   if ((agent.runner === "t3") !== Boolean(prepare) && !dry) throw new Stop(EXIT.usage, agent.runner === "t3"
     ? `agents.${role} runs as a T3 child thread: prepare it with --prepare, start the child with the printed prompt, then \`record --ws\``
     : "--prepare is only for a role whose runner is t3");
-  argv(agent, { confined: true, cwd: ".", addDirs: [] }); // unknown runner
+  argv(agent, { confined: true, cwd: ".", addDirs: [] });
   const id = idOf(round, step);
   const record = recordOf(round, step);
   if (gitOk(cfg.records, "cat-file", "-e", `HEAD:${record}`) || existsSync(join(cfg.records, record)))
@@ -296,7 +239,7 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
   try { features = taskFeatures(task, role); } catch (e) { throw new Stop(EXIT.records, e.message); }
   const viewFiles = regularFiles(cfg.records, view);
   const viewPaths = new Set(viewFiles.map(f => f.path));
-  const missing = features.find(id => !viewPaths.has(`blueprint/${id}.md`));
+  const missing = features.find(fid => !viewPaths.has(`blueprint/${fid}.md`));
   if (missing) throw new Stop(EXIT.records, `features: ${missing} is not a regular blueprint record at view ${view.slice(0, DISPLAY_SHA_LEN)}`);
   const briefs = [cfg.briefs.shared, cfg.briefs[role]].filter(Boolean);
   if (!cfg.briefs[role]) throw new Stop(EXIT.usage, `config needs briefs.${role}`);
@@ -308,46 +251,30 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
   const commits = ["critic", "actor"].includes(role);
   if (commits && branch && cfg.protected.includes(branch)) throw new Stop(EXIT.usage, `${branch} is protected; a role works on a loop branch, the lead promotes with gated-push.mjs`);
   if (role !== "reviewer") refuseUndiagnosed(cfg, view, round);
-  let win = null;
-  if (role === "actor") {
-    win = refuseExhaustedWindow(cfg, view, viewPaths, round);
-    refuseOuterLoopOverdue(cfg, view, viewPaths, base, round, win);
-    refuseUndistilledOwnerWords(cfg, view, viewPaths, round);
+  if (HEAVY_ROLES.includes(role)) {
+    const prov = verifyProvenance({ repo: cfg.product, records: cfg.records, sha: base, cfg, mode: "base" });
+    if (!prov.ok) throw new Stop(EXIT.records, `--base ${base.slice(0, DISPLAY_SHA_LEN)} failed provenance verification: ${prov.reasons.join("; ")}`);
   }
+  if (commits) refuseUndistilledOwnerWords(cfg, view, round);
+  if (requiresPlan(role, step) && !planId)
+    throw new Stop(EXIT.records, `${role} (${step}) requires --plan PL-NNNN --package <id> (D-0060; only reviewer, judge-frame*, and judge-comments* are exempt)`);
+  const win = role === "actor" ? refuseExhaustedWindow(cfg, view, viewPaths, round) : null;
   let dispatchMeta = null;
   if (planId && packageId) {
     const check = validateDispatchCall({
-      cfg,
-      state: planSnapshot(cfg.records, view),
-      planId,
-      packageId,
-      role,
-      step,
-      round,
-      base,
-      prepared: preparedIn(cfg),
-      window: win,
+      cfg, state: planSnapshot(cfg.records, "HEAD"), planId, packageId, role, step, round, base,
+      prepared: preparedIn(cfg), window: win,
     });
     if (!check.ok) throw new Stop(EXIT.records, check.errors.join("\n"));
     dispatchMeta = { plan: planId, package: packageId, files: check.scopeFiles, peerFiles: check.peerFiles };
-  } else {
-    const overlapErr = checkLiveDispatchedOverlap({
-      cfg,
-      state: planSnapshot(cfg.records, view),
-      role,
-      round,
-      step,
-      owns: cfg.owns[role] ?? [],
-      prepared: preparedIn(cfg),
-    });
-    if (overlapErr) throw new Stop(EXIT.records, overlapErr);
   }
+  if (role === "actor") refuseOuterLoopOverdue(cfg, view, viewPaths, base, round, win, dispatchMeta?.files ?? null);
+
   const extra = recordsConfig(cfg, view);
   const extraKinds = extra.extraKinds ?? [];
   const layoutText = readFileSync(DEFAULT_LAYOUT, "utf8");
   const layout = parseLayout(layoutText, extraKinds);
 
-  // ----- the workspace -----
   mkdirSync(cfg.workDir, { recursive: true });
   const ws = mkdtempSync(join(cfg.workDir, `${pad(round)}-${step}-`));
   mkdirSync(join(ws, "out"));
@@ -381,6 +308,25 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
       }
     }
     const owns = cfg.owns[role] ?? [];
+    let suiteReceipt = null, suiteHint = null;
+    if (!dry && cfg.gates?.suite) {
+      const suiteCmd = cfg.gates.suite, suiteInstall = cfg.gates.install ?? "", suiteFormat = cfg.gates.format ?? "auto";
+      const ensureSuite = (role === "judge" && !isMetaJudge(role, step)) || (role === "critic" && Array.isArray(dispatchMeta?.files) && dispatchMeta.files.length === 0);
+      if (ensureSuite) {
+        const staged = stageSuiteWorkspace({ repo: cfg.product, sha: base, command: suiteCmd, install: suiteInstall, format: suiteFormat, ws, mode: "ensure" });
+        if (!staged.ok) throw new Stop(EXIT.gate, `pre-${role} suite gate failed on ${base.slice(0, DISPLAY_SHA_LEN)} (${(staged.reasons ?? []).join("; ")}); no ${role} model was called`);
+        const rec = staged.receipt;
+        suiteReceipt = { tree: rec.tree, sha: rec.sha, green: rec.green, summary: rec.summary, stagedPath: staged.stagedPath, command: suiteCmd };
+        suiteHint = `Host-verified ${staged.stagedPath} is staged for HEAD^{tree} ${rec.tree}; verify tree === HEAD^{tree} and do NOT re-run \`${suiteCmd}\` on unchanged wt.`;
+      } else if (commits) {
+        const staged = stageSuiteWorkspace({ repo: cfg.product, sha: base, command: suiteCmd, install: suiteInstall, format: suiteFormat, ws, mode: "lookup" });
+        if (staged.ok && staged.receipt) {
+          const rec = staged.receipt;
+          suiteReceipt = { tree: rec.tree, sha: rec.sha, green: rec.green, summary: rec.summary, stagedPath: staged.stagedPath, command: suiteCmd };
+          suiteHint = `Host-verified ${staged.stagedPath} is staged for base tree ${rec.tree}; do NOT re-run \`${suiteCmd}\` on unchanged wt.`;
+        }
+      }
+    }
     let ssotHint = null;
     if ((role === "actor" || role === "judge") && Object.hasOwn(cfg, "ssot")) {
       const status = renderSsotStatusMarkdown(cfg, { configFile: cfg.configFile, sha: base });
@@ -391,12 +337,13 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
         ssotHint = `SSOT status at ${base.slice(0, DISPLAY_SHA_LEN)}: read ssot-status.md before ${role === "actor" ? "editing" : "ruling"} (${status.summary}).`;
       }
     }
-    const text = prompt({ role, step, round, phase: cfg.phase, ws, view, base, owns, sealed: cfg.sealed, wt: agent.runner === "t3" || isArchReviewer ? wt : null, ssotHint });
+    const text = prompt({ role, step, round, phase: cfg.phase, ws, view, base, owns, sealed: cfg.sealed, wt: agent.runner === "t3" || isArchReviewer ? wt : null, ssotHint, suiteHint });
     writeFileSync(join(ws, "prompt.md"), text);
     if (dry) return { code: EXIT.done, message: `dry run: ${ws} (view ${view.slice(0, DISPLAY_SHA_LEN)}, ${holds.length} records); nothing called or recorded`, ws };
 
     const ctx = { role, round, step, phase: cfg.phase, task, features, id, record, view, briefs, base, branch, commits, extraKinds, ws, wt, owns, agent,
-      ...(dispatchMeta ? { dispatch: dispatchMeta } : {}) };
+      ...(dispatchMeta ? { dispatch: dispatchMeta } : {}),
+      ...(suiteReceipt ? { suiteReceipt } : {}) };
     if (prepare) {
       const nonce = createHash("sha256").update(`${ws}\n${now().toISOString()}\n${Math.random()}`).digest("hex").slice(0, 16);
       const childPrompt = t3Prompt({ id, nonce, wt, ws, text });
@@ -408,8 +355,8 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
       writeFileSync(join(ws, "t3-prompt.md"), childPrompt);
       writeFileSync(join(ws, "call.json"), manifest);
       keep = true;
-      return { code: EXIT.done, message: `${id} prepared for a T3 child in ${ws}; start it with t3-prompt.md, then: call.mjs <config> record --ws ${ws} --session <provider session ID>`,
-        prepared: { id, ws, wt, nonce, prompt: childPrompt, target: { provider: agent.provider, model: agent.model ?? null, effort: agent.effort ?? null } } };
+      return { code: EXIT.done, message: `${id} prepared for a T3 child in ${ws}; start it with t3-prompt.md, then: call.mjs <config> record --ws ${ws}`,
+        prepared: { id, ws, wt, nonce, prompt: childPrompt, target: { provider: agent.provider, model: agent.model ?? null, effort: agent.effort ?? null }, ...(suiteReceipt ? { suiteReceipt } : {}) } };
     }
     const confined = role === "reviewer";
     const cwd = confined ? ws : wt;
@@ -428,19 +375,15 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
       facts: { runner: agent.runner, model: agent.model ?? null, effort: agent.effort ?? null,
         observedModel: events.find(e => e.event.type === "system" && e.event.subtype === "init")?.event.model ?? null,
         costUsd: events.find(e => e.event.type === "result")?.event.total_cost_usd ?? null, seconds: Math.round((Date.now() - started) / 100) / 10 } };
-    keep = true; // finish releases the worktree only after recording the attempt.
+    keep = true;
     return finish(cfg, ctx, run, { log, now });
   } finally { cleanup(); }
 }
 
-
-/**
- * Refuse (exit 7) while the phase has an alarm at the view that no later diagnosis names (lib/diagnosis.mjs): the
- * premise behind further fixes is tested before them (SKILL.md Supervision item 2; D-0015 item 3).
- */
+// D-0015, D-0017, D-0060, design/alarm-gate.md#the-rule
 function refuseUndiagnosed(cfg, view, round) {
   let open;
-  try { open = undiagnosedAlarms(cfg.records, view, cfg.phase); }
+  try { open = undiagnosedAlarms(cfg.records, view, cfg.phase, { repo: cfg.product }); }
   catch (e) { throw new Stop(EXIT.records, `the trajectory or hand-offs at view ${view.slice(0, DISPLAY_SHA_LEN)} cannot be read for the alarm check: ${e.message}`); }
   if (!open.length) return;
   const keys = open.map(a => a.key);
@@ -457,16 +400,14 @@ function refuseUndiagnosed(cfg, view, round) {
   ].join("\n"));
 }
 
-/** Refuse (exit 7) an actor call once the active bounded horizon window has spent its budgeted actor rounds. */
+// P-0011, D-0058, design/two-loop-rhythm.md#2
 function refuseExhaustedWindow(cfg, view, viewPaths, round) {
   if (!viewPaths.has(WINDOWS)) return { mode: "normal", active: null, actorBlocked: false };
   let win;
   try {
     const windows = parseWindows(git(cfg.records, "show", `${view}:${WINDOWS}`), WINDOWS);
     const handoffs = viewHandoffs(cfg, view, viewPaths);
-    const rows = viewPaths.has(TRAJECTORY)
-      ? parseRows(git(cfg.records, "show", `${view}:${TRAJECTORY}`)).filter(r => r.phase === cfg.phase)
-      : [];
+    const rows = viewPaths.has(TRAJECTORY) ? parseRows(git(cfg.records, "show", `${view}:${TRAJECTORY}`)).filter(r => r.phase === cfg.phase) : [];
     win = windowState({ windows, handoffs, rows, phase: cfg.phase, nextRound: round });
   } catch (e) {
     throw new Stop(EXIT.records, `the windows ledger at view ${view.slice(0, DISPLAY_SHA_LEN)} cannot be read: ${e.message}`);
@@ -475,7 +416,7 @@ function refuseExhaustedWindow(cfg, view, viewPaths, round) {
   const w = win.active;
   const alarmKey = windowAlarmKey(cfg.phase, w.id);
   throw new Stop(EXIT.records, [
-    `bounded window ${w.id} in phase ${cfg.phase} exhausted its horizon (${win.usedActorRounds}/${w.horizon} actor rounds used, start ${w.startRound}, end ${win.endRound}); further actor calls are refused until the window is closed (no model was called).`,
+    `bounded window ${w.id} in phase ${cfg.phase} exhausted its horizon (${win.usedActorRounds}/${w.horizon} actor rounds used, start ${w.startRound}, end ${w.endRound}); further actor calls are refused until the window is closed (no model was called).`,
     `Verify (suite-green, CI if configured, critic, different-vendor judge) and close with:`,
     `  ${nodeCommand("window.mjs", "close", "--records", cfg.records, "--id", w.id, "--verdict", "verified", "--commit", "<integration-sha>", ...(cfg.configFile ? ["--config", cfg.configFile] : []))}`,
     `Or run reviewer-diagnosis with \`alarms: ${alarmKey}\` and close reframed with:`,
@@ -496,34 +437,39 @@ function lastOuterBaselineSha(cfg, view, viewPaths) {
   return sha && gitOk(cfg.product, "cat-file", "-e", `${sha}^{commit}`) ? sha : null;
 }
 
-/** Refuse (exit 7) an actor call when the periodic/structural outer loop exceeded its async grace cap (P-0011, D-0058). */
-function refuseOuterLoopOverdue(cfg, view, viewPaths, base, round, win) {
+function archBaselineFacts(cfg, view, viewPaths, baseline, validBase) {
+  if (!baseline || !ARCH_STEP.test(baseline.step ?? "")) return null;
+  const factsPath = (baseline.files ?? []).find(p => p.endsWith("arch-facts.json") && viewPaths.has(p));
+  if (factsPath) {
+    try { return JSON.parse(git(cfg.records, "show", `${view}:${factsPath}`)); } catch {}
+  }
+  if (validBase) {
+    try { return collectArchFacts(cfg.product, validBase); } catch {}
+  }
+  return null;
+}
+
+// P-0011, D-0058, D-0060, design/mandatory-control-plane.md#3
+function refuseOuterLoopOverdue(cfg, view, viewPaths, base, round, win, packageFiles = null) {
   if (win && (win.mode === "slack" || win.mode === "converging")) return;
   let outerCfg, handoffs, rows;
   try {
     outerCfg = outerCadenceOf(cfg);
     handoffs = viewHandoffs(cfg, view, viewPaths);
-    rows = viewPaths.has(TRAJECTORY)
-      ? parseRows(git(cfg.records, "show", `${view}:${TRAJECTORY}`)).filter(r => r.phase === cfg.phase)
-      : [];
+    rows = viewPaths.has(TRAJECTORY) ? parseRows(git(cfg.records, "show", `${view}:${TRAJECTORY}`)).filter(r => r.phase === cfg.phase) : [];
   } catch (e) {
     throw new Stop(EXIT.records, `outer-loop cadence check failed at view ${view.slice(0, DISPLAY_SHA_LEN)}: ${e.message}`);
   }
   const baseCheck = outerLoopState({ handoffs, rows, phase: cfg.phase });
   const baselineSha = baseCheck.baseline?.product?.base ?? baseCheck.baseline?.product?.commit ?? null;
   const validBase = baselineSha && gitOk(cfg.product, "cat-file", "-e", `${baselineSha}^{commit}`) ? baselineSha : null;
-  const facts = collectArchFacts(cfg.product, base, { baselineSha: validBase });
-  const archBreaches = structuralBreaches(facts);
+  const baselineFacts = archBaselineFacts(cfg, view, viewPaths, baseCheck.baseline, validBase);
+  const currentFacts = collectArchFacts(cfg.product, base, { baselineSha: validBase });
   const outer = outerLoopState({
-    handoffs,
-    rows,
-    archBreaches,
-    deliveries: outerCfg.deliveries,
-    outerGrace: outerCfg.outerGrace,
-    phase: cfg.phase,
-    targetSha: base,
+    handoffs, rows, currentFacts, baselineFacts, prepared: preparedIn(cfg), packageFiles,
+    deliveries: outerCfg.deliveries, outerGrace: outerCfg.outerGrace, phase: cfg.phase, targetSha: base,
   });
-  if (outer.status !== "hard-due") return;
+  if (!outer.blocked) return;
   const reasons = [];
   if (outer.t1Due) reasons.push(`T1 delivery cadence (${outer.deliveriesSince}/${outer.deliveries} committed deliveries, grace +${outer.outerGrace} exceeded)`);
   if (outer.t3Due) reasons.push(`T3 arch-facts breach (${outer.archBreaches.map(b => `${b.kind} ${b.path}: ${b.detail}`).join("; ")})`);
@@ -535,92 +481,17 @@ function refuseOuterLoopOverdue(cfg, view, viewPaths, base, round, win) {
   ].join("\n"));
 }
 
-/** Refuse (exit 7) an actor call when a substantive open owner word was ignored past 1-turn grace (P-0011, D-0058). */
-function refuseUndistilledOwnerWords(cfg, view, viewPaths, round) {
-  const handoffs = viewHandoffs(cfg, view, viewPaths);
-  const latestActor = handoffs.filter(h => h.role === "actor").at(-1);
-  if (!latestActor) return;
-  const actorMs = Date.parse(latestActor.time ?? "");
-  if (!Number.isFinite(actorMs)) return;
-  const ignored = openWords(cfg.records, view).filter(w => {
-    if (!isSubstantiveOwnerWord(w.text)) return false;
-    const wordMs = Date.parse(w.time ?? "");
-    return Number.isFinite(wordMs) && wordMs < actorMs;
-  });
-  if (!ignored.length) return;
+// P-0011, D-0060, design/mandatory-control-plane.md#4
+function refuseUndistilledOwnerWords(cfg, view, round) {
+  const pending = openWords(cfg.records, view).filter(w => isSubstantiveOwnerWord(w.text));
+  if (!pending.length) return;
   const prepareFlag = cfg.agents.reviewer?.runner === "t3" ? ["--prepare"] : [];
   throw new Stop(EXIT.records, [
-    `phase ${cfg.phase} has ${ignored.length} un-distilled substantive owner word(s) older than the latest actor hand-off ${latestActor.id} (1-turn grace exceeded; no model was called):`,
-    ...ignored.map(w => `  ${w.id} (${w.time}): ${w.text.replace(/\s+/g, " ").slice(0, 120)}`),
+    `phase ${cfg.phase} has ${pending.length} un-distilled substantive owner word(s) (0-turn grace; no model was called):`,
+    ...pending.map(w => `  ${w.id} (${w.time}): ${w.text.replace(/\s+/g, " ").slice(0, 120)}`),
     `Distill into purpose/decisions/design (citing each ID), mark via owner-words.mjs mark, or run:`,
     `  ${nodeCommand("call.mjs", cfg.configFile ?? "<config.json>", "reviewer", "--round", round, "--step", "reviewer-distill", "--task", "<distill task file>", ...prepareFlag)}`,
   ].join("\n"));
-}
-
-const preparationFile = (cfg, ws) => join(cfg.workDir, ".prepared", `${basename(ws)}.json`);
-const preparationScope = cfg => [canonical(cfg.records), canonical(cfg.product), cfg.phase, ...cfg.sealed.map(canonical)];
-const commonDir = repo => canonical(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"));
-
-const hasReviewerWorkspace = ws => existsSync(join(ws, "purpose")) && existsSync(join(ws, "records")) && existsSync(join(ws, "out"));
-
-function readPreparation(cfg, ws) {
-  const manifest = join(ws, "call.json");
-  if (!existsSync(manifest)) throw new Stop(EXIT.usage, `${ws} holds no call.json: it was not prepared with --prepare`);
-  const bytes = readFileSync(manifest, "utf8"), ctx = JSON.parse(bytes);
-  const expected = readFileSync(join(ws, "t3-prompt.md"), "utf8");
-  const task = readFileSync(join(ws, "task.md"), "utf8");
-  const snapshot = preparationFile(cfg, ws);
-  if (existsSync(snapshot)) {
-    const saved = JSON.parse(readFileSync(snapshot, "utf8"));
-    if (saved.manifest !== digest(bytes) || saved.task !== digest(task) || saved.prompt !== digest(expected)
-      || JSON.stringify(saved.scope) !== JSON.stringify(preparationScope(cfg)))
-      throw new Stop(EXIT.records, "the repositories, phase, or prepared files differ from the lead's preparation snapshot");
-  } else if (ctx.version !== 1 || preparedPhase(ctx, ws) !== cfg.phase || task !== ctx.task
-    || !gitOk(cfg.records, "cat-file", "-e", `${ctx.view}^{commit}`)) {
-    throw new Stop(EXIT.records, "the call has no matching preparation snapshot");
-  }
-  if (ctx.ws !== ws) throw new Stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
-  if (ctx.role === "reviewer") {
-    if (ctx.agent?.provider === "codex") throw new Stop(EXIT.records, "the frame reviewer cannot run on t3:codex");
-    if (ARCH_STEP.test(ctx.step ?? "")) {
-      if (ctx.wt !== join(ws, "wt")) throw new Stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
-      if (!existsSync(ctx.wt) || !hasReviewerWorkspace(ws))
-        throw new Stop(EXIT.failure, `the prepared workspace ${ws} is gone; prepare the call again`);
-      if (commonDir(ctx.wt) !== commonDir(cfg.product)) throw new Stop(EXIT.records, "the prepared worktree belongs to a different product repository");
-    } else {
-      if (ctx.wt !== null) throw new Stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
-      if (!hasReviewerWorkspace(ws))
-        throw new Stop(EXIT.failure, `the prepared workspace ${ws} is gone; prepare the call again`);
-    }
-  } else {
-    if (ctx.wt !== join(ws, "wt")) throw new Stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
-    if (!existsSync(ctx.wt)) throw new Stop(EXIT.failure, `the worktree ${ctx.wt} is gone; prepare the call again`);
-    if (commonDir(ctx.wt) !== commonDir(cfg.product)) throw new Stop(EXIT.records, "the prepared worktree belongs to a different product repository");
-  }
-  ctx.phase = preparedPhase(ctx, ws);
-  return { ctx, expected, binding: snapshot + ".session" };
-}
-
-export function preparedIn(cfg) {
-  if (!existsSync(cfg.workDir)) return [];
-  const found = [];
-  for (const entry of readdirSync(cfg.workDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const ws = join(cfg.workDir, entry.name);
-    const file = join(ws, "call.json");
-    if (!existsSync(file)) continue;
-    const ctx = JSON.parse(readFileSync(file, "utf8"));
-    if (![1, 2].includes(ctx.version) || ctx.ws !== ws || !ctx.nonce || !ROLES.includes(ctx.role) || !Number.isInteger(ctx.round)
-        || !/^[a-z]+(-[a-z]+)*$/.test(ctx.step) || ctx.record !== recordOf(ctx.round, ctx.step))
-      throw new Error(`${file} is not a supported prepared call`);
-    const liveWorkspace = ctx.role === "reviewer"
-      ? (ARCH_STEP.test(ctx.step)
-        ? ctx.wt === join(ws, "wt") && existsSync(ctx.wt) && hasReviewerWorkspace(ws)
-        : ctx.wt === null && hasReviewerWorkspace(ws))
-      : ctx.wt === join(ws, "wt") && existsSync(ctx.wt);
-    found.push({ ...ctx, phase: preparedPhase(ctx, ws), ws, liveWorkspace });
-  }
-  return found.sort((a, b) => a.round - b.round || a.step.localeCompare(b.step) || a.ws.localeCompare(b.ws));
 }
 
 function holdLease(fields, log) {
@@ -638,14 +509,6 @@ function holdLease(fields, log) {
     log(`screening host-load the call runs without a lease in ${loadDir()}: ${error.message}`);
     return () => {};
   }
-}
-
-function lastJudged(cfg, revision) {
-  if (!gitOk(cfg.records, "cat-file", "-e", `${revision}:${TRAJECTORY}`)) return null;
-  try {
-    return parseRows(git(cfg.records, "show", `${revision}:${TRAJECTORY}`))
-      .findLast(row => row.phase === cfg.phase && row.role === "judge" && row.commit !== "-") ?? null;
-  } catch { return null; }
 }
 
 function ownedChanges(wt, base, owns) {
@@ -667,11 +530,34 @@ function proseChanges(wt, base, paths, records) {
   }), { resolutions: commentResolutions(records) });
 }
 
+function treeAttestedInHandoffs(cfg, tree) {
+  if (!gitOk(cfg.records, "cat-file", "-e", `HEAD:${HANDOFFS}`)) return false;
+  const shas = new Set();
+  for (const h of parseHandoffs(git(cfg.records, "show", `HEAD:${HANDOFFS}`))) {
+    if (h.product?.commit) shas.add(h.product.commit);
+  }
+  for (const sha of shas) {
+    if (gitOk(cfg.product, "--no-replace-objects", "cat-file", "-e", `${sha}^{commit}`)
+      && git(cfg.product, "--no-replace-objects", "rev-parse", `${sha}^{tree}`) === tree) return true;
+  }
+  return false;
+}
+
 function moveBranch(cfg, name, from, to) {
   return gitOk(cfg.product, "update-ref", `refs/heads/${name}`, to, from);
 }
 
-/** Record a prepared T3 call using the provider session ID of the child that the lead started. */
+// D-0060, design/mandatory-control-plane.md#5
+export function cancelCall(cfg, wsDir, { reason, now = () => new Date() } = {}) {
+  try {
+    const cancelled = cancelPreparedCall({ ws: wsDir, product: cfg.product, reason, now });
+    return { code: EXIT.done, message: `${cancelled.id} cancelled (${cancelled.ws}): ${cancelled.cancelReason}`, cancelled };
+  } catch (e) {
+    if (e instanceof Stop || Number.isInteger(e?.code)) return { code: e.code, message: e.message };
+    return { code: EXIT.failure, message: String(e.stack ?? e) };
+  }
+}
+
 export function recordCall(cfg, wsDir, { transcript = null, session = null, log = () => {}, now = () => new Date() } = {}) {
   try {
     const ws = resolve(wsDir);
@@ -685,44 +571,41 @@ export function recordCall(cfg, wsDir, { transcript = null, session = null, log 
     const bound = existsSync(binding) ? readFileSync(binding, "utf8") : null;
     if (bound && session && bound !== session) throw new Stop(EXIT.records, "the call is already bound to a different provider session");
     session ??= bound;
-    const found = transcript ? [{ runner, file: resolve(transcript) }] : findTranscripts(runner, ctx.nonce, ctx.preparedAt, session);
-    if (found.length !== 1) throw new Stop(EXIT.failure, found.length
-      ? `${found.length} transcripts hold nonce ${ctx.nonce} (${found.map(f => `${f.file} [${f.session}]`).join(", ")}); pass --session and, if needed, --transcript`
-      : `no transcript holds nonce ${ctx.nonce} for the prepared ${runner} child; check the provider session ID`);
-    const t = transcriptEvents(ctx.id, found[0]);
+    const match = resolveChildSession(runner, ctx.nonce, ctx.preparedAt, session, transcript);
+    const t = transcriptEvents(ctx.id, match);
     if (t.nonAuthoritative || t.truncated)
-      throw new Stop(EXIT.records, t.refusalReason ?? `the transcript is not authoritative (${found[0].file})`);
-    if (!t.firstPrompt.includes(expected)) throw new Stop(EXIT.records, `the child's first prompt does not hold t3-prompt.md verbatim: start the child with exactly that text (${found[0].file})`);
-    if (!t.session || t.forked || session && session !== t.session)
-      throw new Stop(EXIT.records, `the transcript is not from the prepared ${runner} child session (${found[0].file})`);
-    if (!session) throw new Stop(EXIT.records, `confirm the started child's provider session ID with --session (matching transcript: ${t.session} in ${found[0].file})`);
+      throw new Stop(EXIT.records, t.refusalReason ?? `the transcript is not authoritative (${match.file})`);
+    if (!t.firstPrompt.includes(expected)) throw new Stop(EXIT.records, `the child's first prompt does not hold t3-prompt.md verbatim: start the child with exactly that text (${match.file})`);
+    if (!t.session || t.forked || (session && session !== t.session))
+      throw new Stop(EXIT.records, `the transcript is not from the prepared ${runner} child session (${match.file})`);
+    const resolvedSession = session ?? match.session ?? t.session;
     if (!bound) {
       mkdirSync(dirname(binding), { recursive: true, mode: 0o700 });
-      try { writeFileSync(binding, session, { mode: 0o600, flag: "wx" }); }
-      catch (error) { if (error.code !== "EEXIST" || readFileSync(binding, "utf8") !== session) throw error; }
+      try { writeFileSync(binding, resolvedSession, { mode: 0o600, flag: "wx" }); }
+      catch (error) { if (error.code !== "EEXIST" || readFileSync(binding, "utf8") !== resolvedSession) throw error; }
     }
     if (t.status === "pending") throw new Stop(EXIT.failure, `the child's transcript has no terminal event yet; its ${ctx.wt ? "worktree" : "workspace"} is still available`);
     const run = { status: t.status === "failed" ? 1 : 0, error: null, log: t.text, events: t.events, cwd: t.cwd ?? ctx.wt ?? null,
-      facts: { runner: `t3:${runner}`, session, model: ctx.agent.model ?? null, effort: ctx.agent.effort ?? null,
+      facts: { runner: `t3:${runner}`, session: resolvedSession, model: ctx.agent.model ?? null, effort: ctx.agent.effort ?? null,
         observedModel: t.observedModel, ...(t.observedModels ? { observedModels: t.observedModels } : {}),
         costUsd: null, seconds: t.seconds } };
-    log(`${ctx.id}: recording the T3 child's transcript ${found[0].file}`);
+    log(`${ctx.id}: recording the T3 child's transcript ${match.file}`);
     return finish(cfg, ctx, run, { log, now });
   } catch (e) {
-    if (e instanceof Stop) return { code: e.code, message: e.message };
+    if (e instanceof Stop || Number.isInteger(e?.code)) return { code: e.code, message: e.message };
     return { code: EXIT.failure, message: String(e.stack ?? e) };
   }
 }
 
-/** The rest of a call once its agent has run: audit, evidence, hand-off. `run` = { status, error, log, events, cwd, facts }. */
 function finish(cfg, ctx, run, { log, now }) {
-  const { role, round, step, phase = cfg.phase, task, features, id, record, view, briefs, base, branch, commits, extraKinds, ws, wt, owns, agent, dispatch = null } = ctx;
+  const { role, round, step, phase = cfg.phase, task, features, id, record, view, briefs, base, branch, commits, extraKinds, ws, wt, owns, agent, dispatch = null, suiteReceipt = null } = ctx;
   const confined = role === "reviewer";
   const isArchReviewer = confined && ARCH_STEP.test(step);
   const layoutText = readFileSync(DEFAULT_LAYOUT, "utf8");
   const visible = confined ? (isArchReviewer && wt ? [ws, wt] : [ws]) : [ws, wt, ...(role === "judge" ? cfg.sealed : [])];
-  const audit = auditAccess(visible, run.events,
-    confined ? { cwd: run.cwd } : { tools: null, cwd: run.cwd, forbidden: role === "judge" ? [cfg.records] : [cfg.records, ...cfg.sealed] });
+  const audit = auditAccess(visible, run.events, confined
+    ? { cwd: run.cwd }
+    : { tools: null, cwd: run.cwd, forbidden: role === "judge" ? [cfg.records] : [cfg.records, ...cfg.sealed], stagedSuiteCommand: suiteReceipt?.command ?? null });
   const summary = { violations: audit.violations.length, denied: audit.denied.length, flags: audit.flags.length, unrecognized: audit.unrecognized };
   const reportFile = join(ws, "out", "report.md");
   const report = existsSync(reportFile) ? readFileSync(reportFile, "utf8") : "";
@@ -766,8 +649,12 @@ function finish(cfg, ctx, run, { log, now }) {
           retry ? `Nothing was committed; the worktree ${wt} is kept: ${prose.some(p => p.status === "pending") ? "obtain the independent resolution described above" : "move the prose into records or design and leave a pointer"}, then run ${nodeCommand("call.mjs", cfg.configFile ?? "<config.json>", "record", "--ws", ws)} again`
             : "Nothing was committed to the product; call the role again with the rule in its task"].join("\n")];
       } else {
-        const done = commitOwned(wt, base, owned, `${cfg.commitPrefix ?? "self-loop"}: ${id}`);
-        Object.assign(product, { commit: done.commit, outside: done.outside.slice(0, 50) });
+        const committed = commitOwned(wt, base, owned, `${cfg.commitPrefix ?? "self-loop"}: ${id}`);
+        Object.assign(product, { commit: committed.commit, outside: committed.outside.slice(0, 50) });
+        if (committed.commit !== base) {
+          const committedTree = git(cfg.product, "--no-replace-objects", "rev-parse", `${committed.commit}^{tree}`);
+          if (!treeAttestedInHandoffs(cfg, committedTree)) purgeTreeReceipts(cfg.product, committedTree);
+        }
       }
     }
   } else if (!failure && wt) Object.assign(product, { headMoved: git(wt, "rev-parse", "HEAD") !== base, changes: changedPaths(wt).slice(0, 50) });
@@ -790,6 +677,7 @@ function finish(cfg, ctx, run, { log, now }) {
       put(`${tag}.log.gz`, gzipSync(run.log));
       if (prose.length) put(`${tag}-comments.json`, `${JSON.stringify({ id, role, attempt, base, prose }, null, 1)}\n`);
       put(`${tag}-audit.json`, `${JSON.stringify({ id, role, attempt, exit: run.status, agent: agentFacts, ...audit }, null, 1)}\n`);
+      if (isArchReviewer && existsSync(join(ws, "arch-facts.json"))) put(`${tag}-arch-facts.json`, readFileSync(join(ws, "arch-facts.json")));
       for (const [path, bytes] of outputs) put(`${tag}/out/${path}`, bytes);
       let handoff;
       const designConflicts = [];
@@ -858,10 +746,12 @@ function finish(cfg, ctx, run, { log, now }) {
         : `${integration} moved meanwhile, so it was not moved (the commit is ${product.commit})`);
     }
   }
-  if (commits) {
-    const judged = lastJudged(cfg, done.commit);
-    if (judged && gitOk(cfg.product, "cat-file", "-e", `${judged.commit}^{commit}`) && !gitOk(cfg.product, "merge-base", "--is-ancestor", judged.commit, base))
-      log(`warning: the base ${base} does not descend from the last judged commit ${judged.commit} (round ${judged.round}); the hand-off is recorded and ${cfg.branch ?? "the integration branch"} keeps the judged line (next lists the commit until it is merged)`);
+  const manifest = join(ws, "call.json");
+  if (existsSync(manifest)) {
+    try {
+      const saved = JSON.parse(readFileSync(manifest, "utf8"));
+      writeFileSync(manifest, `${JSON.stringify({ ...saved, recorded: true, recordedAt: now().toISOString() }, null, 1)}\n`);
+    } catch {}
   }
   removeWorktree(cfg, wt);
   return { code: EXIT.done, message: `${id} recorded in records ${done.commit.slice(0, DISPLAY_SHA_LEN)}${moved.map(m => `; ${m}`).join("")}`, handoff, ws };
@@ -879,6 +769,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (role === "record") {
       if (!configPath || !args.ws) throw new Stop(EXIT.usage, "node call.mjs <config.json> record --ws <prepared workspace> [--session <provider session ID>] [--transcript <file>]");
       result = recordCall(load(configPath), args.ws, { transcript: args.transcript || null, session: args.session || null, log: m => console.error(m) });
+    } else if (role === "cancel") {
+      if (!configPath || !args.ws || !args.reason) throw new Stop(EXIT.usage, "node call.mjs <config.json> cancel --ws <prepared workspace> --reason <text>");
+      result = cancelCall(load(configPath), args.ws, { reason: args.reason });
     } else {
       if (!configPath || !role || !args.round || !args.task) throw new Stop(EXIT.usage, "node call.mjs <config.json> <role> --round N --task <file> [--step s] [--view rev] [--base rev] [--plan PL-NNNN --package id] [--dry-run | --prepare]");
       if (!existsSync(args.task)) throw new Stop(EXIT.usage, `--task ${args.task} does not exist`);
@@ -886,9 +779,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         view: args.view || "HEAD", base: args.base || undefined, dry: "dry-run" in args, prepare: "prepare" in args,
         plan: "plan" in args ? args.plan : null, package: "package" in args ? args.package : null }, { log: m => console.error(m) });
     }
-  } catch (e) { result = { code: e instanceof Stop ? e.code : EXIT.failure, message: e.message }; }
+  } catch (e) { result = { code: e instanceof Stop || Number.isInteger(e?.code) ? e.code : EXIT.failure, message: e.message }; }
   if (result.prepared) console.log(JSON.stringify(result.prepared));
   if (result.handoff) console.log(JSON.stringify(result.handoff));
+  if (result.cancelled) console.log(JSON.stringify(result.cancelled));
   console.error(result.message);
   process.exitCode = result.code;
 }

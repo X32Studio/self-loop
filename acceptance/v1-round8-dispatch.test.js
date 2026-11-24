@@ -75,20 +75,26 @@ function fixture(t) {
     "D-0028": "Run the round-seven packages in parallel", "D-0030": "Build the generative engine now",
     "D-0031": "Grill by one dependency-ordered owner batch", "D-0032": "Continue settled work through cadence",
   })) {
-    put(p.records, `decisions/${id}.md`, `# ${id} ${title}\n\nstatus: active\n`);
+    put(p.records, `decisions/${id}.md`, `# ${id} ${title}\n\nid: ${id}\nby: owner\nstatus: active\n`);
   }
   for (const [id, title] of Object.entries({
     "F-0011": "Generative engine", "F-0012": "Planning and dispatch",
   })) {
     put(p.records, `blueprint/${id}.md`, `# ${id} ${title}\n\nid: ${id}\nphase: v1\nrequirements: P-0001\n`);
   }
+  put(p.records, "metrics/windows.jsonl", jsonl({
+    type: "open", id: "W-0001", phase: "v1", startRound: 1, horizon: 12,
+    goal: "v1 round-8 dispatch fixture", invariants: ["acceptance passes"], openedAt: shift(now, -60_000), openedBy: "lead",
+  }));
   function checkAndCommit(message, at = now) {
     w.git(p.records, "add", "-A");
     status(w.run("records-check.mjs", ["--repo", p.records, "--write"], { at }), 0);
     return w.commit(p.records, message, at);
   }
   checkAndCommit("Record authorized dispatch inputs", shift(now, -60_000));
+  let lastPlanId = null;
   const plan = (packages, { id = "PL-0001", at = now, commit = true, ...options } = {}) => {
+    if (commit) lastPlanId = id;
     for (const item of packages) put(p.workDir, `tasks/${item.handoff}.md`, taskText(item));
     const file = put(p.records, `plans/${id}.md`, planRecord(id, packages, options));
     if (commit) checkAndCommit(`Publish ${id}`, at);
@@ -104,24 +110,27 @@ function fixture(t) {
     assert.ok(packages && typeof packages === "object", json(data));
     return new Map(Array.isArray(packages) ? packages.map(row => [row.id, row]) : Object.entries(packages));
   };
-  const prepare = (item, { at = now, row = null } = {}) => {
+  const prepare = (item, { at = now, row = null, planId = lastPlanId } = {}) => {
     if (row) {
       const command = row.command ?? row.prepare;
       const args = Array.isArray(command) ? command.join(" ") : command;
       assert.equal(typeof args, "string", json(row));
       assert.match(args, /\bcall\.mjs\b.*(?:^|\s)--prepare(?:\s|$)/);
       assert.ok(args.includes(p.config), args);
+      const extra = planId && !args.includes("--plan") ? ` --plan ${planId} --package ${item.id}` : "";
       const options = { cwd: p.records, at, extraEnv: w.extraEnv };
-      const result = Array.isArray(command) ? w.runSuggested(command.map(arg => "'" + arg.replaceAll("'", "'\\''") + "'").join(" "), options)
-        : w.runSuggested(command, options);
+      const result = Array.isArray(command)
+        ? w.runSuggested([...command, ...(planId && !command.includes("--plan") ? ["--plan", planId, "--package", item.id] : [])].map(arg => "'" + arg.replaceAll("'", "'\\''") + "'").join(" "), options)
+        : w.runSuggested(command + extra, options);
       const prepared = jsonOutput(result);
       assert.equal(prepared.id, item.handoff);
       return prepared;
     }
     const [, round, step] = /^R-(\d+)-(.+)$/.exec(item.handoff);
     const task = put(p.workDir, `tasks/${item.handoff}.md`, taskText(item));
+    const planArgs = planId && !/^judge-frame(?:-[a-z]+)*$/.test(step) ? ["--plan", planId, "--package", item.id] : [];
     return jsonOutput(w.run("call.mjs", [p.config, item.role, "--round", String(Number(round)), "--step", step,
-      "--task", task, "--prepare"], { at }));
+      ...planArgs, "--task", task, "--prepare"], { at }));
   };
   function record(item, prepared, { start = now, end = start, at = end, terminal = "complete", publicReport = null } = {}) {
     const { ws, wt, id, prompt } = prepared;
@@ -239,7 +248,7 @@ test("R8-D1-04 fresh · flow: lead validates a plan referencing an authority sti
   const x = fixture(t);
   const actor = pkg("actor-b", { authority: "D-0099", needs: ["D-0031"], files: actorFiles.b });
   const decision = "decisions/D-0099.md";
-  put(x.p.records, decision, "# D-0099 Settle the delegated owner decisions work\n\nstatus: active\n");
+  put(x.p.records, decision, "# D-0099 Settle the delegated owner decisions work\n\nid: D-0099\nby: owner\nstatus: active\n");
   x.w.git(x.p.records, "add", "--", decision);
   refusal(x.validate([actor]), /D-0099/);
   x.checkAndCommit("Publish owner decision D-0099");
@@ -250,10 +259,10 @@ test("R8-D1-04 fresh · flow: lead validates a plan referencing an authority sti
 test("R8-D2-01 ordered · flow: lead runs the normal prepare commands for a round-seven six-call wave under measured headroom · loss: false-verdict", t => {
   const x = fixture(t);
   const wave = shuffled(Object.keys(launchClocks).map(id => pkg(id, {
-    round: 7, authority: "D-0028",
+    round: 8, authority: "D-0028",
     files: roundSevenPaths[id],
   })), 702);
-  x.plan(wave, { round: 7 });
+  x.plan(wave, { round: 8 });
   const before = untouched(x);
   const ready = x.ready();
   states(ready, Object.fromEntries(wave.map(p => [p.id, "ready"])));

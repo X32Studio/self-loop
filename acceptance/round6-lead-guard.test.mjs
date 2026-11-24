@@ -84,22 +84,23 @@ test("R6-C-G05 the edited checkout's index decides whether an ignored file is tr
   allow(edit(linked, file));
 });
 
-test("R6-C-G06 allow paths and role workspaces still pass", t => {
+test("R6-C-G06 allow paths and workspace tasks pass while child worktrees deny", t => {
   const { w, product, workspaces, edit } = setup(t, { "PROJECT.md": "# Project\n" });
   const actor = join(workspaces, "actor", "wt");
-  put(workspaces, "actor/task.md", "Implement accepted changes.\n");
+  put(workspaces, "tasks/R-0001-actor.md", "Implement accepted changes.\n");
   w.git(product, "worktree", "add", "-q", "--detach", actor);
   allow(edit(product, "guide/new.md", "Write"));
   allow(edit(product, "PROJECT.md"));
-  allow(edit(actor, "src/main.js"));
+  allow(edit(workspaces, "tasks/R-0001-actor.md", "Write"));
+  deny(edit(actor, "src/main.js"), "inside workspace root");
   deny(edit(product, "guide-extra/new.md", "Write"), "guide-extra/new.md");
   deny(edit(product, "src/main.js"), "src/main.js");
 });
 
-test("R6-C-G07 direct push denial and fail-open hook input are preserved", t => {
+test("R6-C-G07 direct push denial and fail-closed malformed hook input", t => {
   const { guard } = setup(t);
   const bash = command => guard(JSON.stringify({ tool_name: "Bash", tool_input: { command } }));
   deny(bash("git push origin loop/v1"), "direct git push");
   allow(bash("git status"));
-  allow(guard("{truncated"));
+  deny(guard("{truncated"), "malformed hook JSON");
 });

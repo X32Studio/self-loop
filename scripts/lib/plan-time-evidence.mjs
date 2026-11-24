@@ -1,4 +1,4 @@
-// F-0012; design/time-model.md; cc91f1d admitted positive evidence A1–A5.
+// F-0012
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
@@ -213,7 +213,7 @@ function scopeClaim(row, r, observations) {
   const b = row.value, c = b.claim, cut = r.cut(r.q.records, b.basedOn);
   need(object(c) && Array.isArray(c.criteria) && c.criteria.length && Array.isArray(c.deferred), 'invalid scope claim');
   const plan = parsePlan(r.ref(b.planRef, 'public', b.basedOn).toString());
-  need(!validatePlan(plan, { ...cut, files: new Set(cut.files.keys()) }).length, 'invalid execution plan/contract');
+  need(!validatePlan(plan, { ...cut, files: new Set(cut.files.keys()), read: p => (cut.files.has(p) ? cut.read(p) : '') }).length, 'invalid execution plan/contract');
   const root = parsePlan(r.ref(b.rootRef, 'public', b.basedOn).toString());
   need(root.id === root.time?.rootPlan && root.scope === plan.scope && root.phase === plan.phase, 'invalid baseline root');
   need(!git(r.q.records,'log','--format=%H','--diff-filter=MDT',r.q.revision,'--',b.rootRef.path).toString().trim(), 'immutable baseline modified or deleted');
@@ -513,7 +513,7 @@ export function evaluateTimeEvidence({ stateAtQ, plan, forecastHistory, historic
           const event = bindings.find(e => e.value.type === 'event' && e.value.claim?.event === 'handoff-completed' && good(e) && ancestor(r.q.records, e.first, o.outlook.basedOn) && utc(e.value.claim.at) <= utc(o.outlook.asOf) && e.value.claim.subjectRef.repository === r.q.records && e.value.claim.subjectRef.path === h[0].record && hash(cut.bytes(h[0].record)) === e.value.claim.subjectRef.sha256);
           if (event) out.historicalDoneByObservation[o.ref.path].push(p.id);
         }
-      } catch { /* design/time-model.md: unknown historical completion is never zero remaining. */ }
+      } catch {}
       const descends = (candidate, target, seen = new Set()) => {
         if (seen.has(identity(candidate.ref))) return false; seen.add(identity(candidate.ref));
         return (candidate.parents ?? []).some(ref => identity(ref) === identity(target.ref) || observations.some(parent => identity(parent.ref) === identity(ref) && descends(parent, target, seen)));

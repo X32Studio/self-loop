@@ -1,4 +1,4 @@
-// self-loop-records@bd8a1ad:evidence/0012/admitted-time-budget/contracts.json
+// D-0060
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
@@ -8,6 +8,33 @@ import { loadPlan } from '../../scripts/lib/plan.mjs';
 import { measurePlan } from '../../scripts/lib/plan-measures.mjs';
 const eta = (p, low, high) => {assert.equal(p.forecast.earliestAt,low === null ? null : h(low));assert.equal(p.forecast.latestAt,high === null ? null : h(high));};
 const screened = p => {assert.equal(p.forecast.latestAt,null);assert.ok(p.findings.length || p.forecast.unknowns.length || p.forecast.staleReasons.length,'invalid input must explain uncertainty');};
+
+function syntheticHandoffEvent(f, id, hour) {
+  const author = 'SyntheticIndependentObserver', requestId = 'synthetic-completion-observation';
+  const role = 'time-observer', selector = '# Synthetic archival root';
+  f.put('decisions/D-0002.md', `${selector}\nby: owner\nSynthetic trusted archive for acceptance only; no physical clock or production event proof.\n${author} ${role} ${requestId} event-attest PL-0001 handoff-completed ${id}\n`);
+  f.commit('Synthetic independent event assignment', hour);
+  const authorizationRef = f.ref('decisions/D-0002.md');
+  const basedOn = f.git('rev-parse', 'HEAD'), planRef = f.ref('plans/PL-0001.md');
+  const subjectRef = f.ref(`rounds/0001-actor-${id}.md`);
+  const claim = { event: 'handoff-completed', subjectRef, at: h(hour), basisRefs: [subjectRef] };
+  const context = { rootRef: planRef, planRef, basedOn };
+  const source = json({ author, role, requestId, ...context, claim });
+  const platform = json({ status: 'completed', latestTerminalStatus: 'completed', hasPendingChildRuns: false,
+    taskId: requestId, childThreadId: author, childRunId: 'synthetic-run', latestTerminalRunId: 'synthetic-run' });
+  const archive = 'evidence/0012/synthetic-completion';
+  f.put(`${archive}/source.json`, source);
+  f.put(`${archive}/platform.json`, platform);
+  f.put(`${archive}/archive-hashes.json`, json({ 'source.json': digest(source), 'platform.json': digest(platform) }));
+  f.commit('Synthetic independent completion archive', hour);
+  const binding = json({ schema: 'plan-time-binding/v1', type: 'event', ...context, claim,
+    sourceRef: f.ref(`${archive}/source.json`), authorizationRef, authorizationSelector: selector,
+    provenanceRefs: [f.ref(`${archive}/platform.json`), f.ref(`${archive}/archive-hashes.json`)], supersedes: [] });
+  const path = `evidence/0012/time-binding/TB-${digest(binding)}.json`;
+  f.put(path, binding);
+  f.commit('Synthetic authorized completion event before forecast', hour);
+  return f.ref(path);
+}
 
 test('budget: 24h, half, due-now, signed overrun, clock anomaly and unspecified deadline',async t=>{
   const f=fixture(t); f.publish(f.observation());
@@ -19,6 +46,7 @@ test('budget: 24h, half, due-now, signed overrun, clock anomaly and unspecified 
 test('historical: frozen h0 operands survive h6 completion and process restart',async t=>{
   const f=fixture(t),first=f.publish(f.observation());eta(await project(f,0),7,9);
   f.done('a',6);const before=await project(f,6);eta(before,7,9);assert.equal(before.forecast.stale,true);assert.ok(before.progress.completedHandoffs.length);
+  syntheticHandoffEvent(f,'a',6);
   const second=f.observation({asOf:6,parents:[first],checkpoint:12});f.publish(second);eta(await project(f,6),8,9);
   const c=f.cli('plan.mjs',['measure','--records',f.records,'--plan','PL-0001','--now',h(6),'--json']);assert.equal(c.status,0,c.stderr);eta(JSON.parse(c.stdout).time,8,9);
   const again=f.cli('plan.mjs',['measure','--records',f.records,'--plan','PL-0001','--now',h(6),'--json']);assert.deepEqual(JSON.parse(again.stdout),JSON.parse(c.stdout));

@@ -1,4 +1,4 @@
-// evidence/0010/continuation-response/contracts.json@d66cdb5; evidence/0010/continuation-grok/ruling.json@b694377
+// D-0060
 import assert from 'node:assert/strict';
 import nodeTest from 'node:test';
 const modelOnly = process.env.CT_PROFILE === 'model';
@@ -66,8 +66,8 @@ function canonical(f, id = f.planId ?? 'PL-0001') {
 
 function fixture(t, { scope = 'A/s1', external = false, review = false } = {}) {
   const f = mechanisms(t);
-  put(f.p.records, 'decisions/D-0001.md', '# D-0001\nAuthorize only ready and secure fixture goals.\n');
-  put(f.p.records, 'decisions/D-0002.md', '# D-0002\nAuthorize final review only; implementation is not authorized.\n');
+  put(f.p.records, 'decisions/D-0001.md', '# D-0001\nid: D-0001\nby: owner\nstatus: active\nAuthorize only ready and secure fixture goals.\n');
+  put(f.p.records, 'decisions/D-0002.md', '# D-0002\nid: D-0002\nby: owner\nstatus: active\nAuthorize final review only; implementation is not authorized.\n');
   const declaration = JSON.parse(readFileSync(join(f.p.records, 'records.json'), 'utf8'));
   declaration.extraKinds.push({ kind: 'Continuation delivery', path: ledger, changes: 'append-only', settlesOwnerWords: false });
   declaration.extraKinds.push({ kind: 'Delegation', path: 'delegations/T-NNNN.md', changes: 'append-only' });
@@ -492,7 +492,6 @@ fs.writeFileSync(${JSON.stringify(hit)},'published');process.kill(process.ppid,'
   await assert.rejects(enter(f,b,{}, {CT_CRASH:'1'})); assert.ok(existsSync(hit));
   assert.notEqual(snapshot(f.p.records).revision,before);
   const c=consumed(f), bytes=snapshot(f.p.records).read(ledger);
-  // contracts.json@d66cdb5: successful CAS is durability; automatic stale index-lock repair is not promised.
   const again=await enter(f,b); assert.equal(again.consumeRowId,null);
   assert.equal(snapshot(f.p.records).read(ledger),bytes); assert.equal(consumed(f).rowId,c.rowId);
   assert.equal(typed(f,'intent').length,0); assert.equal(typed(f,'send-receipt').length,0);
@@ -541,7 +540,6 @@ test('NORMAL_ATTEMPT_BINDING: actual preparation nonce is referenced, wrong nonc
   assert.equal(refused.obligationId,null); assert.match(refused.unknowns.join(' '),/nonce/);
 });
 
-// contracts.json@d66cdb5; CT_PROFILE=model node --test acceptance/continuation.test.mjs
 const freshCell=()=>({terminal:0,claim:-1,intent:false,dead:false,count:0,ordinal:0});
 const initialModel=()=>({products:[0,1].map(()=>({generation:0,done:false,cells:[freshCell(),freshCell()]}))});
 const alphabet=[0,1].flatMap(p=>[0,1].flatMap(g=>[

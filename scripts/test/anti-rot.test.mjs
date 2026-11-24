@@ -229,7 +229,7 @@ test("8. regex quotes, template expressions, comments, string test fixtures, and
     sourceFiles: [{
       path: "src/lex.mjs",
       text: [
-        "// legacy comment and /Users/bob/projects should be ignored",
+        "// legacy comment and /Users/alice/projects should be ignored",
         "const QUOTE_RE = /['\"`]/; export const legacySameLine = 1;",
         "const TICK_RE = /`/;",
         "export function afterRegex() { return QUOTE_RE.test('a') && TICK_RE.test('b'); }",
@@ -259,6 +259,7 @@ test("8. regex quotes, template expressions, comments, string test fixtures, and
     testFiles: [
       { path: "scripts/test/anti-rot.test.mjs", text: readFileSync(new URL("./anti-rot.test.mjs", import.meta.url), "utf8") },
       { path: "scripts/test/arch-facts.test.mjs", text: readFileSync(new URL("./arch-facts.test.mjs", import.meta.url), "utf8") },
+      { path: "scripts/test/cadence-delta.test.mjs", text: readFileSync(new URL("./cadence-delta.test.mjs", import.meta.url), "utf8") },
     ],
   });
   assert.deepEqual(selfRes.compatRemnants, []);
