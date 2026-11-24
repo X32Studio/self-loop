@@ -10,6 +10,7 @@
 // node self-loop.mjs stall [--hours N] [--config <loop.json> | --all] [--now <ISO time>] [--json] [--owner-store <dir>]
 // node self-loop.mjs tick  [--hours N] [--now <ISO time>] [--json] [--owner-store <dir>]
 // node self-loop.mjs ssot  [check|attest] [--config <loop.json>] ... (see scripts/ssot-check.mjs)
+// node self-loop.mjs window open|status|close --records <dir> ... (see scripts/window.mjs)
 // node self-loop.mjs heartbeat install|uninstall [--dry-run] [--platform launchd|cron] [--release <dir>] [--owner-store <dir>]
 // node self-loop.mjs registry init [--roots <dir>,...] | add --name <name> --records <dir> [--aliases a,b] | list [--json]
 //
@@ -33,9 +34,10 @@ import { continuationText, parentEntryInput, reconcileParentEntry, startReport, 
 import { stallThreshold, tick, tickText } from "./lib/tick.mjs";
 import { cliClock, nextLines, recordsOf, stallState } from "./loop.mjs";
 import { main as runSsot } from "./ssot-check.mjs";
+import { main as runWindow } from "./window.mjs";
 
 const skill = join(dirname(fileURLToPath(import.meta.url)), "..");
-const USAGE = "self-loop.mjs init|start|next|stall|tick|ssot|heartbeat|hooks|registry ... (see the header of scripts/self-loop.mjs)";
+const USAGE = "self-loop.mjs init|start|next|stall|tick|ssot|window|heartbeat|hooks|registry ... (see the header of scripts/self-loop.mjs)";
 
 function hoursOf(args) {
   if (!("hours" in args)) return null;
@@ -331,6 +333,7 @@ export function main(argv, { env = process.env, cwd = process.cwd() } = {}) {
     return report.findings.length ? 2 : 0;
   }
   if (command === "ssot") return runSsot(argv.slice(1), { env, cwd });
+  if (command === "window") return runWindow(argv.slice(1), { env, cwd });
   if (command === "heartbeat") return runHeartbeat(args, env);
   if (command === "hooks") return runHooks(args, env, cwd);
   if (command === "registry") return runRegistry(args, env);

@@ -11,8 +11,9 @@ import { HEAVY_ROLES, load, normalize, preparedIn, Stop } from "./call.mjs";
 import { ANSWERS, batchesFrom } from "./decisions.mjs";
 import { ALARMS, currentStall, parseAlarms } from "./lib/alarms.mjs";
 import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
+import { collectArchFacts, structuralBreaches } from "./lib/arch-facts.mjs";
 import { FEATURE_EVENTS, inspectBlueprint } from "./lib/blueprint.mjs";
-import { advancingAction, cadenceLines, cadenceOf, cadenceState, dueReason, JUDGE_FRAME_STEP } from "./lib/cadence.mjs";
+import { advancingAction, ARCH_STEP, cadenceLines, cadenceOf, cadenceState, dueReason, JUDGE_FRAME_STEP, outerCadenceOf, outerLoopLines, outerLoopState } from "./lib/cadence.mjs";
 import { ciGreen, fullSha, judgeAccepted, receiptProblem } from "./lib/ci.mjs";
 import { gatesOf } from "./lib/ci-receipt.mjs";
 import { command, env, evidencePrefix, gatherCommand, node, shell } from "./lib/commands.mjs";
@@ -20,7 +21,7 @@ import { proseInTree } from "./lib/comments.mjs";
 import { firings, undiagnosedAlarms } from "./lib/diagnosis.mjs";
 import { blobs, git, gitOk, regularFiles, run } from "./lib/git-plumbing.mjs";
 import { HANDOFFS, hasPhaseFrame, idOf, parseHandoffs } from "./lib/handoff.mjs";
-import { MARKS, WORDS } from "./lib/owner-words.mjs";
+import { isSubstantiveOwnerWord, MARKS, WORDS } from "./lib/owner-words.mjs";
 import { hostLine } from "./lib/host.mjs";
 import { phaseMetrics, waitingText } from "./lib/owner-metrics.mjs";
 import { admitAcrossPlans, isIdle, LEAD_STEPS, planContext, plansFrom, readyPlan, snapshot, validatePlan } from "./lib/plan.mjs";
@@ -30,6 +31,7 @@ import { ssotNextSummary } from "./lib/ssot.mjs";
 import { stallThreshold } from "./lib/thresholds.mjs";
 import { tipCovers } from "./lib/tip.mjs";
 import { independenceModel, modelVendor } from "./lib/vendor.mjs";
+import { hasWindowDiagnosis, parseWindows, WINDOWS, windowState } from "./lib/window.mjs";
 import { check, openWords, RUNGS } from "./records-check.mjs";
 import { alarms, parseRows, TRAJECTORY } from "./trajectory.mjs";
 import { reconcileReleases } from "./version-gate.mjs";
@@ -38,7 +40,7 @@ const pad = n => String(n).padStart(4, "0");
 /** Records paths that may hold a gate receipt (suite-green.mjs). */
 const evidenceJson = path => path.startsWith("evidence/") && path.endsWith(".json");
 const relevant = path => /^(blueprint|decisions|owner|purpose|rounds)\/.*\.md$/.test(path) || /^sealed\/judge\/\d+\/judge(?:-[a-z]+)*-\d+\.md$/.test(path) || evidenceJson(path)
-  || [ALARMS, ANSWERS, FEATURE_EVENTS, HANDOFFS, TRAJECTORY, "loop.json", "records.json"].includes(path);
+  || [ALARMS, ANSWERS, FEATURE_EVENTS, HANDOFFS, TRAJECTORY, WINDOWS, "loop.json", "records.json"].includes(path);
 
 /** The committed records the views read, from the records HEAD. */
 export function recordsOf(cfg, at = "HEAD") {
@@ -51,7 +53,7 @@ export function recordsOf(cfg, at = "HEAD") {
   const blueprint = inspectBlueprint(cfg.records, { files, read, product: { product: cfg.product, tip: cfg.branch } });
   const features = [...blueprint.features.values()].filter(f => f.phase === cfg.phase).map(f => ({ ...f, event: blueprint.latest.get(f.id) }));
   return { revision, files, read, blueprint, features, building: features.filter(f => f.event?.status === "building"),
-    handoffs: parseHandoffs(read(HANDOFFS)), rows: parseRows(read(TRAJECTORY)),
+    handoffs: parseHandoffs(read(HANDOFFS)), rows: parseRows(read(TRAJECTORY)), windows: parseWindows(read(WINDOWS), WINDOWS),
     batches: batchesFrom(files, read).filter(b => b.phase === cfg.phase) };
 }
 
@@ -159,9 +161,10 @@ export function integrationOf(cfg, state, handoffs, rows) {
   return { ...result, sha, source, tips, relation };
 }
 
-function convergence({ words, state, rows, cfg, target, integration, ci, suite, frame, ruling, judges, actors, pending, openAlarms, checkRecords, prose, cadence, ssot }) {
+function convergence({ words, state, rows, cfg, target, integration, ci, suite, frame, ruling, judges, actors, pending, openAlarms, checkRecords, prose, cadence, ssot, win }) {
   const reasons = [];
   if (!frame) reasons.push(`phase frame (${HANDOFFS})`);
+  if (win?.active) reasons.push(`open bounded window ${win.active.id} (${win.mode}) must be closed before phase convergence (${WINDOWS})`);
   if (cadence.state.due) reasons.push(`${dueReason(cadence)} (${TRAJECTORY}, ${HANDOFFS})`);
   if (pending.length) reasons.push("unrecorded prepared work (call.json)");
   if (words.length) reasons.push(`open words (${WORDS}, ${MARKS})`);
@@ -536,15 +539,36 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
     if (HEAVY_ROLES.includes(role) && full) return [waiting];
     if (role === "judge" && !target) return ["Waiting on the merge of the diverged heads: the judge runs on one integration SHA."];
     const task = join(cfg.workDir, "tasks", `${idOf(at, step)}.md`);
-    const base = role === "judge" ? ["--base", target] : [];
+    const base = role === "judge" || (role === "reviewer" && ARCH_STEP.test(step) && target) ? ["--base", target] : [];
     const mode = step === role ? [] : ["--step", step];
     const prepare = cfg.agents[role]?.runner === "t3" ? ["--prepare"] : [];
     return [`Write task ${task} before calling. Include features: (IDs or none for the reviewer).`,
       node("call.mjs", config, role, "--round", at, ...mode, ...base, "--task", task, ...prepare)];
   };
   const setting = cadenceOf(cfg);
+  const outerSetting = outerCadenceOf(cfg);
   const cadence = { ...setting, state: cadenceState({ handoffs, rows, adversarial: setting.adversarial, nextRound: round,
     prepared: pending.filter(p => p.phase === phase) }) };
+  const outerBase = outerLoopState({ handoffs, rows, phase });
+  const archBaseSha = outerBase.baseline?.product?.base ?? outerBase.baseline?.product?.commit ?? null;
+  const validArchBase = archBaseSha && gitOk(product, "cat-file", "-e", `${archBaseSha}^{commit}`) ? archBaseSha : null;
+  let archBreaches = [];
+  if (target) {
+    try {
+      const facts = collectArchFacts(product, target, { baselineSha: validArchBase });
+      archBreaches = structuralBreaches(facts);
+    } catch { /* unreadable product tree stays empty */ }
+  }
+  const outer = outerLoopState({
+    handoffs,
+    rows,
+    archBreaches,
+    deliveries: outerSetting.deliveries,
+    outerGrace: outerSetting.outerGrace,
+    phase,
+    targetSha: target,
+  });
+  const win = windowState({ windows: state.windows ?? parseWindows(state.read(WINDOWS), WINDOWS), handoffs, rows, phase, nextRound: round });
   const reconciled = state.files.some(path => /^plans\/PL-\d{4}\.md$/.test(path)) ? reconcilePlans(records, state.revision, phase, { host, base: target, now: clock.now }) : null;
   let metrics = null, metricsProblem = null;
   try { metrics = phaseMetrics(records, phase, { revision: state.revision, falseAlarms: false }); } catch (error) { metricsProblem = error.message; }
@@ -574,6 +598,11 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
     : `Prose comments not counted: ${prose.problem}`);
   lines.push(...measuresLines({ metrics, problem: metricsProblem, reconciled, cadence, ...clock }));
   lines.push(...cadenceLines(cadence, `${TRAJECTORY}, ${HANDOFFS}`));
+  lines.push(...outerLoopLines(outer));
+  if (win.active) {
+    lines.push(`Window: ${win.active.id} (${win.mode} · ${win.usedActorRounds}/${win.active.horizon} actor rounds · end round ${win.endRound}) · goal: ${win.active.goal} (${WINDOWS})`,
+      `  Invariants: ${win.active.invariants.join("; ")}`);
+  }
   let openAlarms = null, alarmGateError = null;
   try { openAlarms = undiagnosedAlarms(records, state.revision, phase); }
   catch (error) { alarmGateError = error; }
@@ -620,6 +649,23 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
     const { title, steps } = advancingAction(cadence, callFor);
     action(title, `${TRAJECTORY}, ${HANDOFFS}, loop.json, D-0032`, ...steps);
   }
+  if (outer.status === "async-due") {
+    const triggers = [...(outer.t1Due ? ["T1"] : []), ...(outer.t3Due ? ["T3"] : [])].join("/");
+    action(
+      `Outer loop due asynchronously (${triggers}): run read-only reviewer-architecture in parallel on ${target ?? branchHead}; in-flight inner-loop work may finish; hard-blocks new actor after ${outer.graceRemaining} more deliveries`,
+      `${HANDOFFS}, lib/cadence.mjs, lib/arch-facts.mjs`,
+      ...outer.archBreaches.map(b => `Structural breach (${b.kind}): ${b.path} (${b.detail})`),
+      ...callFor("reviewer", "reviewer-architecture", round),
+    );
+  } else if (outer.status === "hard-due") {
+    const triggers = [...(outer.t1Due ? ["T1"] : []), ...(outer.t3Due ? ["T3"] : [])].join("/");
+    action(
+      `Outer loop hard-due (${triggers}): new actor calls are mechanically blocked (exit 7) until reviewer-architecture commits`,
+      `${HANDOFFS}, lib/cadence.mjs, lib/arch-facts.mjs`,
+      ...outer.archBreaches.map(b => `Structural breach (${b.kind}): ${b.path} (${b.detail})`),
+      ...callFor("reviewer", "reviewer-architecture", round),
+    );
+  }
   for (const p of pending)
     action(`unrecorded prepared workspace ${p.id}${p.phase ? "" : " (phase unverified)"}`, join(p.ws, "call.json"),
       "Record after the child has finished. Use its provider-native session ID.",
@@ -641,10 +687,15 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
     const { title, steps } = dispositionAction(metrics);
     action(title, "interventions/, RECORDS.md", ...steps);
   }
+  const substantiveWords = words.filter(w => isSubstantiveOwnerWord(w.text));
   if (words.length)
     action(`${words.length} open owner words`, `${WORDS}, ${MARKS}`,
       owner, "Cite each distilled word in a record or mark it with a reason.",
-      node("owner-words.mjs", "mark", "--records", records, "--id", words[0].id) + " --as " + env("MARK_AS", "set routine or not-owner") + " --note " + env("MARK_REASON", "set the reason"));
+      node("owner-words.mjs", "mark", "--records", records, "--id", words[0].id) + " --as " + env("MARK_AS", "set routine or not-owner") + " --note " + env("MARK_REASON", "set the reason"),
+      ...(substantiveWords.length ? [
+        `${substantiveWords.length} substantive open owner word(s) (${substantiveWords.map(w => w.id).join(", ")}): run async reviewer-distill to distill verbatim words into purpose/decisions/design with first-principles derivation and generalization (blocks further actor calls after 1-turn grace):`,
+        ...callFor("reviewer", "reviewer-distill", round),
+      ] : []));
   if (!frame) action("no phase frame", HANDOFFS, ...callFor("reviewer", "reviewer-frame"));
 
   const unclassified = state.features.filter(f => !f.event);
@@ -654,7 +705,23 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
         env("FEATURE_STATUS", "choose the recorded status") + " --by lead --note " + env("FEATURE_NOTE", "explain the status")));
   const named = new Set(pending.filter(p => p.phase === phase).flatMap(p => p.features ?? []));
   const idle = state.building.filter(f => !named.has(f.id));
-  if (idle.length)
+  if (win.mode === "slack") {
+    action(
+      `bounded window ${win.active.id} (slack: ${win.usedActorRounds}/${win.active.horizon} actor rounds used, ${win.remainingSlack} slack round(s) remaining before convergence round ${win.endRound})`,
+      WINDOWS,
+      `Goal: ${win.active.goal}`,
+      `Invariants for close: ${win.active.invariants.join("; ")}`,
+      "Intermediate critic, suite-green, CI and judge checks are deferred during slack rounds. Run the next actor refactoring round:",
+      ...callFor("actor", "actor", round));
+  } else if (win.mode === "converging") {
+    action(
+      `bounded window ${win.active.id} (converging: final actor round ${win.endRound}, ${win.usedActorRounds}/${win.active.horizon} actor rounds used)`,
+      WINDOWS,
+      `Goal: ${win.active.goal}`,
+      `Invariants for close: ${win.active.invariants.join("; ")}`,
+      `Round ${win.endRound} is the final budgeted round of ${win.active.id}; bring the tree to green completeness for mandatory critic, judge, suite-green and CI verification:`,
+      ...callFor("actor", "actor", round));
+  } else if (idle.length)
     action(`building features without a recorded running call: ${idle.map(f => f.id).join(", ")}`, `${FEATURE_EVENTS}, prepared call.json`,
       ...(cadence.state.due ? [`The advancing round ${cadence.state.next.round} above runs alongside: prepare a critic here only for a feature whose direction is settled and whose area is not under review (D-0032 item 1).`] : []),
       "Check live calls before starting work. Prepare the next critic task for the selected features.",
@@ -706,10 +773,28 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
     }
   }
   if (!target) action("the suite, CI and judge wait on the merge of the diverged heads", integrationSource);
-  else {
+  else if (win.mode !== "slack" && win.mode !== "converging") {
     if (!suite) action("no suite-green receipt for the integration head", "suite-green.mjs, evidence/", full ? waiting : gates.suite);
     if (!ci?.ok) action(`CI not green on the integration head: ${ciDetail}`, `next's own reading on ${ciSha} (${ciSource}), loop.json`, ciGather);
     if (!ruling && !judges.some(h => covers(h.product?.base))) action("no judge ruling on the integration head", `${HANDOFFS}, ${TRAJECTORY}`, ...callFor("judge"));
+  }
+  if (win.mode === "gate-due") {
+    action(
+      `bounded window ${win.active.id} gate due (${win.usedActorRounds}/${win.active.horizon} actor rounds spent; further actor calls are mechanically refused until closed)`,
+      WINDOWS,
+      `Goal: ${win.active.goal}`,
+      `Invariants: ${win.active.invariants.join("; ")}`,
+      "Complete mandatory verification (suite-green, CI if configured, critic, different-vendor judge) and close the window:",
+      node("window.mjs", "close", "--records", records, "--id", win.active.id, "--verdict", "verified", "--commit", target ?? "<integration-sha>", "--config", config));
+  }
+  if (win.alarm && !hasWindowDiagnosis({ records, revision: state.revision, handoffs, read: state.read, files: managed, phase, open: win.active })) {
+    action(
+      `window horizon alarm needs diagnosis: ${win.alarm.key}`,
+      `${WINDOWS}, ${TRAJECTORY}`,
+      win.alarm.message,
+      `Put this line in the diagnosis task: alarms: ${win.alarm.key}`,
+      ...callFor("reviewer", "reviewer-diagnosis"),
+      node("window.mjs", "close", "--records", records, "--id", win.active.id, "--verdict", "reframed"));
   }
   for (const h of judges) {
     const sha = h.product?.base;
@@ -738,7 +823,7 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
   const ssot = Object.hasOwn(cfg, "ssot") && target ? ssotNextSummary(cfg, resolve(config), target) : null;
   if (ssot?.action) action(ssot.action.title, "loop.json (ssot), ssot-check.mjs", ...ssot.action.steps);
 
-  const reasons = convergence({ words, state, rows, cfg, target, integration, ci, suite, frame, ruling, judges, actors, pending, openAlarms, checkRecords: stateCheck, prose, cadence, ssot });
+  const reasons = convergence({ words, state, rows, cfg, target, integration, ci, suite, frame, ruling, judges, actors, pending, openAlarms, checkRecords: stateCheck, prose, cadence, ssot, win });
   if (stallError) lines.splice(header, 0, "", `- the alarm ledger cannot be read: ${stallError.message} [${ALARMS}]`, `  ${node("records-check.mjs", "--repo", records)}`);
   if (stalled)
     lines.splice(header, 0, "", `- stall alarm raised ${stalled.time}: no recorded phase activity since ${stalled.since} (${stalled.source}) [${ALARMS}]`,
@@ -759,6 +844,7 @@ export function lastActivity(cfg, state) {
     ...state.handoffs.filter(h => h.phase === cfg.phase).map(h => ({ time: h.time, source: `${HANDOFFS} (${h.id})` })),
     ...state.rows.filter(r => r.phase === cfg.phase && knownRuling(r)).map(r => ({ time: r.time, source: `${TRAJECTORY} (round ${r.round})` })),
     ...state.batches.flatMap(b => b.answers.map(a => ({ time: a.time, source: `${ANSWERS} (${b.id})` }))),
+    ...(state.windows ?? []).filter(w => w.phase === cfg.phase).map(w => ({ time: w.type === "open" ? w.openedAt : w.closedAt, source: `${WINDOWS} (${w.id} ${w.type})` })),
   ];
   return activities.filter(a => Number.isFinite(Date.parse(a.time))).reduce((latest, a) =>
     !latest || Date.parse(a.time) > Date.parse(latest.time) ? a : latest, null)

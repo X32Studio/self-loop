@@ -1,8 +1,10 @@
 // D-0032, D-0030, design/generative-engine-b.md#the-cadence
 import { UsageError } from "./args.mjs";
 
-export const CADENCE_DEFAULTS = Object.freeze({ adversarial: 3 });
+export const CADENCE_DEFAULTS = Object.freeze({ adversarial: 3, deliveries: 4, outerGrace: 2 });
 export const FRAME_STEP = /^reviewer-frame(?:-[a-z]+)*$/;
+export const ARCH_STEP = /^reviewer-architecture(?:-[a-z]+)*$/;
+export const DISTILL_STEP = /^reviewer-distill(?:-[a-z]+)*$/;
 export const JUDGE_FRAME_STEP = /^judge-frame(?:-[a-z]+)*$/;
 export const PHASE_FRAME_STEP = "reviewer-frame";
 // design/generative-engine-b.md#the-advancing-round
@@ -20,7 +22,7 @@ const isFrameStep = step => FRAME_STEP.test(step) || JUDGE_FRAME_STEP.test(step)
 
 export function cadenceOf(cfg) {
   const where = cfg.configFile ?? "loop.json";
-  if (!("cadence" in cfg) || cfg.cadence === undefined) return { ...CADENCE_DEFAULTS, source: "default" };
+  if (!("cadence" in cfg) || cfg.cadence === undefined) return { adversarial: CADENCE_DEFAULTS.adversarial, source: "default" };
   const given = cfg.cadence;
   if (!given || typeof given !== "object" || Array.isArray(given))
     throw new UsageError(`${where}: cadence must be an object such as {"adversarial": ${CADENCE_DEFAULTS.adversarial}}, got ${JSON.stringify(given)}`);
@@ -28,7 +30,26 @@ export function cadenceOf(cfg) {
   if (unknown.length) throw new UsageError(`${where}: cadence takes only ${Object.keys(CADENCE_DEFAULTS).join(", ")}, got ${unknown.join(", ")}`);
   if ("adversarial" in given && !(Number.isInteger(given.adversarial) && given.adversarial >= 1))
     throw new UsageError(`${where}: cadence.adversarial must be a positive whole number, got ${JSON.stringify(given.adversarial)}`);
-  return "adversarial" in given ? { adversarial: given.adversarial, source: "loop.json" } : { ...CADENCE_DEFAULTS, source: "default" };
+  if ("deliveries" in given && !(Number.isInteger(given.deliveries) && given.deliveries >= 1))
+    throw new UsageError(`${where}: cadence.deliveries must be a positive whole number, got ${JSON.stringify(given.deliveries)}`);
+  if ("outerGrace" in given && !(Number.isInteger(given.outerGrace) && given.outerGrace >= 0))
+    throw new UsageError(`${where}: cadence.outerGrace must be a non-negative whole number, got ${JSON.stringify(given.outerGrace)}`);
+  const hasAny = "adversarial" in given || "deliveries" in given || "outerGrace" in given;
+  const out = { adversarial: given.adversarial ?? CADENCE_DEFAULTS.adversarial, source: hasAny ? "loop.json" : "default" };
+  if ("deliveries" in given) out.deliveries = given.deliveries;
+  if ("outerGrace" in given) out.outerGrace = given.outerGrace;
+  return out;
+}
+
+/** Resolve outer-loop delivery cadence and grace settings with defaults (P-0011, D-0058). */
+export function outerCadenceOf(cfg) {
+  cadenceOf(cfg);
+  const given = cfg.cadence ?? {};
+  return {
+    deliveries: given.deliveries ?? CADENCE_DEFAULTS.deliveries,
+    outerGrace: given.outerGrace ?? CADENCE_DEFAULTS.outerGrace,
+    source: "deliveries" in given || "outerGrace" in given ? "loop.json" : "default",
+  };
 }
 
 function stepsByRound(entries) {
@@ -128,4 +149,83 @@ export function advancingAction(cadence, callFor) {
       ...calls.flatMap(c => c.state === "due" ? [`${c.name} (${c.step}):`, ...callFor(c.role, c.step, round).map(line => `  ${line}`)]
         : [`${c.name} (${c.step}): ${status[c.state](c)}`])],
   };
+}
+
+const isOuterBaseline = step => FRAME_STEP.test(step) || ARCH_STEP.test(step) || JUDGE_FRAME_STEP.test(step);
+
+/** Asynchronous periodic outer-loop state over committed deliveries and deterministic arch breaches (P-0011, D-0058). */
+export function outerLoopState({
+  handoffs = [],
+  rows = [],
+  archBreaches = [],
+  deliveries = CADENCE_DEFAULTS.deliveries,
+  outerGrace = CADENCE_DEFAULTS.outerGrace,
+  phase = null,
+  targetSha = null,
+} = {}) {
+  const scoped = phase ? handoffs.filter(h => h.phase === phase) : handoffs;
+  let baseline = null;
+  let baselineIdx = -1;
+  for (let i = 0; i < scoped.length; i++) {
+    const h = scoped[i];
+    if (!isOuterBaseline(h.step)) continue;
+    if (!baseline
+        || h.round > baseline.round
+        || (h.round === baseline.round && (String(h.time ?? "").localeCompare(String(baseline.time ?? "")) >= 0))) {
+      baseline = h;
+      baselineIdx = i;
+    }
+  }
+  const afterBaseline = baseline
+    ? scoped.filter((h, i) => h.round > baseline.round || (h.round === baseline.round && i > baselineIdx))
+    : scoped;
+  const actorRounds = [...new Set(afterBaseline.filter(h => h.role === "actor").map(h => h.round))].sort(numeric);
+  const deliveriesSince = actorRounds.length;
+  const reviewedExactTarget = Boolean(
+    baseline && ARCH_STEP.test(baseline.step) && targetSha
+    && baseline.product?.base === targetSha && deliveriesSince === 0,
+  );
+  const effectiveBreaches = reviewedExactTarget ? [] : archBreaches;
+  const t1Due = deliveriesSince >= deliveries;
+  const t3Due = effectiveBreaches.length > 0;
+  const triggered = t1Due || t3Due;
+  const graceExceeded = (t1Due && deliveriesSince >= deliveries + outerGrace)
+    || (t3Due && deliveriesSince >= outerGrace);
+  const status = !triggered ? "ok" : graceExceeded ? "hard-due" : "async-due";
+  const graceRemaining = !triggered
+    ? outerGrace
+    : Math.max(0, Math.min(
+      t1Due ? (deliveries + outerGrace) - deliveriesSince : Infinity,
+      t3Due ? outerGrace - deliveriesSince : Infinity,
+    ));
+  return {
+    status,
+    triggered,
+    t1Due,
+    t3Due,
+    deliveriesSince,
+    deliveries,
+    outerGrace,
+    graceRemaining,
+    baseline,
+    actorRounds,
+    archBreaches: effectiveBreaches,
+  };
+}
+
+/** Human-readable header lines for outerLoopState in `loop.mjs next`. */
+export function outerLoopLines(outer) {
+  const baseLabel = outer.baseline ? outer.baseline.id : "phase start";
+  const triggers = [...(outer.t1Due ? ["T1"] : []), ...(outer.t3Due ? ["T3"] : [])].join("+");
+  if (!outer.triggered) {
+    return [`Outer loop: ok · ${outer.deliveriesSince}/${outer.deliveries} committed deliveries since ${baseLabel} (grace +${outer.outerGrace})`];
+  }
+  const tail = outer.status === "hard-due"
+    ? `grace (${outer.outerGrace}) exceeded; new actor calls blocked (exit 7)`
+    : `${outer.graceRemaining} delivery(ies) before hard-block`;
+  const lines = [`Outer loop: ${outer.status} (${triggers}) · ${outer.deliveriesSince}/${outer.deliveries} committed deliveries since ${baseLabel} · ${tail}`];
+  for (const b of outer.archBreaches.slice(0, 5)) {
+    lines.push(`  T3 ${b.kind}: ${b.path} (${b.detail})`);
+  }
+  return lines;
 }

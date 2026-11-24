@@ -37,6 +37,7 @@ temporary directories) never lives in the records repository and is never cited.
 | Hand-offs | `metrics/handoffs.jsonl` | `call.mjs`, one line per successful role call | append-only | line, by its record ID |
 | Trajectory | `metrics/trajectory.jsonl` | lead (`trajectory.mjs append`), one row per ruling: area, verdict, blockers opened, closed, shelved and carried, the CI word and receipt of the append's own reading, and the pushed tip when it is a VERSION-only descendant of the ruled commit | append-only | line, by round |
 | Alarms | `metrics/alarms.jsonl` | `self-loop.mjs tick`, through the records commit helper: one line per stall (one idle period), with the action taken | append-only | line, by its key |
+| Windows | `metrics/windows.jsonl` | `window.mjs open|close`, through the records commit helper: bounded horizon windows (`open` and `close` events for multi-round refactoring) | append-only | line, by `W-NNNN` |
 | SSOT sync | `metrics/ssot-sync.jsonl` | `ssot-check.mjs attest`, one line per authority doc sync or no-contract-change attestation | append-only | line, by entry ID |
 | Continuation delivery | `metrics/continuations.jsonl` | continuation-store.mjs | append-only | records commit + row ID |
 | Owner batches | `owner/B-NNNN.md` | `decisions.mjs send`, from validated questions only | immutable | `B-NNNN` |
@@ -238,11 +239,14 @@ entry reports missing binding/identity and the unavailable independent wake edge
 no local reconciliation; this ledger makes no autonomous recovery guarantee.
 
 A hand-off line (JSON, `scripts/lib/handoff.mjs`): its record ID, time, phase, round, step (the role, or the role and a
-mode such as `reviewer-frame`), the attempt number, the agent (runner, configured and observed model, cost, seconds),
+mode such as `reviewer-frame`, `reviewer-architecture`, or `reviewer-distill`), the attempt number, the agent (runner, configured and observed model, cost, seconds),
 the view commit the role read, the briefs, the task's digest, the product commit it started from and the one it produced,
 the exit code, the audit counts, the feature IDs, the public record and every file of the hand-off. It states facts about one call and
 carries no verdict. The committed `reviewer-frame` hand-off and its round record establish that the
-generative engine ran for that phase. Other reviewer modes cannot supply the phase frame. A line exists only for a call with no access violation, committed together with every file it names.
+generative engine ran for that phase. Other reviewer modes cannot supply the phase frame. A `reviewer-architecture` hand-off
+records `product: { base, commit: base }` (zero product commit), receives read-only `arch-facts.json` + detached product worktree under
+strict `FILE_TOOLS` confinement, resets the outer-loop `T1`/`T3` cadence counter, and supplies the baseline SHA for subsequent
+`arch-facts` growth and churn checks. A line exists only for a call with no access violation, committed together with every file it names.
 A row of the trajectory is the lead's account of a ruling (area, verdict, blockers `class:id`, suite counts, the commit)
 and the append's own CI reading; the supervision alarms read it. When the lead pushed a commit raising `VERSION` on top
 of the ruled commit (D-0009 item 2), the row's `tip` names the pushed SHA and `commit` stays the ruled one. The loop is
@@ -307,6 +311,18 @@ An alarm line (`metrics/alarms.jsonl`, written by `self-loop.mjs tick` through t
 period is one line however often the heartbeat runs; a later intervention record can cite the key to show the loop
 raised the stall first. The first line also regenerates the index in the same commit. An alarm stays live while its key
 is the phase and the last recorded activity; `start` and `next` show only live alarms and never write one.
+
+A bounded horizon window ledger (`metrics/windows.jsonl`, written by `window.mjs open|close` through the records commit
+helper) holds append-only `open` and `close` events:
+`{ "type": "open", "id": "W-NNNN", "phase", "startRound", "horizon", "goal", "invariants", "openedAt", "openedBy" }`
+(`horizon` in `2..12`, sequential `W-NNNN` IDs, at most one open window per phase) and
+`{ "type": "close", "id": "W-NNNN", "phase", "closedAt", "closedBy", "commit", "verdict": "verified" | "reframed", "suiteReceipt"?, "ciReceipt"?, "note"? }`.
+A `verified` close is accepted only from committed records: a `CONVERGED` judge ruling in `metrics/trajectory.jsonl`
+covering `commit` with passing suite count (`[1-9]\d*/0`), independent judge/actor vendor and model (`metrics/handoffs.jsonl`),
+a committed green `suite-green` receipt on `commit`, and a committed green CI receipt when `gates.require` is configured.
+A `reframed` close requires a committed post-open `reviewer-diagnosis` hand-off in the same phase citing
+`window-horizon:<phase>:<id>` on its `alarms:` line. `records-check.mjs` fails closed on any malformed, non-sequential,
+overlapping, or dangling window line.
 
 An intent batch (`owner/B-NNNN.md`, D-0031) carries `kind: intent` and `requirement: P-NNNN` beside its `phase:` and
 `from:` headers. `decisions.mjs send` derives the allowance of one intent batch and one follow-up per requirement and
@@ -407,6 +423,10 @@ as `n/a`; without a phase hand-off no word enters the window. Screening lists un
 From 2026-11-21, purpose records put `words: W-xxxxxxxxxx[, ...]` in the dated header. A named ID must exist
 in the word log. The checker screens for a missing source line and for each open word. The owner-words command
 checks committed records and their configuration. The records checker also sees staged records for review.
+Capture and transcript sync deterministically ignore T3/harness orchestration envelopes (`Delegated task node:delegated-task:`,
+`[T3 Code: the agent in T3 thread`, `<CONTEXT_SUMMARY>`, `<SYSTEM_MESSAGE>`). Substantive open owner words
+(`isSubstantiveOwnerWord`) trigger an async `reviewer-distill` action in `next` and block further `actor` calls (`exit 7`)
+once ignored past 1-turn grace (timestamp strictly earlier than the latest committed `actor` hand-off of the phase).
 Legacy declarations of native kinds in `extraKinds` keep their existing index presentation until the lead removes
 them and regenerates the index.
 

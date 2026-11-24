@@ -54,17 +54,21 @@ import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import "./lib/unbind-git.mjs";
 import { auditAccess, canonical, eventsOf, FILE_TOOLS } from "./audit-access.mjs";
+import { collectArchFacts, structuralBreaches } from "./lib/arch-facts.mjs";
 import { addedProse, commentResolutions } from "./lib/comments.mjs";
 import { blobs, git, gitOk, regularFiles, writeFiles } from "./lib/git-plumbing.mjs";
 import { appendJsonLines, commitRecords, RecordsConflict } from "./lib/records-commit.mjs";
 import { findTranscripts, preparedPhase, t3Prompt, transcriptEvents } from "./lib/t3-child.mjs";
 import { taskFeatures } from "./lib/blueprint.mjs";
 import { parseArgs } from "./lib/args.mjs";
+import { ARCH_STEP, outerCadenceOf, outerLoopState } from "./lib/cadence.mjs";
 import { node as nodeCommand } from "./lib/commands.mjs";
 import { undiagnosedAlarms } from "./lib/diagnosis.mjs";
 import { HANDOFFS, hasPhaseFrame, idOf, parseHandoffs, recordOf, ROLES, validateHandoff } from "./lib/handoff.mjs";
+import { isSubstantiveOwnerWord } from "./lib/owner-words.mjs";
 import { DISPLAY_SHA_LEN, renderSsotStatusMarkdown } from "./lib/ssot.mjs";
-import { classify, DEFAULT_LAYOUT, inspect, isPublicKind, parseLayout, renderIndex } from "./records-check.mjs";
+import { parseWindows, windowAlarmKey, WINDOWS, windowState } from "./lib/window.mjs";
+import { classify, DEFAULT_LAYOUT, inspect, isPublicKind, openWords, parseLayout, renderIndex } from "./records-check.mjs";
 import { parseRows, TRAJECTORY } from "./trajectory.mjs";
 
 export const EXIT = { done: 0, failure: 1, violation: 6, records: 7, usage: 64 };
@@ -164,13 +168,17 @@ export function argv(agent, { confined, cwd, addDirs }) {
   throw new Stop(EXIT.usage, `unknown runner ${agent.runner} (claude, codex, t3 or cmd)`);
 }
 
-function prompt({ role, round, phase, ws, view, base, owns, sealed, wt = null, ssotHint = null }) {
+function prompt({ role, step = role, round, phase, ws, view, base, owns, sealed, wt = null, ssotHint = null }) {
+  const isArchReviewer = role === "reviewer" && ARCH_STEP.test(step);
   return [
     `You are the ${role} of a self-loop, round ${round}, phase ${phase}. Your working folder is ${ws}.`,
     "Read brief-shared.md, brief.md and task.md there first and follow them. records/ is a read-only view of the loop's records at commit " +
       `${view}; read records/INDEX.md before anything else in it. Write only under out/.`,
-    role === "reviewer" ? "Only the files in your working folder exist for this task; purpose/ holds the product's purpose documents."
-      : `The product worktree is ${wt ?? "your current directory"}, detached at ${base}. Write only: ${owns.join(", ") || "(nothing in the product)"}. Do not commit; your owned paths are committed for you.`,
+    isArchReviewer
+      ? `Read-only product worktree is ${wt ?? join(ws, "wt")}, detached at ${base}. Deterministic whole-repo metrics are in arch-facts.json. purpose/ holds the product's purpose documents. File tools only; never modify the product worktree.`
+      : role === "reviewer"
+        ? "Only the files in your working folder exist for this task; purpose/ holds the product's purpose documents."
+        : `The product worktree is ${wt ?? "your current directory"}, detached at ${base}. Write only: ${owns.join(", ") || "(nothing in the product)"}. Do not commit; your owned paths are committed for you.`,
     "Write your report to out/report.md. Questions only the owner can decide go to out/decisions.json (see your brief).",
     role === "judge" ? "out/report.md is your full ruling and stays private to you and the lead. out/public.md is the only part the other roles read: properties broken, blockers by class and id, to-do lists; never held-out content, names or paths." : "",
     role === "judge" && sealed.length ? `Held-out cases (yours alone): ${sealed.join(", ")}.` : "",
@@ -295,6 +303,11 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
   const commits = ["critic", "actor"].includes(role);
   if (commits && branch && cfg.protected.includes(branch)) throw new Stop(EXIT.usage, `${branch} is protected; a role works on a loop branch, the lead promotes with gated-push.mjs`);
   if (role !== "reviewer") refuseUndiagnosed(cfg, view, round);
+  if (role === "actor") {
+    const win = refuseExhaustedWindow(cfg, view, viewPaths, round);
+    refuseOuterLoopOverdue(cfg, view, viewPaths, base, round, win);
+    refuseUndistilledOwnerWords(cfg, view, viewPaths, round);
+  }
   const extra = recordsConfig(cfg, view);
   const extraKinds = extra.extraKinds ?? [];
   const layoutText = readFileSync(DEFAULT_LAYOUT, "utf8");
@@ -308,6 +321,7 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
   writeFileSync(join(ws, "brief-shared.md"), cfg.briefs.shared ? git(cfg.records, "show", `${view}:${cfg.briefs.shared}`) : "");
   writeFileSync(join(ws, "brief.md"), git(cfg.records, "show", `${view}:${cfg.briefs[role]}`));
   writeFileSync(join(ws, "task.md"), task);
+  const isArchReviewer = role === "reviewer" && ARCH_STEP.test(step);
   let wt = null, keep = false;
   const cleanup = () => { if (!keep) removeWorktree(cfg, wt); };
   try {
@@ -315,6 +329,15 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
       const purpose = regularFiles(cfg.product, base).filter(f => cfg.purpose.some(p => f.path === p || f.path.startsWith(`${p.replace(/\/$/, "")}/`)));
       mkdirSync(join(ws, "purpose"), { recursive: true });
       writeFiles(join(ws, "purpose"), purpose, blobs(cfg.product, purpose.map(f => f.sha)));
+      if (isArchReviewer) {
+        wt = join(ws, "wt");
+        git(cfg.product, "worktree", "add", "-q", "--detach", wt, base);
+        const baselineSha = lastOuterBaselineSha(cfg, view, viewPaths);
+        const facts = collectArchFacts(cfg.product, base, { baselineSha });
+        const factsFile = join(ws, "arch-facts.json");
+        writeFileSync(factsFile, `${JSON.stringify({ ...facts, breaches: structuralBreaches(facts) }, null, 2)}\n`);
+        chmodSync(factsFile, 0o444);
+      }
     } else {
       wt = join(ws, "wt");
       git(cfg.product, "worktree", "add", "-q", "--detach", wt, base);
@@ -334,7 +357,7 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
         ssotHint = `SSOT status at ${base.slice(0, DISPLAY_SHA_LEN)}: read ssot-status.md before ${role === "actor" ? "editing" : "ruling"} (${status.summary}).`;
       }
     }
-    const text = prompt({ role, round, phase: cfg.phase, ws, view, base, owns, sealed: cfg.sealed, wt: agent.runner === "t3" ? wt : null, ssotHint });
+    const text = prompt({ role, step, round, phase: cfg.phase, ws, view, base, owns, sealed: cfg.sealed, wt: agent.runner === "t3" || isArchReviewer ? wt : null, ssotHint });
     writeFileSync(join(ws, "prompt.md"), text);
     if (dry) return { code: EXIT.done, message: `dry run: ${ws} (view ${view.slice(0, DISPLAY_SHA_LEN)}, ${holds.length} records); nothing called or recorded`, ws };
 
@@ -355,7 +378,7 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
     }
     const confined = role === "reviewer";
     const cwd = confined ? ws : wt;
-    const addDirs = confined ? [] : [ws, ...(role === "judge" ? cfg.sealed : [])];
+    const addDirs = confined ? (isArchReviewer && wt ? [wt] : []) : [ws, ...(role === "judge" ? cfg.sealed : [])];
     const [command, args] = argv(agent, { confined, cwd, addDirs });
     log(`${id}: ${role} (${agent.runner}${agent.model ? ` ${agent.model}` : ""})`);
     const started = Date.now();
@@ -399,6 +422,106 @@ function refuseUndiagnosed(cfg, view, round) {
   ].join("\n"));
 }
 
+/** Refuse (exit 7) an actor call once the active bounded horizon window has spent its budgeted actor rounds. */
+function refuseExhaustedWindow(cfg, view, viewPaths, round) {
+  if (!viewPaths.has(WINDOWS)) return { mode: "normal", active: null, actorBlocked: false };
+  let win;
+  try {
+    const windows = parseWindows(git(cfg.records, "show", `${view}:${WINDOWS}`), WINDOWS);
+    const handoffs = viewHandoffs(cfg, view, viewPaths);
+    const rows = viewPaths.has(TRAJECTORY)
+      ? parseRows(git(cfg.records, "show", `${view}:${TRAJECTORY}`)).filter(r => r.phase === cfg.phase)
+      : [];
+    win = windowState({ windows, handoffs, rows, phase: cfg.phase, nextRound: round });
+  } catch (e) {
+    throw new Stop(EXIT.records, `the windows ledger at view ${view.slice(0, DISPLAY_SHA_LEN)} cannot be read: ${e.message}`);
+  }
+  if (!win.actorBlocked) return win;
+  const w = win.active;
+  const alarmKey = windowAlarmKey(cfg.phase, w.id);
+  throw new Stop(EXIT.records, [
+    `bounded window ${w.id} in phase ${cfg.phase} exhausted its horizon (${win.usedActorRounds}/${w.horizon} actor rounds used, start ${w.startRound}, end ${win.endRound}); further actor calls are refused until the window is closed (no model was called).`,
+    `Verify (suite-green, CI if configured, critic, different-vendor judge) and close with:`,
+    `  ${nodeCommand("window.mjs", "close", "--records", cfg.records, "--id", w.id, "--verdict", "verified", "--commit", "<integration-sha>", ...(cfg.configFile ? ["--config", cfg.configFile] : []))}`,
+    `Or run reviewer-diagnosis with \`alarms: ${alarmKey}\` and close reframed with:`,
+    `  ${nodeCommand("window.mjs", "close", "--records", cfg.records, "--id", w.id, "--verdict", "reframed")}`,
+  ].join("\n"));
+}
+
+function viewHandoffs(cfg, view, viewPaths) {
+  return viewPaths.has(HANDOFFS)
+    ? parseHandoffs(git(cfg.records, "show", `${view}:${HANDOFFS}`)).filter(h => h.phase === cfg.phase && viewPaths.has(h.record))
+    : [];
+}
+
+function lastOuterBaselineSha(cfg, view, viewPaths) {
+  const handoffs = viewHandoffs(cfg, view, viewPaths);
+  const { baseline } = outerLoopState({ handoffs, phase: cfg.phase });
+  const sha = baseline?.product?.base ?? baseline?.product?.commit ?? null;
+  return sha && gitOk(cfg.product, "cat-file", "-e", `${sha}^{commit}`) ? sha : null;
+}
+
+/** Refuse (exit 7) an actor call when the periodic/structural outer loop exceeded its async grace cap (P-0011, D-0058). */
+function refuseOuterLoopOverdue(cfg, view, viewPaths, base, round, win) {
+  if (win && (win.mode === "slack" || win.mode === "converging")) return;
+  let outerCfg, handoffs, rows;
+  try {
+    outerCfg = outerCadenceOf(cfg);
+    handoffs = viewHandoffs(cfg, view, viewPaths);
+    rows = viewPaths.has(TRAJECTORY)
+      ? parseRows(git(cfg.records, "show", `${view}:${TRAJECTORY}`)).filter(r => r.phase === cfg.phase)
+      : [];
+  } catch (e) {
+    throw new Stop(EXIT.records, `outer-loop cadence check failed at view ${view.slice(0, DISPLAY_SHA_LEN)}: ${e.message}`);
+  }
+  const baseCheck = outerLoopState({ handoffs, rows, phase: cfg.phase });
+  const baselineSha = baseCheck.baseline?.product?.base ?? baseCheck.baseline?.product?.commit ?? null;
+  const validBase = baselineSha && gitOk(cfg.product, "cat-file", "-e", `${baselineSha}^{commit}`) ? baselineSha : null;
+  const facts = collectArchFacts(cfg.product, base, { baselineSha: validBase });
+  const archBreaches = structuralBreaches(facts);
+  const outer = outerLoopState({
+    handoffs,
+    rows,
+    archBreaches,
+    deliveries: outerCfg.deliveries,
+    outerGrace: outerCfg.outerGrace,
+    phase: cfg.phase,
+    targetSha: base,
+  });
+  if (outer.status !== "hard-due") return;
+  const reasons = [];
+  if (outer.t1Due) reasons.push(`T1 delivery cadence (${outer.deliveriesSince}/${outer.deliveries} committed deliveries, grace +${outer.outerGrace} exceeded)`);
+  if (outer.t3Due) reasons.push(`T3 arch-facts breach (${outer.archBreaches.map(b => `${b.kind} ${b.path}: ${b.detail}`).join("; ")})`);
+  const prepareFlag = cfg.agents.reviewer?.runner === "t3" ? ["--prepare"] : [];
+  throw new Stop(EXIT.records, [
+    `outer loop is hard-due in phase ${cfg.phase}: ${reasons.join("; ")}; further actor calls are refused until reviewer-architecture commits (no model was called).`,
+    `Run read-only architectural review:`,
+    `  ${nodeCommand("call.mjs", cfg.configFile ?? "<config.json>", "reviewer", "--round", round, "--step", "reviewer-architecture", "--base", base, "--task", "<architecture task file>", ...prepareFlag)}`,
+  ].join("\n"));
+}
+
+/** Refuse (exit 7) an actor call when a substantive open owner word was ignored past 1-turn grace (P-0011, D-0058). */
+function refuseUndistilledOwnerWords(cfg, view, viewPaths, round) {
+  const handoffs = viewHandoffs(cfg, view, viewPaths);
+  const latestActor = handoffs.filter(h => h.role === "actor").at(-1);
+  if (!latestActor) return;
+  const actorMs = Date.parse(latestActor.time ?? "");
+  if (!Number.isFinite(actorMs)) return;
+  const ignored = openWords(cfg.records, view).filter(w => {
+    if (!isSubstantiveOwnerWord(w.text)) return false;
+    const wordMs = Date.parse(w.time ?? "");
+    return Number.isFinite(wordMs) && wordMs < actorMs;
+  });
+  if (!ignored.length) return;
+  const prepareFlag = cfg.agents.reviewer?.runner === "t3" ? ["--prepare"] : [];
+  throw new Stop(EXIT.records, [
+    `phase ${cfg.phase} has ${ignored.length} un-distilled substantive owner word(s) older than the latest actor hand-off ${latestActor.id} (1-turn grace exceeded; no model was called):`,
+    ...ignored.map(w => `  ${w.id} (${w.time}): ${w.text.replace(/\s+/g, " ").slice(0, 120)}`),
+    `Distill into purpose/decisions/design (citing each ID), mark via owner-words.mjs mark, or run:`,
+    `  ${nodeCommand("call.mjs", cfg.configFile ?? "<config.json>", "reviewer", "--round", round, "--step", "reviewer-distill", "--task", "<distill task file>", ...prepareFlag)}`,
+  ].join("\n"));
+}
+
 const preparationFile = (cfg, ws) => join(cfg.workDir, ".prepared", `${basename(ws)}.json`);
 const preparationScope = cfg => [canonical(cfg.records), canonical(cfg.product), cfg.phase, ...cfg.sealed.map(canonical)];
 const commonDir = repo => canonical(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"));
@@ -424,9 +547,16 @@ function readPreparation(cfg, ws) {
   if (ctx.ws !== ws) throw new Stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
   if (ctx.role === "reviewer") {
     if (ctx.agent?.provider === "codex") throw new Stop(EXIT.records, "the frame reviewer cannot run on t3:codex");
-    if (ctx.wt !== null) throw new Stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
-    if (!hasReviewerWorkspace(ws))
-      throw new Stop(EXIT.failure, `the prepared workspace ${ws} is gone; prepare the call again`);
+    if (ARCH_STEP.test(ctx.step ?? "")) {
+      if (ctx.wt !== join(ws, "wt")) throw new Stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
+      if (!existsSync(ctx.wt) || !hasReviewerWorkspace(ws))
+        throw new Stop(EXIT.failure, `the prepared workspace ${ws} is gone; prepare the call again`);
+      if (commonDir(ctx.wt) !== commonDir(cfg.product)) throw new Stop(EXIT.records, "the prepared worktree belongs to a different product repository");
+    } else {
+      if (ctx.wt !== null) throw new Stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
+      if (!hasReviewerWorkspace(ws))
+        throw new Stop(EXIT.failure, `the prepared workspace ${ws} is gone; prepare the call again`);
+    }
   } else {
     if (ctx.wt !== join(ws, "wt")) throw new Stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
     if (!existsSync(ctx.wt)) throw new Stop(EXIT.failure, `the worktree ${ctx.wt} is gone; prepare the call again`);
@@ -449,7 +579,9 @@ export function preparedIn(cfg) {
         || !/^[a-z]+(-[a-z]+)*$/.test(ctx.step) || ctx.record !== recordOf(ctx.round, ctx.step))
       throw new Error(`${file} is not a supported prepared call`);
     const liveWorkspace = ctx.role === "reviewer"
-      ? ctx.wt === null && hasReviewerWorkspace(ws)
+      ? (ARCH_STEP.test(ctx.step)
+        ? ctx.wt === join(ws, "wt") && existsSync(ctx.wt) && hasReviewerWorkspace(ws)
+        : ctx.wt === null && hasReviewerWorkspace(ws))
       : ctx.wt === join(ws, "wt") && existsSync(ctx.wt);
     found.push({ ...ctx, phase: preparedPhase(ctx, ws), ws, liveWorkspace });
   }
@@ -551,13 +683,17 @@ export function recordCall(cfg, wsDir, { transcript = null, session = null, log 
 function finish(cfg, ctx, run, { log, now }) {
   const { role, round, step, phase = cfg.phase, task, features, id, record, view, briefs, base, branch, commits, extraKinds, ws, wt, owns, agent } = ctx;
   const confined = role === "reviewer";
+  const isArchReviewer = confined && ARCH_STEP.test(step);
   const layoutText = readFileSync(DEFAULT_LAYOUT, "utf8");
-  const audit = auditAccess(confined ? [ws] : [ws, wt, ...(role === "judge" ? cfg.sealed : [])], run.events,
+  const visible = confined ? (isArchReviewer && wt ? [ws, wt] : [ws]) : [ws, wt, ...(role === "judge" ? cfg.sealed : [])];
+  const audit = auditAccess(visible, run.events,
     confined ? { cwd: run.cwd } : { tools: null, cwd: run.cwd, forbidden: role === "judge" ? [cfg.records] : [cfg.records, ...cfg.sealed] });
   const summary = { violations: audit.violations.length, denied: audit.denied.length, flags: audit.flags.length, unrecognized: audit.unrecognized };
   const reportFile = join(ws, "out", "report.md");
   const report = existsSync(reportFile) ? readFileSync(reportFile, "utf8") : "";
+  const archWtMutated = Boolean(isArchReviewer && wt && (git(wt, "rev-parse", "HEAD") !== base || changedPaths(wt).length > 0));
   let failure = audit.violations.length ? [EXIT.violation, `${role} accessed what it may not see: ${audit.violations.slice(0, 3).map(v => `${v.tool} ${v.path}`).join("; ")}`]
+    : archWtMutated ? [EXIT.violation, `${step} modified the read-only product worktree`]
     : confined && agent.runner === "t3" && (audit.unparsedCalls > 0 || (audit.unrecognized > 0 && audit.toolEvents === 0))
       ? [EXIT.violation, `${role} confinement could not be verified from structured transcript events (${audit.unparsedCalls} unparsed tool calls, ${audit.unrecognized} unrecognized events, ${audit.toolEvents} tool events)`]
     : run.error ? [EXIT.failure, `${role} could not run: ${run.error.message}`]

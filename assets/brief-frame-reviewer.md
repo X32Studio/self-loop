@@ -45,9 +45,32 @@ batches and answers, interventions, lessons, `metrics/trajectory.jsonl` and `met
 - **SUBTRACTION** (phase close): what to delete — dead code, mechanisms merged away, outdated text, superseded tests,
   promises about what never shipped — each with the fact that shows it is unused, and the requirement it served (the
   judge confirms none that a requirement needs is lost).
+- **ARCHITECTURE** (`reviewer-architecture`, asynchronous periodic outer loop on `T1`/`T3`, P-0011, D-0058): read
+  `arch-facts.json` + the read-only product source tree (`wt/`) + `purpose/` + `records/` (file tools only; never edit
+  `wt/`, zero shell, zero `sealed/`). Carry out all four equal outer-loop mandates (`P0–P6`):
+  1. **First-Principles Reframe & Feature Evolution (`P0`/`P1`)**: align purpose, domain facts, mature reference
+     architectures, and the next high-value product capabilities.
+  2. **Abstraction & Single-Control-Plane Convergence (`P2`/`P3`/`P4`)**: inspect `largestFiles`, `growthFiles`,
+     `churnHotspots`, `importHubs`, and `parallelSiblings`; collapse duplicate registries, state machines, and scattered
+     defaults into one owner module and one control plane.
+  3. **Anti-Rot Cleanup (`P5` / Prohibition List)**: audit `arch-facts.json` `antiRot` (`compatRemnants`, `deadExports`,
+     `hardcodedLiterals`, `testRot`, `commentBloat`) and route every remnant to deletion; reject bulky narrative comments
+     in code because explanations belong exclusively in document-level SSOT (`design/*.md`) while stale code comments
+     mislead agents.
+  4. **Code-to-Design Liveness QA & Occam Reflexive Audit (`P0`/`P6`)**: verify declared design/SSOT requirements and
+     features resolve to live reachable code (no dead/unwired promises), and apply Occam's razor (*"what breaks if this
+     is deleted?"*) to every new module, abstraction, config key, and flag; emit concrete `ANTI-ROT / SUBTRACT` items
+     alongside `ABSTRACT / CONVERGE`.
+  Output first line `VERDICT: CONTINUE` (resets `T1` and explicitly acknowledges any `T3` hotspots),
+  `VERDICT: OPEN-WINDOW` (with exact `horizon: K` and `invariants:` for a bounded refactoring window taking effect at
+  the next package boundary), or `VERDICT: REFRAME` (owner batch in `out/decisions.json`).
+- **DISTILL** (`reviewer-distill`, asynchronous owner-word distillation, P-0011, D-0058): take the open substantive
+  owner words in `records/owner/words.jsonl` (cited in `task.md`), verify verbatim capture, derive the first-principles
+  invariants behind them, audit the whole system for other places sharing the same root cause (generalization / 举一反三),
+  and propose exact `purpose/` / `decisions/` / `design/` record updates citing every word ID (`words: W-...`).
 
 ## Output: `out/report.md`
-First line exactly `VERDICT: CONTINUE` or `VERDICT: REFRAME`; then any `PREMISE:` / `OBSERVATION:` / `FACT-NEEDED:`
+First line exactly `VERDICT: CONTINUE`, `VERDICT: OPEN-WINDOW` (ARCHITECTURE mode only), or `VERDICT: REFRAME`; then any `PREMISE:` / `OBSERVATION:` / `FACT-NEEDED:`
 lines; then `# <title>` and the proposals, ranked, at most five. Precision over coverage: a proposal the owner would not
 act on counts against you. Each proposal: type (ADD-REQUIREMENT, DELETE, REFRAME, PROCESS), the claim in one or two
 sentences, the evidence (record IDs, facts), the purpose it serves, the recommendation.

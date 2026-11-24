@@ -39,12 +39,13 @@ import { blobs, regularFiles } from "./lib/git-plumbing.mjs";
 import { BAR, judgeBarFindings } from "./lib/judge-bar.mjs";
 import { MARKS, parseWords, wordClasses, WORDS } from "./lib/owner-words.mjs";
 import { ssotRecordsFindings } from "./lib/ssot.mjs";
+import { parseWindows, WINDOWS } from "./lib/window.mjs";
 import { parseRows, TRAJECTORY } from "./trajectory.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_LAYOUT = join(here, "..", "RECORDS.md");
 export const PUBLIC_KINDS = ["Purpose", "Decisions", "Design", "Blueprint", "Rounds", "Hand-offs", "Trajectory",
-  "Owner batches", "Owner answers", "Interventions", "Lessons", "Research", "Plan"];
+  "Windows", "Owner batches", "Owner answers", "Interventions", "Lessons", "Research", "Plan"];
 export const isPublicKind = kind => kind !== "Rounds" && PUBLIC_KINDS.includes(kind);
 // Quoted output and generated views are not processed as records' ordinary citations.
 const QUOTED = new Set(["Backtests", "Evidence", "Blueprint evidence", "Sealed", "Index", "Blueprint view"]);
@@ -386,6 +387,10 @@ export function inspect(repo, { layoutText, config = {}, files, own, screenOnly,
         for (const f of h.files) if (!has.has(f)) failures.push({ rule: "handoff", path: HANDOFFS, detail: `${h.id} names ${f}, which the records do not hold` });
       }
     } catch (e) { failures.push({ rule: "handoff", path: HANDOFFS, detail: e.message }); }
+  }
+  if (has.has(WINDOWS)) {
+    try { parseWindows(read(WINDOWS), WINDOWS); }
+    catch (e) { failures.push({ rule: "window", path: WINDOWS, detail: e.message }); }
   }
   const roleView = new Set([...handoffs.map(h => h.record), ...(config.publicImports ?? [])]);
   const isPublicMaterial = record => record.kind !== "Sealed" && (roleView.has(record.path) || isPublicKind(record.kind));

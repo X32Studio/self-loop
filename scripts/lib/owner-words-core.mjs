@@ -14,6 +14,14 @@ export const SEND = /^(?:mcp__t3[-_]code__|mcp_t3[-_]code_)t3_thread_send(?:_att
 const DELEGATED = /^Act as the [\w -]+ sub-agent for this task\./;
 export const T3_AGENT_NOTICE = /^\[T3 Code: (?:the agent in T3 thread "[^"\r\n]+"(?: on linked environment "[^"\r\n]+")? sent this message, not the user|this message came through T3 Code's tools, not from the user typing in this chat)\.\](?:\r?\n|$)/;
 export const DELEGATED_NOTICE = /^Delegated task (?:node:|thread:)?delegated-task:\S+(?: \([^\r\n]*\))?(?: in child thread \S+)? (?:\[(?:completed|failed|cancelled|interrupted)\](?::|\. Use task_status\b)|asked a question and is still working\.)/;
+export const HARNESS_ENVELOPE = /^\s*(?:Delegated task node:delegated-task:|\[T3 Code:\s*the agent in T3 thread\b|<CONTEXT_SUMMARY>|<SYSTEM_MESSAGE>)/;
+
+const ROUTINE_ACKS = new Set([
+  "ok", "okay", "k", "kk", "go", "go ahead", "yes", "y", "yep", "yeah", "sure", "done", "ack",
+  "lgtm", "proceed", "continue", "confirm", "approved", "thanks", "thx", "ty",
+  "好", "好的", "好吧", "行", "行的", "可以", "没问题", "同意", "确认", "继续", "去做", "去做吧",
+  "开始", "开始吧", "执行", "通过", "批准", "收到", "明白", "了解", "谢谢", "嗯", "嗯嗯", "对", "是的",
+]);
 
 export const sha = text => createHash("sha256").update(text).digest("hex");
 export const rowsOf = file => readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap(l => { try { return [JSON.parse(l)]; } catch { return []; } });
@@ -59,7 +67,7 @@ export function ownerPrompt(text, { claude = false } = {}) {
   if (!content
     || (claude && /^\[Request interrupted by user(?: for tool use)?\]$/.test(content))
     || /^(?:\[Historical (?:user|assistant); [^\]\r\n]*\]|<codex_internal_context\b)/.test(content)
-    || T3_AGENT_NOTICE.test(content) || DELEGATED_NOTICE.test(content)
+    || T3_AGENT_NOTICE.test(content) || DELEGATED_NOTICE.test(content) || HARNESS_ENVELOPE.test(content)
     || /^<(task-notification|system-reminder|local-command-stdout)>[\s\S]*<\/\1>$/.test(content)
     || /^<local-command-caveat>[\s\S]*?<\/local-command-caveat>/.test(content)) return null;
   const command = SLASH_COMMAND.exec(content);
@@ -70,8 +78,19 @@ export function ownerPrompt(text, { claude = false } = {}) {
 export const ownerPromptText = text => ownerPrompt(text)?.text ?? null;
 
 export function captureOwnerText(text) {
-  const owner = typeof text === "string" ? ownerPrompt(text, { claude: true })?.text : null;
+  if (typeof text !== "string" || HARNESS_ENVELOPE.test(text)) return null;
+  const owner = ownerPrompt(text, { claude: true })?.text ?? null;
   return owner && !isLeadPrompt(owner) ? owner : null;
+}
+
+/** True for substantive owner statements/questions/principles; false for short routine acks or harness noise. */
+export function isSubstantiveOwnerWord(text) {
+  if (typeof text !== "string") return false;
+  const trimmed = text.trim();
+  if (!trimmed || HARNESS_ENVELOPE.test(trimmed) || T3_AGENT_NOTICE.test(trimmed) || DELEGATED_NOTICE.test(trimmed)) return false;
+  if (/[?？]/.test(trimmed)) return true;
+  const norm = trimmed.replace(/[.!。！~～,，]+$/u, "").trim().toLowerCase();
+  return !(trimmed.length <= 8 && ROUTINE_ACKS.has(norm));
 }
 
 export class LeadSends {

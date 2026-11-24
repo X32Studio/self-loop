@@ -112,6 +112,10 @@ node scripts/self-loop.mjs next [--config <loop.json> | --all] [--owner-store <d
 node scripts/self-loop.mjs stall [--hours N] [--config <loop.json> | --all] [--now <ISO time>] [--json] [--owner-store <dir>]
 node scripts/self-loop.mjs tick [--hours N] [--now <ISO time>] [--json] [--owner-store <dir>]
 node scripts/self-loop.mjs ssot [check|attest] [--config <loop.json>] ...
+node scripts/self-loop.mjs window open|status|close --records <dir> ...
+node scripts/window.mjs open --records <dir> --phase <phase> --horizon <2..12> --goal "<text>" --invariant "<text>" [--invariant ...] [--start-round N] [--by <who>] [--json]
+node scripts/window.mjs status --records <dir> [--phase <phase>] [--json]
+node scripts/window.mjs close --records <dir> --id <W-NNNN> --verdict verified|reframed [--commit <sha>] [--config <loop.json>] [--by <who>] [--note "<text>"] [--json]
 node scripts/self-loop.mjs heartbeat install|uninstall [--dry-run] [--platform launchd|cron] [--release <dir>] [--owner-store <dir>]
 node scripts/self-loop.mjs hooks install|check|uninstall --harness antigravity [--scope workspace|global] [--target <hooks.json>] [--config <loop.json>] [--owner-store <dir>] [--release <dir>] [--dry-run] [--json]
 node scripts/self-loop.mjs registry init [--roots <dir>,...] | add --name <name> --records <dir> [--aliases a,b] | list [--json]
@@ -729,6 +733,26 @@ the ruling that admits it (D-0032 item 1, R-0008-judge-frame-dispatch).
    enters the blueprint or a critic's or actor's task (D-0030 item 2). An area whose returns have fallen steeply is left for new features: its blockers stay open in the
    trajectory until a judge closes or shelves them (D-0032 item 2). The count restarts after the round that holds both
    the frame and the judge-frame hand-off.
+6. **Bounded Horizon Window** (`window.mjs`, `metrics/windows.jsonl`). When a multi-round architectural refactoring
+   crosses an intermediate valley where per-round Critic/Judge/Suite/CI checks are unproductive, open one bounded window
+   for the phase with `window.mjs open --records <records> --phase <phase> --horizon <2..12> --goal "<text>" --invariant "<text>"`
+   (at most one open window per phase; no silent extension). A window of `horizon = H` grants `H - 1` slack actor rounds
+   (`mode: slack`, where `next` defers intermediate critic/suite/CI/judge actions and prompts the next actor round), then
+   1 convergence actor round (`mode: converging`), and then enters `mode: gate-due`, where `call.mjs` mechanically
+   refuses further `actor` calls (exit 7) while keeping `critic`, `judge`, and `reviewer` open. Phase convergence is
+   refused while any window is open. Close a window only with `window.mjs close --verdict verified` (verified from
+   committed `CONVERGED` judge ruling with passing suite count, independent judge/actor vendor & model, committed green
+   `suite-green` receipt, and committed green CI receipt when `gates.require` is configured) or `--verdict reframed`
+   (after a post-open `reviewer-diagnosis` hand-off citing `alarms: window-horizon:<phase>:<id>`). A `CONTINUE` judge
+   ruling inside an open window raises the deterministic supervision alarm `window-horizon:<phase>:<id>`.
+8. **Asynchronous periodic outer loop (`arch-facts.mjs`, `anti-rot.mjs`, `reviewer-architecture`, `T1`–`T4`, P-0011, D-0058)**:
+   - `scripts/lib/arch-facts.mjs` + `scripts/lib/anti-rot.mjs` compute deterministic whole-repo facts on a committed SHA (`largestFiles`, `growthFiles`, `churnHotspots`, `importHubs`, `parallelSiblings`, and `antiRot`: `compatRemnants`, `deadExports`, `hardcodedLiterals`, `testRot`, `commentBloat`) and `T3` breaches (`> 800` lines, `>= 35%` growth from `>= 100` lines, `>= 3`-commit churn since last outer loop, plus anti-rot `compat-remnant`, `hardcoded-literal`, `test-rot`, and `comment-bloat` breaches).
+   - `T1` (periodic delivery cadence: `cadence.deliveries`, default `4` committed `actor` hand-off rounds since the latest `reviewer-frame`/`reviewer-architecture`/`judge-frame`, advancing even on 0-bug green streaks), `T2` (phase/milestone boundary), `T3` (`arch-facts` structural or anti-rot breach), and `T4` (window-horizon / trajectory alarm hard stop).
+   - On `T1` or `T3`, `loop.mjs next` emits an async read-only `reviewer-architecture` recommendation (`--step reviewer-architecture --base <sha>`) covering all four equal outer-loop mandates (first-principles evolution, single-control-plane convergence, anti-rot cleanup including zero bulky prose code comments, and code-to-design liveness QA + Occam reflexive audit) while in-flight inner-loop work finishes; `call.mjs` gives it a detached read-only product worktree + `arch-facts.json` under strict `FILE_TOOLS` confinement (`[ws, wt]`, zero Bash, zero writes to `wt`, `sealed/` and `records` forbidden, Codex/t3:codex refused, zero product commits). After `cadence.outerGrace` (default `2`) additional deliveries outside an active Bounded Window, `call.mjs actor` mechanically refuses (exit 7) until `reviewer-architecture` commits.
+9. **Owner-word capture & distillation gate (`owner-words.mjs`, `reviewer-distill`, `self-loop.mjs start`, P-0011, D-0058)**:
+   - `owner-words` deterministically filters T3/harness orchestration envelopes (`Delegated task node:delegated-task:`, `[T3 Code: the agent in T3 thread`, `<CONTEXT_SUMMARY>`, `<SYSTEM_MESSAGE>`) and distinguishes substantive owner words (`isSubstantiveOwnerWord`) from short routine acknowledgements.
+   - `self-loop.mjs start` runs a read-only Antigravity hook health probe (`checkAntigravityHooks`) and surfaces missing `hooks.json` immediately in both text and `--json` (`hooks: { healthy, findings }`).
+   - Substantive open owner words trigger an async `reviewer-distill` recommendation in `loop.mjs next`; if ignored past 1-turn grace (older than the latest committed `actor` hand-off in the phase), `call.mjs actor` mechanically refuses (exit 7) until distilled into records or marked.
 
 ### 4. Phase close
 

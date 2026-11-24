@@ -10,7 +10,7 @@
   <b>中文</b> · <a href="README.md">English</a> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/METHODOLOGY.md">Methodology</a> · <a href="SKILL.md">Skill Spec</a>
 </p>
 
-<sub>作者：<a href="https://github.com/k-r33">Ruiyuan Kang (k-r33)</a> @ <a href="https://x32studio.com">X32 Studio</a>（Kang 和他的 Agent 团队） · MIT 协议 · v0.6.0</sub>
+<sub>作者：<a href="https://github.com/k-r33">Ruiyuan Kang (k-r33)</a> @ <a href="https://x32studio.com">X32 Studio</a>（Kang 和他的 Agent 团队） · MIT 协议 · v0.7.0</sub>
 
 </div>
 
@@ -35,7 +35,15 @@
 
 ---
 
-## v0.6.0 核心新特性
+## v0.7.0 核心新特性
+
+- **有界视野窗口（Bounded Horizon Window，`window.mjs` / `metrics/windows.jsonl`）**：为跨多轮架构重构提供受控窗口（`horizon: 2..12`，经历 `slack` → `converging` → `gate-due`），到期后由 `call.mjs` 机械拒绝继续 `actor`（退出码 `7`），仅接受经已提交跨厂商 `CONVERGED` 裁定 + 精确树 `suite-green` + 远端 CI 验证的 `verified` 关闭，或经 `reviewer-diagnosis` 诊断后的 `reframed` 关闭。
+- **异步周期外循环（`arch-facts.mjs`、`reviewer-architecture`、`T1`–`T4`）**：将高频内循环交付与周期性全仓架构评审解耦（`T1` 按交付节奏触发、即使 0-bug 连续绿灯也推进；`T3` 响应结构/反腐化越界）。`call.mjs` 在严格只读 `FILE_TOOLS` 隔离下向 `reviewer-architecture` 注入确定性 `arch-facts.json` 与干净产品工作树，超过 `outerGrace` 宽限未落地则机械阻断后续 `actor`（退出码 `7`）。
+- **确定性反腐化、注释膨胀与代码活度扫描器（`anti-rot.mjs`）**：自动扫描兼容残留（legacy/compat/fallback）、死导出、硬编码宿主路径/回环端口、跳过/待办测试腐化与臃肿解释性注释（坚持文档级 SSOT、拒绝过时代码注释），驱动 `T3` 报警及代码-设计活度 QA 与奥卡姆剃刀反身审计。
+- **可靠的 Owner 原话捕获与蒸馏门禁（`owner-words.mjs`、`reviewer-distill`、`self-loop.mjs start`）**：确定性过滤 T3/Harness 编排信封，在 `start` 时探测 Antigravity `hooks.json` 健康状态，并将实质性未处理 Owner 原话路由至异步 `reviewer-distill`，超 1 轮宽限忽略即机械阻断 `actor`（退出码 `7`）。
+
+<details>
+<summary>v0.6.0 历史亮点</summary>
 
 - **开箱即用的仓内 `.self-loop/` 记录初始化与零配置自动发现**：运行 `self-loop.mjs init [--local-exclude] [--register]` 即可在项目根目录自动初始化受 Git 忽略的嵌套记录仓 `.self-loop/`，无需额外路径配置即可直接 `start` / `next` / `stall`。
 - **一等公民 Antigravity Harness 与 T3 Code Runner（`F-0009`）**：原生支持 `hooks install|check|uninstall --harness antigravity`、Antigravity 会话与 Owner 原话同步，以及 T3 Code 子线程执行（`t3:claude`、`t3:codex`、`t3:antigravity`）。
@@ -43,6 +51,8 @@
 - **AWS CodeCommit + CodeBuild CI Forge（`F-0013`）**：统一 `FORGES` 调度层，同时支持 GitHub Actions（`github-actions/*`）与 AWS CodeCommit / CodeBuild（`codebuild/*`），强制 STS 账号绑定、规范化端点解析、GRC `CODE_COMMIT_ENDPOINT` fail-closed 防护及凭据脱敏。
 - **SSOT 权威文档校验、漂移门禁与角色视图注入（`F-0014`）**：`ssot-check.mjs`（`check` / `attest`）对绑定的权威文档执行 Rung-2 锚点与干净工作树脚本校验、Rung-3 `ssot-drift` 漂移筛查与受保护分支严格阻断，并在 `actor` / `judge` 工作区注入只读 `ssot-status.md`。
 - **全新 6 篇 `docs/` 完整文档体系**：涵盖快速入门、架构原理、概念与记录、Harness 接入、代码托管与 CI、发布与版本门禁。
+
+</details>
 
 ---
 
@@ -85,6 +95,7 @@
 # 1. 克隆并运行完整单元测试
 git clone https://github.com/X32Studio/self-loop.git
 cd self-loop
+git checkout v0.7.0
 npm test
 
 # 2. 运行 5 秒门禁体验 Demo（无需 API Key / 联网）

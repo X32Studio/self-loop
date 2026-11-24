@@ -10,7 +10,7 @@
   <a href="README.zh-CN.md">中文</a> · <b>English</b> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/METHODOLOGY.md">Methodology</a> · <a href="SKILL.md">Skill Spec</a>
 </p>
 
-<sub>By <a href="https://github.com/k-r33">Ruiyuan Kang (k-r33)</a> @ <a href="https://x32studio.com">X32 Studio</a> (Kang &amp; his Agent Team) · MIT Licensed · v0.6.0</sub>
+<sub>By <a href="https://github.com/k-r33">Ruiyuan Kang (k-r33)</a> @ <a href="https://x32studio.com">X32 Studio</a> (Kang &amp; his Agent Team) · MIT Licensed · v0.7.0</sub>
 
 </div>
 
@@ -35,7 +35,15 @@ On toy tasks, that works. On real software, an ungoverned agent mob fails in fou
 
 ---
 
-## What's New in v0.6.0
+## What's New in v0.7.0
+
+- **Bounded Horizon Window (`window.mjs`, `metrics/windows.jsonl`)** — Opens a bounded refactoring window (`horizon: 2..12`) across multi-round architectural valleys (`slack` → `converging` → `gate-due`), mechanically gating further `actor` calls (`exit 7`) until closed as `verified` (committed `CONVERGED` ruling, cross-vendor independence, exact-tree `suite-green`, and live CI) or `reframed` (post-open `reviewer-diagnosis` citing `window-horizon:<phase>:<id>`).
+- **Asynchronous Periodic Outer Loop (`arch-facts.mjs`, `reviewer-architecture`, `T1`–`T4`)** — Decouples high-cadence inner delivery from periodic whole-repo architectural review (`T1` delivery cadence even on 0-bug green streaks, `T3` structural/anti-rot breach). `call.mjs` equips `reviewer-architecture` with deterministic `arch-facts.json` and a detached read-only worktree under strict `FILE_TOOLS` confinement, with mechanical `outerGrace` enforcement (`exit 7`) if ignored.
+- **Deterministic Anti-Rot, Comment-Bloat & Liveness Scanners (`anti-rot.mjs`)** — Scans committed trees for compatibility/legacy remnants, dead exports, hardcoded host paths/loopback ports, skipped/todo test rot, and bulky prose code comments (enforcing doc-level SSOT over stale code comments), feeding `T3` breaches and code-to-design liveness QA + Occam reflexive audits.
+- **Reliable Owner-Word Capture & Distillation Gate (`owner-words.mjs`, `reviewer-distill`, `self-loop.mjs start`)** — Filters T3/harness orchestration envelopes, probes Antigravity `hooks.json` health on `start`, and routes substantive open owner words to async `reviewer-distill` with a mechanical 1-turn grace gate (`exit 7`).
+
+<details>
+<summary>Earlier highlights in v0.6.0</summary>
 
 - **Zero-config in-repo `.self-loop/` records (`self-loop.mjs init`)** — Initializes a nested, Git-ignored `.self-loop/` records repository inside your project (or `--local-exclude` for zero-diff `.git/info/exclude`, or external `--records <dir>`), with automatic discovery on `start`, `next`, and `stall`.
 - **First-class Antigravity harness & T3 Code runner (`F-0009`)** — Full `hooks install|check|uninstall --harness antigravity`, Antigravity transcript & owner-word sync, and T3 Code child execution (`t3:claude`, `t3:codex`, `t3:antigravity`).
@@ -43,6 +51,8 @@ On toy tasks, that works. On real software, an ungoverned agent mob fails in fou
 - **AWS CodeCommit + CodeBuild CI forge (`F-0013`)** — Unified `FORGES` dispatcher supporting both GitHub Actions (`github-actions/*`) and AWS CodeCommit / CodeBuild (`codebuild/*`) with STS caller-account binding, canonical endpoints, GRC `CODE_COMMIT_ENDPOINT` fail-closed guard, and credential redaction.
 - **SSOT authority doc verification & drift gates (`F-0014`)** — `ssot-check.mjs` (`check` / `attest`) verifies bound authority documents (Rung-2 `anchors` + clean-worktree `check` scripts, Rung-3 `ssot-drift` screening & strict promotion gates) and injects a read-only `ssot-status.md` role view into `actor` and `judge` workspaces.
 - **Complete `docs/` documentation suite** — Six focused guides covering Getting Started, Architecture, Concepts & Records, Harnesses, Forges & CI, and Release & Versioning.
+
+</details>
 
 ---
 
@@ -111,6 +121,7 @@ We build in the open and document what broke—not just what worked:
 ```bash
 git clone https://github.com/X32Studio/self-loop.git
 cd self-loop
+git checkout v0.7.0
 npm test
 ```
 
@@ -189,8 +200,9 @@ self-loop/
 ├── assets/                  # Role brief templates, Antigravity hooks template & example configs
 ├── examples/minimal-loop/   # Runnable 5-second demo of records, alarm & push gates
 ├── scripts/
-│   ├── self-loop.mjs        # Unified entry: init, start, next, stall, tick, ssot, hooks, registry, heartbeat
-│   ├── call.mjs             # Isolated role execution, SSOT view injection, access audit & hand-off commits
+│   ├── self-loop.mjs        # Unified entry: init, start, next, stall, tick, ssot, window, hooks, registry, heartbeat
+│   ├── window.mjs           # Bounded horizon windows (open/status/close) for multi-round refactoring
+│   ├── call.mjs             # Isolated role execution, SSOT/arch-facts view injection, access audit & hand-off commits
 │   ├── ssot-check.mjs       # SSOT authority doc verification (Rung-2 anchors/check + Rung-3 drift & attest)
 │   ├── suite-green.mjs      # Clean-worktree, exact-tree cached test receipts
 │   ├── ci-green.mjs         # Live GitHub & AWS CodeBuild verification on exact push destination

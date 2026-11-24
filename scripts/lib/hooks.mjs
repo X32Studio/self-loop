@@ -310,6 +310,22 @@ export function checkHooks({ harness, scope = "workspace", target = null, cfg = 
   return { ok: findings.length === 0, harness, scope: target ? "target" : scope, target: file, findings, skill };
 }
 
+/** Fast read-only hook health probe for `self-loop start`: silent when no Antigravity dirs exist on the host. */
+export function checkAntigravityHooks({ cfg = null, env = process.env, cwd = process.cwd() } = {}) {
+  const wsHooks = cfg?.product ? join(cfg.product, ".agents", "hooks.json") : null;
+  const globalHooks = join(geminiHome(env), "config", "hooks.json");
+  const instances = t3AntigravityInstances({ env });
+  const detected = Boolean((wsHooks && existsSync(wsHooks)) || existsSync(globalHooks) || instances.length > 0);
+  if (!detected) return { detected: false, healthy: true, ok: true, harness: "antigravity", scope: null, findings: [] };
+  const scope = wsHooks && existsSync(wsHooks) ? "workspace" : "global";
+  try {
+    const res = checkHooks({ harness: "antigravity", scope, cfg, env, cwd });
+    return { detected: true, healthy: res.ok, ok: res.ok, harness: "antigravity", scope, target: res.target, findings: res.findings };
+  } catch (error) {
+    return { detected: true, healthy: false, ok: false, harness: "antigravity", scope, target: null, findings: [error.message] };
+  }
+}
+
 function isGitTracked(info) {
   if (!info) return false;
   return spawnSync("git", ["-C", info.repo.top, "ls-files", "--error-unmatch", "--", info.rel], { encoding: "utf8" }).status === 0;

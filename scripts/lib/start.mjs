@@ -11,9 +11,8 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { load, Stop } from "../call.mjs";
-import { geminiHome, t3AntigravityInstances } from "./antigravity.mjs";
 import { UsageError } from "./args.mjs";
-import { checkHooks } from "./hooks.mjs";
+import { checkAntigravityHooks } from "./hooks.mjs";
 import { loadRegistry, LocalLoopError, LOOP, productState, resolveConfig } from "./registry.mjs";
 import { discoveryFindings, findingLine, idleFindings, uncheckedFindings, inspectProduct, liveStallFinding, quietCount } from "./tick.mjs";
 import { nextLines, queryClock, recordsOf } from "../loop.mjs";
@@ -47,18 +46,9 @@ function sessionOf({ config, env, cwd, store, inspected, clock }) {
   const session = { product: resolved.product?.name ?? null, records: cfg.records, config: resolved.config, source: resolved.source, next: null, error: null };
   try { session.next = nextLines(cfg, resolved.config, state ?? recordsOf(cfg), { store, ...clock }); }
   catch (e) { session.error = `next failed: ${e.message}`; }
-  const wsHooks = join(cfg.product, ".agents", "hooks.json");
-  const hasAgHooks = existsSync(wsHooks)
-    || existsSync(join(geminiHome(env), "config", "hooks.json"))
-    || t3AntigravityInstances({ env }).length > 0;
-  if (hasAgHooks) {
-    const scope = existsSync(wsHooks) ? "workspace" : "global";
-    try {
-      const check = checkHooks({ harness: "antigravity", scope, cfg, env, cwd });
-      session.hooks = { harness: "antigravity", scope, ok: check.ok, findings: check.findings };
-    } catch (e) {
-      session.hooks = { harness: "antigravity", scope, ok: false, findings: [e.message] };
-    }
+  const probe = checkAntigravityHooks({ cfg, env, cwd });
+  if (probe.detected) {
+    session.hooks = { harness: probe.harness, scope: probe.scope, healthy: probe.healthy, ok: probe.ok, findings: probe.findings };
   }
   return session;
 }
@@ -79,8 +69,15 @@ export function startReport({ store, config, env = process.env, cwd = process.cw
   const inspected = registry ? registry.products.map(entry => inspectProduct(entry, { now, hours, next: false, store })) : [];
   const findings = [...inspected.flatMap(i => watchFindings(i, now)), ...(registry ? discoveryFindings(registry, store, inspected) : [])];
   const version = skill && existsSync(join(skill, "VERSION")) ? readFileSync(join(skill, "VERSION"), "utf8").trim() : null;
+  const session = sessionOf({ config, env, cwd, store, inspected, clock });
+  const hooks = session.hooks
+    ? { healthy: session.hooks.healthy, findings: session.hooks.findings }
+    : (() => {
+      const probe = checkAntigravityHooks({ env, cwd });
+      return { healthy: probe.healthy, findings: probe.findings };
+    })();
   return { time: new Date(now).toISOString(), clock: { now: new Date(now).toISOString(), mode: clock.clockMode, source: clock.clockMode === "simulation" ? "injected" : "system-utc" }, release: { version, path: skill ?? null }, ownerStore: store.path, registry: registryProblem,
-    products: registry?.products.length ?? 0, findings, session: sessionOf({ config, env, cwd, store, inspected, clock }) };
+    products: registry?.products.length ?? 0, findings, hooks, session };
 }
 
 /** The report as text, for the session to read. `selfLoop` is the command a stalled product's next steps are shown by. */
@@ -99,10 +96,14 @@ export function startText(report, { selfLoop = "self-loop.mjs" } = {}) {
   if (report.continuation) lines.push("", continuationText(report.continuation));
   const { session } = report;
   lines.push("");
-  if (session.problem) lines.push(`This session: ${session.problem}`);
-  else {
+  if (session.problem) {
+    lines.push(`This session: ${session.problem}`);
+    if (report.hooks && !report.hooks.healthy && report.hooks.findings.length) {
+      lines.push(`hooks (antigravity): ${report.hooks.findings.join("; ")}`);
+    }
+  } else {
     lines.push(`This session: ${session.product ?? "configured product"} · ${session.records} · ${session.config} (${session.source})`);
-    if (session.hooks && !session.hooks.ok && session.hooks.findings.length) {
+    if (session.hooks && !session.hooks.healthy && session.hooks.findings.length) {
       lines.push(`hooks (${session.hooks.harness}): ${session.hooks.findings.join("; ")}`);
     }
     lines.push(session.next ?? session.error);
