@@ -1,10 +1,10 @@
-// The owner store's product registry and how a command finds its product's loop configuration (I-0001, D-0009 item 1).
+// I-0001, D-0009, D-0010, D-0052, R-0032-reviewer-architecture
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { load } from "../call.mjs";
-import { hostLoad, parseRegistry, resolveOwnerStore } from "../lib/registry.mjs";
+import { DEFAULT_HOOK_ALLOW, hostLoad, loadHookStore, matchHookProduct, parseRegistry, resolveOwnerStore } from "../lib/registry.mjs";
 import { git, isolatedEnv, loopProduct, ownerStore, repo, selfLoop, temp } from "./helpers.mjs";
 
 const entry = (name, records, aliases) => ({ name, records, ...(aliases ? { aliases } : {}) });
@@ -194,4 +194,38 @@ test("the host load counts live heavy work over every registered loop and the le
   assert.deepEqual(alone.calls.map(c => c.role ?? c.kind).sort(), ["critic", "judge", "suite"], "without a registry the named loop and the leases still count");
   assert.match(alone.problems.join("\n"), /no product registry/);
   assert.equal(alone.bound.minAvailableMemoryGB, 16, "without a registry the defaults bound the host");
+});
+
+test("loadHookStore and matchHookProduct validate fail-closed and route primary, worktree, child, and ambiguous dirs", () => {
+  const shared = temp("hook-shared-");
+  const a = loopProduct({ loop: { projects: [shared] } });
+  const b = loopProduct({ loop: { projects: [shared] } });
+  const bWt = temp("hook-b-wt-");
+  git(b.product, "worktree", "add", "-q", "--detach", bWt);
+  const store = ownerStore([entry("alpha", a.records), entry("beta", b.records)]);
+  const loaded = loadHookStore(store);
+  assert.equal(loaded.ok, true, loaded.error);
+  assert.equal(loaded.products.length, 2);
+  assert.deepEqual(loaded.products[0].allow, [...DEFAULT_HOOK_ALLOW]);
+
+  assert.equal(matchHookProduct([a.product], loaded.products).product.name, "alpha");
+  const wtMatch = matchHookProduct([bWt], loaded.products);
+  assert.equal(wtMatch.status, "matched");
+  assert.equal(wtMatch.product.name, "beta");
+  assert.ok(wtMatch.projects.some(p => realpathSync(p) === realpathSync(bWt)));
+  assert.equal(matchHookProduct([join(a.dir, "work", "0001-actor", "wt")], loaded.products).status, "skip");
+  assert.equal(matchHookProduct([temp("unregistered-")], loaded.products).status, "skip");
+  const unregAndWt = matchHookProduct([temp("unregistered-"), bWt], loaded.products);
+  assert.equal(unregAndWt.status, "matched");
+  assert.equal(unregAndWt.product.name, "beta");
+  const ambigShared = matchHookProduct([shared], loaded.products);
+  assert.equal(ambigShared.status, "ambiguous");
+  assert.deepEqual(ambigShared.products, ["alpha", "beta"]);
+  const ambigMulti = matchHookProduct([a.product, bWt], loaded.products);
+  assert.equal(ambigMulti.status, "ambiguous");
+  assert.deepEqual(ambigMulti.products, ["alpha", "beta"]);
+  assert.match(ambigMulti.error, /alpha.*beta/);
+
+  assert.equal(loadHookStore("").ok, false);
+  assert.equal(loadHookStore(temp("no-reg-")).ok, false);
 });

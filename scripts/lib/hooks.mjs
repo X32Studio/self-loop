@@ -1,16 +1,16 @@
-// Extensible harness hooks installation, conformance checking, and uninstallation (F-0009, design/antigravity-harness.md#hooks-cli).
+// F-0009, F-0010, D-0052, D-0060, R-0032-reviewer-architecture, design/antigravity-harness.md#hooks-cli
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { commonGitDir } from "../lead-guard.mjs";
-import { UsageError } from "./args.mjs";
+import { parseArgs, UsageError } from "./args.mjs";
 import { command } from "./commands.mjs";
 import { ensureExcludeEntry, gitIgnoreTarget, removeExcludeEntry } from "./git-exclude.mjs";
 import { geminiHome, t3AntigravityInstances, VERIFIED_ANTIGRAVITY_LS_VERSION } from "./antigravity.mjs";
-import { canonical } from "./path-canonical.mjs";
+import { canonical, commonGitDir } from "./path-canonical.mjs";
+import { loadHookStore } from "./registry.mjs";
 
 export const HOOK_KEY = "self-loop";
 export const EXCLUDE_MARKER = "# self-loop managed: antigravity hooks";
@@ -23,7 +23,6 @@ export class HooksError extends Error {
 
 const isPlainObject = v => v !== null && typeof v === "object" && !Array.isArray(v);
 
-/** Split a simple POSIX shell command line into argv tokens. */
 export function parseShellWords(cmd) {
   if (typeof cmd !== "string") return [];
   const words = [];
@@ -64,6 +63,13 @@ function scriptPathFromCommand(cmd) {
   return words[0];
 }
 
+function handlerArgsFromCommand(cmd) {
+  const words = parseShellWords(cmd);
+  const bin = basename(words[0] ?? "");
+  const start = bin === "node" || bin.startsWith("node") ? 2 : 1;
+  return parseArgs(words.slice(start));
+}
+
 function dedupeProjects(cfg, settings) {
   const raw = [cfg.product, cfg.records, ...(settings?.projects ?? [])].filter(Boolean);
   const seen = new Set();
@@ -84,7 +90,9 @@ function renderTemplateValue(node, vars) {
   const out = {};
   for (const [k, v] of Object.entries(node)) {
     if (k === "command" && node.type === "command" && typeof v === "string") {
-      const words = parseShellWords(v).map(w => w.replace(/<[A-Z_]+>/g, token => vars[token] ?? token));
+      const words = parseShellWords(v).flatMap(w => (Array.isArray(vars[w])
+        ? vars[w]
+        : [w.replace(/<[A-Z_]+>/g, token => (typeof vars[token] === "string" ? vars[token] : token))]));
       out[k] = command(...words);
     } else {
       out[k] = renderTemplateValue(v, vars);
@@ -93,15 +101,28 @@ function renderTemplateValue(node, vars) {
   return out;
 }
 
-export function renderAntigravityHooks({ cfg, settings = null, scriptsDir, templatePath = ANTIGRAVITY_TEMPLATE }) {
+export function renderAntigravityHooks({ cfg = null, settings = null, ownerStore = null, scriptsDir, templatePath = ANTIGRAVITY_TEMPLATE }) {
   const { data } = readJsonObject(templatePath);
   if (!isPlainObject(data[HOOK_KEY])) throw new HooksError(`${templatePath}: missing "${HOOK_KEY}" template object`);
+  let startScopeArgs, wordsScopeArgs, guardScopeArgs;
+  if (ownerStore !== null && ownerStore !== undefined && !cfg) {
+    const loaded = loadHookStore(ownerStore);
+    if (!loaded.ok) throw new HooksError(loaded.error, 2);
+    const storeArg = ["--owner-store", loaded.storePath];
+    startScopeArgs = storeArg;
+    wordsScopeArgs = storeArg;
+    guardScopeArgs = storeArg;
+  } else {
+    if (!cfg) throw new HooksError("rendering antigravity hooks requires cfg or ownerStore", 2);
+    startScopeArgs = ownerStore ? ["--owner-store", resolve(ownerStore)] : [];
+    wordsScopeArgs = ["--records", resolve(cfg.records), "--project", dedupeProjects(cfg, settings).join(",")];
+    guardScopeArgs = ["--product", resolve(cfg.product), "--workspaces", resolve(cfg.workDir)];
+  }
   const vars = {
     "<SELF_LOOP_SCRIPTS>": resolve(scriptsDir),
-    "<RECORDS>": resolve(cfg.records),
-    "<PROJECTS>": dedupeProjects(cfg, settings).join(","),
-    "<PRODUCT>": resolve(cfg.product),
-    "<WORKSPACES>": resolve(cfg.workDir),
+    "<START_SCOPE_ARGS>": startScopeArgs,
+    "<WORDS_SCOPE_ARGS>": wordsScopeArgs,
+    "<GUARD_SCOPE_ARGS>": guardScopeArgs,
   };
   return { [HOOK_KEY]: renderTemplateValue(data[HOOK_KEY], vars) };
 }
@@ -168,6 +189,17 @@ function validateSelfLoopEntry(entry, file, { checkDisk = true } = {}) {
   const findings = [];
   if (!isPlainObject(entry)) return [`${file}: missing "${HOOK_KEY}" hook object`];
   if (entry.enabled === false) findings.push(`${file}: "${HOOK_KEY}" hook is disabled (enabled: false)`);
+  const referencedStores = new Set();
+  const noteStore = (flags, label) => {
+    if (!("owner-store" in flags)) return false;
+    const dir = String(flags["owner-store"] ?? "").trim();
+    if (!dir) {
+      findings.push(`${file}: ${label} --owner-store requires a non-empty directory path`);
+      return false;
+    }
+    referencedStores.add(resolve(dir));
+    return true;
+  };
   const flatSpecs = [
     ["SessionStart", "self-loop.mjs"],
     ["PreInvocation", "owner-words.mjs"],
@@ -183,6 +215,16 @@ function validateSelfLoopEntry(entry, file, { checkDisk = true } = {}) {
     if (!valid) {
       findings.push(`${file}: ${event} is missing a command handler for ${expectedScript}`);
       continue;
+    }
+    const flags = handlerArgsFromCommand(valid.command);
+    if (event === "SessionStart") {
+      noteStore(flags, `${event} ${expectedScript}`);
+    } else {
+      const hasStore = noteStore(flags, `${event} ${expectedScript}`);
+      const hasScoped = Boolean(flags.records && flags.project);
+      if (!hasStore && !hasScoped) {
+        findings.push(`${file}: ${event} ${expectedScript} requires (--records and --project) or --owner-store`);
+      }
     }
     if (checkDisk) {
       const script = scriptPathFromCommand(valid.command);
@@ -200,10 +242,24 @@ function validateSelfLoopEntry(entry, file, { checkDisk = true } = {}) {
       const guard = starGroup.hooks.find(h => isPlainObject(h) && h.type === "command" && typeof h.command === "string" && basename(scriptPathFromCommand(h.command) ?? "") === "lead-guard.mjs");
       if (!guard) {
         findings.push(`${file}: PreToolUse matcher "*" is missing a command handler for lead-guard.mjs`);
-      } else if (checkDisk) {
-        const script = scriptPathFromCommand(guard.command);
-        if (!script || !existsSync(script)) findings.push(`${file}: PreToolUse script does not exist on disk (${script ?? "none"})`);
+      } else {
+        const flags = handlerArgsFromCommand(guard.command);
+        const hasStore = noteStore(flags, "PreToolUse lead-guard.mjs");
+        const hasProduct = typeof flags.product === "string" && flags.product.trim().length > 0;
+        if (!hasStore && !hasProduct) {
+          findings.push(`${file}: PreToolUse lead-guard.mjs requires --product or --owner-store`);
+        }
+        if (checkDisk) {
+          const script = scriptPathFromCommand(guard.command);
+          if (!script || !existsSync(script)) findings.push(`${file}: PreToolUse script does not exist on disk (${script ?? "none"})`);
+        }
       }
+    }
+  }
+  if (checkDisk) {
+    for (const storeDir of referencedStores) {
+      const loaded = loadHookStore(storeDir);
+      if (!loaded.ok) findings.push(`${file}: ${loaded.error}`);
     }
   }
   return findings;
@@ -235,7 +291,7 @@ export function discoverSkill({ cwd = null, product = null, env = process.env } 
   return { discovered: false, path: null, checked };
 }
 
-export function installHooks({ harness, scope = "workspace", target = null, cfg, settings = null, scriptsDir, env = process.env, cwd = process.cwd(), dryRun = false }) {
+export function installHooks({ harness, scope = "workspace", target = null, cfg = null, settings = null, ownerStore = null, scriptsDir, env = process.env, cwd = process.cwd(), dryRun = false }) {
   const adapter = getHarness(harness);
   const file = adapter.resolveTarget({ scope, target, cfg, env, cwd });
   const ignoreInfo = gitIgnoreTarget(file);
@@ -243,7 +299,7 @@ export function installHooks({ harness, scope = "workspace", target = null, cfg,
     throw new HooksError(`${file}: tracked by Git; refusing to modify tracked user hooks (use --scope global or merge the "${HOOK_KEY}" entry manually)`, 2);
   }
   const { data } = readJsonObject(file);
-  const rendered = adapter.render({ cfg, settings, scriptsDir });
+  const rendered = adapter.render({ cfg, settings, ownerStore, scriptsDir });
   const next = { ...data, [HOOK_KEY]: rendered[HOOK_KEY] };
   const content = `${JSON.stringify(next, null, 2)}\n`;
   if (dryRun) {
@@ -262,7 +318,7 @@ export function installHooks({ harness, scope = "workspace", target = null, cfg,
   return { action: "install", harness, scope: target ? "target" : scope, target: file, dryRun: false, exclude };
 }
 
-export function checkHooks({ harness, scope = "workspace", target = null, cfg = null, env = process.env, cwd = process.cwd() }) {
+export function checkHooks({ harness, scope = "workspace", target = null, cfg = null, ownerStore = null, env = process.env, cwd = process.cwd() }) {
   const adapter = getHarness(harness);
   const file = adapter.resolveTarget({ scope, target, cfg, env, cwd });
   const findings = [];
@@ -275,6 +331,10 @@ export function checkHooks({ harness, scope = "workspace", target = null, cfg = 
     } catch (error) {
       findings.push(error.message);
     }
+  }
+  if (ownerStore !== null && ownerStore !== undefined) {
+    const loaded = loadHookStore(ownerStore);
+    if (!loaded.ok && !findings.some(f => f.includes(loaded.error))) findings.push(loaded.error);
   }
   const ignoreInfo = gitIgnoreTarget(file);
   if (ignoreInfo && !ignoreInfo.ignored && !isGitTracked(ignoreInfo)) {
@@ -310,7 +370,6 @@ export function checkHooks({ harness, scope = "workspace", target = null, cfg = 
   return { ok: findings.length === 0, harness, scope: target ? "target" : scope, target: file, findings, skill };
 }
 
-/** Fast read-only hook health probe for `self-loop start`: silent when no Antigravity dirs exist on the host. */
 export function checkAntigravityHooks({ cfg = null, env = process.env, cwd = process.cwd() } = {}) {
   const wsHooks = cfg?.product ? join(cfg.product, ".agents", "hooks.json") : null;
   const globalHooks = join(geminiHome(env), "config", "hooks.json");
@@ -350,7 +409,7 @@ export function uninstallHooks({ harness, scope = "workspace", target = null, cf
       removedFile = true;
       const parent = dirname(file);
       if (basename(parent) === ".agents") {
-        try { if (readdirSync(parent).length === 0) rmdirSync(parent); } catch { /* non-empty or gone */ }
+        try { if (readdirSync(parent).length === 0) rmdirSync(parent); } catch {}
       }
     } else {
       writeAtomic(file, `${JSON.stringify(next, null, 2)}\n`);

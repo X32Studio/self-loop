@@ -1,4 +1,4 @@
-// D-0061, design/suite-once.md#2
+// D-0061, R-0032-reviewer-architecture, design/suite-once.md#2
 import { readFileSync, readdirSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import {
   ANTIGRAVITY_SHELL_TOOLS,
   ANTIGRAVITY_STEP_TYPES,
   decodeCompactArg,
+  decodeToolCallArgs,
   extractToolPaths,
   isDisallowedRoleTool,
 } from "./lib/antigravity.mjs";
@@ -119,21 +120,22 @@ export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = n
       const canCreditDenied = generics.length === event.tool_calls.length && hasFollowingTurnStep;
       if (!canCreditDenied && event.tool_calls.length > 0) unparsedCalls++;
       for (const [k, tc] of event.tool_calls.entries()) {
-        if (!tc || typeof tc.name !== "string" || !tc.name || !tc.args || typeof tc.args !== "object" || Array.isArray(tc.args)) {
+        const decodedTc = decodeToolCallArgs(tc);
+        if (!tc || typeof tc.name !== "string" || !tc.name || !decodedTc.ok || !decodedTc.present) {
           unparsedCalls++;
-          if (stepTruncated) violations.push({ id, tool: tc?.name ?? "(unknown)", path: "(truncated/unparseable tool argument)" });
+          if (stepTruncated || !decodedTc.ok) violations.push({ id, tool: tc?.name ?? "(unknown)", path: "(truncated/unparseable tool argument)" });
           continue;
         }
         toolEvents++;
         const outcome = canCreditDenied ? generics[k] : null;
         const rejected = outcome?.status === "ERROR";
         const record = rejected ? denied : violations;
-        let decodedArgs = tc.args;
+        let decodedArgs = decodedTc.args;
         let pathOrUrlDecodeFailed = false;
         let shellDecodeFailed = false;
         if (stepTruncated) {
           decodedArgs = {};
-          for (const [key, val] of Object.entries(tc.args)) {
+          for (const [key, val] of Object.entries(decodedTc.args)) {
             if (typeof val === "string") {
               const decoded = decodeCompactArg(val);
               if (decoded.ok) decodedArgs[key] = decoded.value;

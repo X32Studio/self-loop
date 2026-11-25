@@ -1,13 +1,4 @@
-// start: the one entry point a fresh session of any harness reads first (design §6.2, F-0003). This part of it shows
-// what the heartbeat found for every registered product, whatever product the session runs in (I-0001: a product the
-// lead was not looking at stood still), then the session's own product and its next steps.
-//
-// For each registered product: the committed stall alarm of its current idle period (the alarm `tick` wrote, identified
-// by the phase and the last recorded activity, exactly as `tick` and `next` identify it, so it stays live until activity
-// resumes or the phase changes, whatever threshold raised it), or a stall decided now that no tick has recorded (the
-// heartbeat is not running); a product that cannot be clocked (missing, no loop, unreadable); and records repositories
-// under the roots nobody registered. It reads committed records only and writes nothing: reading appends no alarm.
-// Still to come in slice 6: lead or child, the rules block with effective rungs, open words, adapter and hooks health.
+// F-0003, F-0009, I-0001, D-0052, D-0060, R-0033-judge-hooks
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { load, Stop } from "../call.mjs";
@@ -17,7 +8,6 @@ import { loadRegistry, LocalLoopError, LOOP, productState, resolveConfig } from 
 import { discoveryFindings, findingLine, idleFindings, uncheckedFindings, inspectProduct, liveStallFinding, quietCount } from "./tick.mjs";
 import { nextLines, queryClock, recordsOf } from "../loop.mjs";
 
-/** One registered product's findings for a reader: its problem, its live stall, and what failed to compute. */
 function watchFindings(i, now) {
   if (i.problem) return [{ kind: i.problem.kind, ...i.where, detail: i.problem.detail }];
   const stall = liveStallFinding(i, now);
@@ -25,19 +15,27 @@ function watchFindings(i, now) {
     ...i.errors.map(detail => ({ kind: "error", ...i.where, detail }))];
 }
 
-/** The session's product: the one configuration resolved as `next` resolves it; none or several is reported, not guessed. */
-function sessionOf({ config, env, cwd, store, inspected, clock }) {
+function sessionOf({ config, env, cwd, store, inspected, clock, sessionRoute = null }) {
+  if (sessionRoute?.problem) return { product: null, problem: sessionRoute.problem };
   let resolved;
-  try { resolved = resolveConfig({ config, env, cwd, store: () => store }); }
-  catch (e) {
-    if (e instanceof LocalLoopError) throw e;
-    if (e instanceof UsageError) return { product: null, problem: e.message };
-    throw e;
+  if (sessionRoute?.product) {
+    const p = sessionRoute.product;
+    resolved = { config: join(p.records, LOOP), product: { name: p.name, records: p.records, cfg: null }, source: "registry" };
+  } else {
+    try { resolved = resolveConfig({ config, env, cwd, store: () => store }); }
+    catch (e) {
+      if (e instanceof LocalLoopError) throw e;
+      if (e instanceof UsageError) return { product: null, problem: e.message };
+      throw e;
+    }
   }
   const seen = resolved.product && inspected.find(i => i.product?.name === resolved.product.name && i.state);
   let cfg = seen?.product.cfg, state = seen?.state;
   if (!cfg) {
-    try { cfg = resolved.product?.cfg ?? load(resolved.config); }
+    try {
+      const loaded = resolved.product?.cfg ?? load(resolved.config);
+      cfg = resolved.product ? { ...loaded, records: resolved.product.records } : loaded;
+    }
     catch (e) {
       if (e instanceof Stop || e.code === "ENOENT" || e instanceof SyntaxError) throw new UsageError(`${resolved.config}: ${e.message}`);
       throw e;
@@ -53,11 +51,7 @@ function sessionOf({ config, env, cwd, store, inspected, clock }) {
   return session;
 }
 
-/**
- * The start report. `config` is --config (else SELF_LOOP_CONFIG, else the registry by the working directory). A
- * missing or malformed registry is reported, not fatal: the session's own product still shows.
- */
-export function startReport({ store, config, env = process.env, cwd = process.cwd(), now, clockMode, hours = null, skill }) {
+export function startReport({ store, config, env = process.env, cwd = process.cwd(), now, clockMode, hours = null, skill, sessionRoute = null }) {
   const clock = queryClock({ now, clockMode });
   now = clock.now;
   let registry = null, registryProblem = null;
@@ -69,7 +63,7 @@ export function startReport({ store, config, env = process.env, cwd = process.cw
   const inspected = registry ? registry.products.map(entry => inspectProduct(entry, { now, hours, next: false, store })) : [];
   const findings = [...inspected.flatMap(i => watchFindings(i, now)), ...(registry ? discoveryFindings(registry, store, inspected) : [])];
   const version = skill && existsSync(join(skill, "VERSION")) ? readFileSync(join(skill, "VERSION"), "utf8").trim() : null;
-  const session = sessionOf({ config, env, cwd, store, inspected, clock });
+  const session = sessionOf({ config, env, cwd, store, inspected, clock, sessionRoute });
   const hooks = session.hooks
     ? { healthy: session.hooks.healthy, findings: session.hooks.findings }
     : (() => {
@@ -80,7 +74,6 @@ export function startReport({ store, config, env = process.env, cwd = process.cw
     products: registry?.products.length ?? 0, findings, hooks, session };
 }
 
-/** The report as text, for the session to read. `selfLoop` is the command a stalled product's next steps are shown by. */
 export function startText(report, { selfLoop = "self-loop.mjs" } = {}) {
   const { release } = report;
   const lines = [`self-loop start ${report.time} · ${report.clock?.mode === "simulation" ? "read-only simulation" : "live clock"} · release ${release.version ?? "unknown"} (${release.path ?? "?"}) · owner store ${report.ownerStore} · ${report.products} registered product(s)`];
@@ -111,7 +104,7 @@ export function startText(report, { selfLoop = "self-loop.mjs" } = {}) {
   return lines.join("\n");
 }
 
-// design/continuation-entry.md
+// design/continuation-entry.md#entry
 export function parentEntryInput(path) {
   let input;
   try { input = JSON.parse(readFileSync(path, "utf8")); }
@@ -134,7 +127,7 @@ export function parentEntryInput(path) {
   return input;
 }
 
-// design/continuation-entry.md
+// design/continuation-entry.md#entry
 export async function reconcileParentEntry({ store, input, now, clockMode }) {
   const clock = queryClock({ now, clockMode });
   if (clock.clockMode !== "live") throw new UsageError("--now simulation cannot be combined with mutating --parent-entry");
@@ -181,7 +174,7 @@ export async function reconcileParentEntry({ store, input, now, clockMode }) {
     products: results, failed: results.some(result => result.errors.length > 0) };
 }
 
-// design/continuation-entry.md
+// design/continuation-entry.md#entry
 export function continuationText(report) {
   const lines = [`Continuation: ${report.mode} · independent wake ${report.wake}`, report.limitation, `Next trigger: ${report.nextTrigger}`];
   for (const result of report.products) {

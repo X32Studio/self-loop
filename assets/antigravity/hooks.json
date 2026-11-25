@@ -4,14 +4,14 @@
     "SessionStart": [
       {
         "type": "command",
-        "command": "node '<SELF_LOOP_SCRIPTS>/self-loop.mjs' start --hook antigravity",
+        "command": "node '<SELF_LOOP_SCRIPTS>/self-loop.mjs' start --hook antigravity <START_SCOPE_ARGS>",
         "timeout": 15
       }
     ],
     "PreInvocation": [
       {
         "type": "command",
-        "command": "node '<SELF_LOOP_SCRIPTS>/owner-words.mjs' capture --harness antigravity --records '<RECORDS>' --project '<PROJECTS>'",
+        "command": "node '<SELF_LOOP_SCRIPTS>/owner-words.mjs' capture --harness antigravity <WORDS_SCOPE_ARGS>",
         "timeout": 10
       }
     ],
@@ -21,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node '<SELF_LOOP_SCRIPTS>/lead-guard.mjs' --harness antigravity --product '<PRODUCT>' --workspaces '<WORKSPACES>'",
+            "command": "node '<SELF_LOOP_SCRIPTS>/lead-guard.mjs' --harness antigravity <GUARD_SCOPE_ARGS>",
             "timeout": 10
           }
         ]
@@ -30,7 +30,7 @@
     "Stop": [
       {
         "type": "command",
-        "command": "node '<SELF_LOOP_SCRIPTS>/word-gate.mjs' --harness antigravity --records '<RECORDS>' --project '<PROJECTS>'",
+        "command": "node '<SELF_LOOP_SCRIPTS>/word-gate.mjs' --harness antigravity <WORDS_SCOPE_ARGS>",
         "timeout": 15
       }
     ]

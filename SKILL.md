@@ -418,10 +418,17 @@ git-excluded via `.git/info/exclude`) or global (`${GEMINI_HOME:-~/.gemini}/conf
 `assets/antigravity/hooks.json` with:
 
 ```
-node scripts/self-loop.mjs hooks install --harness antigravity [--scope workspace|global] [--config <loop.json>]
-node scripts/self-loop.mjs hooks check --harness antigravity [--scope workspace|global] [--config <loop.json>]
+node scripts/self-loop.mjs hooks install --harness antigravity [--scope workspace|global] [--all | --config <loop.json>] [--owner-store <dir>]
+node scripts/self-loop.mjs hooks check --harness antigravity [--scope workspace|global] [--config <loop.json>] [--owner-store <dir>]
 node scripts/self-loop.mjs hooks uninstall --harness antigravity [--scope workspace|global] [--config <loop.json>]
 ```
+
+For multi-product hosts, `--scope global` with `--owner-store <dir>` (or `--all`, or without `--config` when an owner-store
+`products.json` exists) binds `SessionStart`, `PreInvocation`, `PreToolUse`, and `Stop` dynamically to `--owner-store <dir>`:
+`lead-guard.mjs` enforces product code, linked Git worktrees, role workspaces (`<workDir>/tasks/**` only), and cross-product
+live `call.json` nonces across every registered product fail-closed (including products added later via `registry add` without
+reinstalling hooks), while `owner-words.mjs capture` and `word-gate.mjs` route each session by `cwd`/`workspacePaths` and
+cleanly skip unregistered or child workspaces. `owner-words.mjs sync --owner-store <dir>` syncs every registered product.
 
 For T3 child threads (`runner: "t3"`), `provider` may be `codex`, `claude`, or `antigravity` (`t3:codex` is refused for
 the frame reviewer; `t3:antigravity` and `t3:claude` run the frame reviewer in confined mode with fail-closed transcript

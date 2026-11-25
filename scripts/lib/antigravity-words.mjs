@@ -1,82 +1,111 @@
-// Antigravity owner-words adapter: transcript parsing, child-session exclusion, three-state DB sync isolation,
-// and step_index-anchored PreInvocation confirmation (F-0009, design/antigravity-harness.md#owner-words-capture-and-sync).
-import { existsSync, readdirSync } from "node:fs";
+// F-0009, D-0052, R-0032-reviewer-architecture, design/antigravity-harness.md#owner-words-capture-and-sync
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  antigravityAppDirs,
-  appDirFromTranscriptPath,
-  conversationIdFromPath,
-  readConversationSummaries,
-  resolveAuthoritativeTranscript,
-  unwrapAntigravityUserText,
-} from "./antigravity.mjs";
-import {
-  DELEGATED_NOTICE,
-  T3_AGENT_NOTICE,
-  LeadSends,
-  captureOwnerText,
-  delegatedThread,
-  inside,
-  isLeadPrompt,
-  numberWords,
-  ownerPrompt,
-  rowsOf,
-} from "./owner-words-core.mjs";
+import { antigravityAppDirs, appDirFromTranscriptPath, conversationIdFromPath, decodeToolCallArgs, extractHookDirs, readConversationSummaries, resolveAuthoritativeTranscript, unwrapAntigravityUserText } from "./antigravity.mjs";
+import { DELEGATED_NOTICE, T3_AGENT_NOTICE, LeadSends, captureOwnerText, delegatedThread, handoffMessage, inside, isLeadPrompt, numberWords, ownerPrompt } from "./owner-words-core.mjs";
 
-const isUserRow = row => row?.type === "USER_INPUT" && row.source === "USER_EXPLICIT" && typeof row.content === "string";
+const TRUNCATED_REASON = "compact transcript has truncated USER_INPUT without transcript_full.jsonl";
+const isChildSummary = summary => Boolean(summary && (summary.parent_conversation_id || summary.nesting_depth > 0));
+const isExplicitUserRow = row => row?.type === "USER_INPUT" && row.source === "USER_EXPLICIT";
+const isUserRow = row => isExplicitUserRow(row) && typeof row.content === "string";
 const isTruncatedContent = row => Array.isArray(row?.truncated_fields) && row.truncated_fields.includes("content");
 
-/** Classify whether an Antigravity transcript belongs to a subagent/delegated child session. */
-export function antigravityAgent(rows, summary = null) {
-  if (summary && (summary.parent_conversation_id || summary.nesting_depth > 0)) return { agent: true, unparseableFirstPrompt: false };
-  const first = rows.find(isUserRow);
-  if (!first || isTruncatedContent(first)) return { agent: false, unparseableFirstPrompt: false };
-  const unwrapped = unwrapAntigravityUserText(first.content);
-  if (unwrapped === null) return { agent: false, unparseableFirstPrompt: true };
-  const trimmed = unwrapped.trim();
-  if (T3_AGENT_NOTICE.test(trimmed) || DELEGATED_NOTICE.test(trimmed) || isLeadPrompt(ownerPrompt(unwrapped)?.text ?? "")) {
-    return { agent: true, unparseableFirstPrompt: false };
+function readTranscriptRows(file) {
+  const rows = [];
+  let parseErrors = 0;
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    try { rows.push(JSON.parse(line)); }
+    catch { parseErrors++; }
   }
-  return { agent: false, unparseableFirstPrompt: false };
+  return { rows, parseErrors };
 }
 
-/** Child-session check for Antigravity hooks (treats unparseable step-0 as non-owner/skip in hooks). */
-export function antigravityChildSession(file, summary = null) {
-  if (summary && (summary.parent_conversation_id || summary.nesting_depth > 0)) return true;
-  if (!file) return false;
+function unwrapHandoffText(text) {
+  let current = text;
+  while (/^Context handoff \([a-z_]+\):(?:\r?\n|$)/.test(current)) {
+    const next = handoffMessage(current);
+    if (next === null) break;
+    current = next.trim();
+  }
+  return current;
+}
+
+function antigravityAgent(rows, summary = null, { parseErrors = 0 } = {}) {
+  const res = (agent, extra = {}) => ({ agent, unresolved: false, unparseableFirstPrompt: false, truncatedFirstPrompt: false, reason: null, ...extra });
+  if (isChildSummary(summary)) return res(true);
+  if (parseErrors > 0) return res(false, { unresolved: true, unparseableFirstPrompt: true, reason: "transcript has unparseable JSON line(s)" });
+  const first = rows.find(isExplicitUserRow);
+  if (!first) {
+    return Number.isInteger(summary?.last_user_input_step_index) && summary.last_user_input_step_index >= 0
+      ? res(false, { unresolved: true, reason: "transcript is missing first USER_INPUT step" })
+      : res(false);
+  }
+  if (Number.isInteger(first.step_index) && first.step_index > 0 && !rows.some(r => r?.step_index === 0)) {
+    return res(false, { unresolved: true, reason: "transcript is missing step 0 before first USER_INPUT" });
+  }
+  if (typeof first.content !== "string") return res(false, { unresolved: true, unparseableFirstPrompt: true, reason: "first USER_INPUT has missing content" });
+  if (isTruncatedContent(first)) return res(false, { unresolved: true, truncatedFirstPrompt: true, reason: TRUNCATED_REASON });
+  const unwrapped = unwrapAntigravityUserText(first.content);
+  if (unwrapped === null) return res(false, { unresolved: true, unparseableFirstPrompt: true, reason: "unparseable first prompt" });
+  const trimmed = unwrapHandoffText(unwrapped.trim());
+  if (T3_AGENT_NOTICE.test(trimmed) || DELEGATED_NOTICE.test(trimmed) || isLeadPrompt(ownerPrompt(unwrapped)?.text ?? "")) return res(true);
+  return res(false);
+}
+
+function lookupConversationSummary(actual, conversationId = null) {
+  const id = conversationId || conversationIdFromPath(actual);
+  const appDir = id ? appDirFromTranscriptPath(actual) : null;
+  const db = appDir ? readConversationSummaries(appDir) : null;
+  return db?.state === "ok" ? (db.rows.get(id) ?? null) : null;
+}
+
+export function antigravitySessionState(file, { summary = undefined, conversationId = null } = {}) {
+  const empty = { agent: false, unresolved: false, unparseableFirstPrompt: false, truncatedFirstPrompt: false, reason: null };
+  if (isChildSummary(summary)) return { state: "confirmed-child", ...empty, agent: true };
+  if (!file) return { state: "owner", ...empty };
   const actual = resolveAuthoritativeTranscript(file);
-  if (!existsSync(actual)) return false;
-  const status = antigravityAgent(rowsOf(actual), summary);
-  return status.agent || status.unparseableFirstPrompt;
+  const resolved = summary === undefined ? lookupConversationSummary(actual, conversationId) : summary;
+  if (isChildSummary(resolved)) return { state: "confirmed-child", ...empty, agent: true };
+  if (!existsSync(actual)) return { state: "owner", ...empty };
+  let read;
+  try { read = readTranscriptRows(actual); }
+  catch (error) { return { state: "unresolved", ...empty, unresolved: true, reason: error?.message ?? String(error) }; }
+  const status = antigravityAgent(read.rows, resolved, { parseErrors: read.parseErrors });
+  return { state: status.agent ? "confirmed-child" : status.unresolved ? "unresolved" : "owner", ...status };
+}
+
+export function antigravityChildSession(file, summary = undefined) {
+  return antigravitySessionState(file, { summary }).state === "confirmed-child";
 }
 
 export function antigravityHookSession(input, projects, env = process.env) {
   if (typeof input?.conversationId !== "string" || !input.conversationId) return false;
-  const dirs = [input.cwd, ...(Array.isArray(input.workspacePaths) ? input.workspacePaths : [])]
-    .filter(d => typeof d === "string" && d.length > 0);
+  const dirs = extractHookDirs(input);
   if (!dirs.length || !dirs.some(d => inside(d, projects))) return false;
   if (delegatedThread(env)) return false;
   if (typeof input.parentConversationId === "string" && input.parentConversationId.length > 0) return false;
-  if (input.transcriptPath) {
-    const actual = resolveAuthoritativeTranscript(input.transcriptPath);
-    const appDir = appDirFromTranscriptPath(actual);
-    const db = appDir ? readConversationSummaries(appDir) : null;
-    const summary = db?.state === "ok" ? (db.rows.get(input.conversationId) ?? null) : null;
-    if (antigravityChildSession(actual, summary)) return false;
-  }
+  if (input.transcriptPath && antigravitySessionState(input.transcriptPath, { conversationId: input.conversationId }).state === "confirmed-child") return false;
   return true;
 }
 
 export function antigravityTranscript(file, _roots = null, expectedSession = null, { summary = null } = {}) {
-  if (!file) return { words: [], echoes: [], skippedTruncated: 0, unparseableFirstPrompt: false };
+  const empty = { words: [], echoes: [], skippedTruncated: 0, unparseableFirstPrompt: false, unresolved: false, unresolvedReason: null };
+  if (!file) return empty;
   const actual = resolveAuthoritativeTranscript(file);
-  if (!existsSync(actual)) return { words: [], echoes: [], skippedTruncated: 0, unparseableFirstPrompt: false };
-  const rows = rowsOf(actual);
+  if (!existsSync(actual)) return empty;
   const session = expectedSession ?? conversationIdFromPath(actual);
-  if (!session) return { words: [], echoes: [], skippedTruncated: 0, unparseableFirstPrompt: false };
-  const status = antigravityAgent(rows, summary);
-  if (status.agent || status.unparseableFirstPrompt) {
-    return { words: [], echoes: [], skippedTruncated: 0, unparseableFirstPrompt: status.unparseableFirstPrompt };
+  if (!session) return empty;
+  const { rows, parseErrors } = readTranscriptRows(actual);
+  const status = antigravityAgent(rows, summary, { parseErrors });
+  if (status.agent || status.unresolved) {
+    return {
+      ...empty,
+      skippedTruncated: status.truncatedFirstPrompt ? 1 : 0,
+      unparseableFirstPrompt: status.unparseableFirstPrompt,
+      unresolved: status.unresolved,
+      unresolvedReason: status.reason,
+    };
   }
   const sends = new LeadSends();
   const items = [];
@@ -84,7 +113,10 @@ export function antigravityTranscript(file, _roots = null, expectedSession = nul
   let skippedTruncated = 0;
   for (const row of rows) {
     if (row?.type === "PLANNER_RESPONSE" && Array.isArray(row.tool_calls)) {
-      for (const tc of row.tool_calls) sends.add(tc?.name, tc?.args, row.created_at);
+      for (const tc of row.tool_calls) {
+        const decoded = decodeToolCallArgs(tc);
+        if (decoded.ok) sends.add(tc?.name, decoded.args, row.created_at);
+      }
       continue;
     }
     if (!isUserRow(row)) continue;
@@ -98,15 +130,14 @@ export function antigravityTranscript(file, _roots = null, expectedSession = nul
     if (sends.matches(prompt.text, item.time)) echoes.push({ ...item, source: "antigravity", session });
     else items.push(item);
   }
-  return { words: numberWords(session, items, "antigravity"), echoes, skippedTruncated, unparseableFirstPrompt: false };
+  return { ...empty, words: numberWords(session, items, "antigravity"), echoes, skippedTruncated };
 }
 
-/** Check whether the current PreInvocation turn is already confirmed in the transcript, anchored by step_index. */
 export function checkAntigravityTurnConfirmation({ transcriptPath, text, initialNumSteps, words = [], echoes = [] }) {
   if (!transcriptPath) return { confirmed: false, event: null };
   const actual = resolveAuthoritativeTranscript(transcriptPath);
   if (!existsSync(actual)) return { confirmed: false, event: null };
-  const rows = rowsOf(actual);
+  const { rows } = readTranscriptRows(actual);
   let lastRow = null;
   for (let i = rows.length - 1; i >= 0; i--) {
     if (isUserRow(rows[i])) { lastRow = rows[i]; break; }
@@ -141,7 +172,6 @@ function brainTranscripts(appDir) {
   return out;
 }
 
-/** Scan Antigravity transcripts with strict DB error isolation and explicit skip reporting (A10, R8). */
 export function collectAntigravityWords(roots, { env = process.env, home, sqliteLoader } = {}) {
   const words = [];
   const reasons = [];
@@ -169,18 +199,18 @@ export function collectAntigravityWords(roots, { env = process.env, home, sqlite
         }
       }
       const summary = lookup.state === "ok" ? lookup.summary : null;
-      if (summary && (summary.parent_conversation_id || summary.nesting_depth > 0)) continue;
+      if (isChildSummary(summary)) continue;
       if (roots && summary && !summary.workspaces.some(ws => inside(ws, roots))) continue;
       try {
         const result = antigravityTranscript(file, roots, id, { summary });
-        if (result.unparseableFirstPrompt) {
+        if (result.unresolved) {
           skipped++;
-          note("unparseable first prompt");
+          note(result.unresolvedReason ?? "unresolved Antigravity transcript");
           continue;
         }
         if (result.skippedTruncated > 0) {
           skipped += result.skippedTruncated;
-          note("compact transcript has truncated USER_INPUT without transcript_full.jsonl");
+          note(TRUNCATED_REASON);
         }
         words.push(...result.words);
       } catch (error) {
@@ -190,4 +220,84 @@ export function collectAntigravityWords(roots, { env = process.env, home, sqlite
     }
   }
   return { words, skipped, reason: reasons.length ? reasons.join("; ") : null };
+}
+
+export function collectAntigravityStoreWords(storeProducts, { routeProduct, env = process.env, home, sqliteLoader } = {}) {
+  const byProduct = new Map(storeProducts.map(p => [p.name, { words: [], skipped: 0, reasons: [] }]));
+  const unresolved = [];
+  const storeReasons = [];
+  let storeSkipped = 0;
+  const note = (list, reason) => { if (reason && !list.includes(reason)) list.push(reason); };
+  let appDirs = [];
+  try { appDirs = antigravityAppDirs({ env, ...(home !== undefined ? { home } : {}) }); }
+  catch (error) {
+    const reason = error?.message ?? String(error);
+    unresolved.push({ status: "unresolved", source: "antigravity", session: null, workspaces: [], products: [], reason });
+    return { byProduct, storeSkipped: 1, storeReasons: [reason], unresolved };
+  }
+  for (const appDir of appDirs) {
+    const convs = brainTranscripts(appDir);
+    if (!convs.length) continue;
+    const db = readConversationSummaries(appDir, sqliteLoader ? { sqliteLoader } : {});
+    if (db.state === "unavailable") {
+      storeSkipped += convs.length;
+      note(storeReasons, db.reason);
+      unresolved.push({ status: "unresolved", source: "antigravity", session: null, workspaces: [], products: [], reason: db.reason });
+      continue;
+    }
+    for (const { id, file } of convs) {
+      const lookup = db.get(id);
+      if (lookup.state === "missing-row") {
+        storeSkipped++;
+        const reason = "missing conversation_summaries.db row";
+        note(storeReasons, reason);
+        unresolved.push({ status: "unresolved", source: "antigravity", session: id, workspaces: [], products: [], reason });
+        continue;
+      }
+      const summary = lookup.summary;
+      if (isChildSummary(summary)) continue;
+      const routed = routeProduct(summary?.workspaces ?? [], storeProducts);
+      if (routed.status === "skip") continue;
+      if (routed.status === "ambiguous") {
+        let isAgent = false;
+        try {
+          const { rows, parseErrors } = readTranscriptRows(resolveAuthoritativeTranscript(file));
+          isAgent = antigravityAgent(rows, summary, { parseErrors }).agent;
+        } catch {}
+        if (isAgent) continue;
+        unresolved.push({
+          status: "ambiguous",
+          source: "antigravity",
+          session: id,
+          workspaces: summary?.workspaces ?? [],
+          products: routed.products ?? [],
+          reason: routed.error,
+        });
+        continue;
+      }
+      const bucket = byProduct.get(routed.product.name);
+      try {
+        const result = antigravityTranscript(file, null, id, { summary });
+        if (result.unresolved) {
+          bucket.skipped++;
+          const reason = result.unresolvedReason ?? "unresolved Antigravity transcript";
+          note(bucket.reasons, reason);
+          unresolved.push({ status: "unresolved", source: "antigravity", session: id, workspaces: summary?.workspaces ?? [], products: [routed.product.name], reason });
+          continue;
+        }
+        if (result.skippedTruncated > 0) {
+          bucket.skipped += result.skippedTruncated;
+          note(bucket.reasons, TRUNCATED_REASON);
+          unresolved.push({ status: "unresolved", source: "antigravity", session: id, workspaces: summary?.workspaces ?? [], products: [routed.product.name], reason: TRUNCATED_REASON });
+        }
+        bucket.words.push(...result.words);
+      } catch (error) {
+        bucket.skipped++;
+        const reason = error?.message ?? String(error);
+        note(bucket.reasons, reason);
+        unresolved.push({ status: "unresolved", source: "antigravity", session: id, workspaces: summary?.workspaces ?? [], products: [routed.product.name], reason });
+      }
+    }
+  }
+  return { byProduct, storeSkipped, storeReasons, unresolved };
 }

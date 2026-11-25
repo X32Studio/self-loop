@@ -1,15 +1,13 @@
-// Initialize a product's self-loop records repository: default in-repo gitignored <product>/.self-loop/ or explicit
-// external --records <dir>, with fail-closed tracked-path checks and optional owner-store registration.
+// F-0003, F-0009, D-0010, D-0052, R-0033-judge-hooks
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { commonGitDir } from "../lead-guard.mjs";
 import { check } from "../records-check.mjs";
 import { UsageError } from "./args.mjs";
 import { ensureExcludeEntry, ensureGitignoreEntry, gitIgnoreTarget, gitTopLevel, isGitIgnored, isPathTracked } from "./git-exclude.mjs";
 import { git, gitOk } from "./git-plumbing.mjs";
-import { canonical } from "./path-canonical.mjs";
+import { canonical, commonGitDir } from "./path-canonical.mjs";
 import { addProduct, DEFAULT_RECORDS_DIR, initStore, loadRegistry, LOOP, PRODUCT_NAME, real, REGISTRY, resolveOwnerStore } from "./registry.mjs";
 
 export const RECORDS_EXCLUDE_MARKER = "# self-loop managed: in-repo records";
@@ -21,7 +19,6 @@ export class InitError extends Error {
 
 const inside = (child, parent) => child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
 
-/** Derive a valid registry-compatible lowercase product name from a directory basename. */
 export function sanitizeProductName(raw) {
   const slug = String(raw ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   return slug && PRODUCT_NAME.test(slug) ? slug : "product";
@@ -104,10 +101,6 @@ function buildLoopConfig({ productField, branch, protectedBranches, workDir }) {
   };
 }
 
-/**
- * Initialize a self-loop records repository for a product repository.
- * Defaults to a nested gitignored repository at <product-root>/.self-loop/.
- */
 export function initLoop({
   product = null,
   records = null,
@@ -146,7 +139,6 @@ export function initLoop({
     throw new UsageError("--records must not live inside the product repository's .git directory");
   }
 
-  // Fail-closed checks before mutating ignore files or disk.
   if (isInRepo) {
     const tracked = isPathTracked(productRoot, relPosix);
     if (tracked.error) throw new InitError(tracked.error, 2);
@@ -187,25 +179,25 @@ export function initLoop({
 
   const rollback = () => {
     if (branchCreated) {
-      try { git(productRoot, "branch", "-D", branchCreated); } catch { /* best-effort cleanup */ }
+      try { git(productRoot, "branch", "-D", branchCreated); } catch {}
     }
     if (storeCreatedRoot) {
-      try { rmSync(storeCreatedRoot, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+      try { rmSync(storeCreatedRoot, { recursive: true, force: true }); } catch {}
     }
     if (recordsCreatedRoot) {
-      try { rmSync(recordsCreatedRoot, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+      try { rmSync(recordsCreatedRoot, { recursive: true, force: true }); } catch {}
     } else if (recordsPreExisted && existsSync(recordsDir)) {
       try {
         for (const entry of readdirSync(recordsDir)) {
           rmSync(join(recordsDir, entry), { recursive: true, force: true });
         }
-      } catch { /* best-effort cleanup */ }
+      } catch {}
     }
     if (ignoreSnapshot) {
       try {
         if (ignoreSnapshot.existed) writeFileSync(ignoreSnapshot.file, ignoreSnapshot.bytes);
         else rmSync(ignoreSnapshot.file, { force: true });
-      } catch { /* best-effort cleanup */ }
+      } catch {}
     }
   };
 

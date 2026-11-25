@@ -1,11 +1,15 @@
-// word-gate.mjs: the lead's turn does not end while the owner's words of this session are unsettled.
+// F-0002, D-0007, D-0052, R-0032-reviewer-architecture
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { basename, dirname, join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
+import { antigravityChildSession, antigravitySessionState } from "../lib/antigravity-words.mjs";
 import { appendWords, committedWords, queueOwnerPrompt } from "../lib/owner-words.mjs";
-import { git, repo, scripts, skill, temp } from "./helpers.mjs";
+import { sessionOpenWords } from "../word-gate.mjs";
+import { git, isolatedEnv, loopProduct, ownerStore, repo, scripts, skill, temp } from "./helpers.mjs";
 
 const project = "/work/example-app";
 const word = (id, session, text) => ({ id, time: "2026-11-21T05:26:13Z", source: "claude", session, text, sha256: "x" });
@@ -203,4 +207,97 @@ test("D-0007: Stop hints use the owner-words script next to the running release"
   assert.equal(exhausted.stdout, "");
   for (const subcommand of ["open", "pending --discard"])
     assert.ok(exhausted.stderr.includes(command + " " + subcommand), exhausted.stderr);
+});
+
+test("word-gate accepts prefixed *_NO_TOOL_CALL terminationReason and bounds ambiguous --owner-store refusals", () => {
+  const shared = temp("wg-shared-");
+  const a = loopProduct({ loop: { projects: [shared] } });
+  const b = loopProduct({ loop: { projects: [shared] } });
+  const store = ownerStore([{ name: "alpha", records: a.records }, { name: "beta", records: b.records }]);
+  appendWords(a.records, [word("W-00000000aa", "conv-pref", "prefixed termination test")]);
+  const env = isolatedEnv({ TMPDIR: temp("wg-tmp-"), T3CODE_THREAD_ID: "" });
+
+  const prefixed = spawnSync(process.execPath, [join(scripts, "word-gate.mjs"), "--harness", "antigravity", "--owner-store", store, "--max-blocks", "2"], {
+    input: JSON.stringify({ hookEventName: "Stop", conversationId: "conv-pref", cwd: a.product, terminationReason: "TERMINATION_REASON_NO_TOOL_CALL", fullyIdle: true, continuationActive: false }),
+    encoding: "utf8", env,
+  });
+  assert.equal(prefixed.status, 0, prefixed.stderr);
+  assert.equal(JSON.parse(prefixed.stdout).decision, "continue");
+
+  const ambig = () => spawnSync(process.execPath, [join(scripts, "word-gate.mjs"), "--harness", "antigravity", "--owner-store", store, "--max-blocks", "1"], {
+    input: JSON.stringify({ hookEventName: "Stop", conversationId: "conv-ambig", cwd: shared, terminationReason: "NO_TOOL_CALL", fullyIdle: true, continuationActive: false }),
+    encoding: "utf8", env,
+  });
+  const first = JSON.parse(ambig().stdout);
+  assert.equal(first.decision, "continue");
+  assert.match(first.reason, /multiple registered products/);
+  assert.deepEqual(JSON.parse(ambig().stdout), {});
+});
+
+test("antigravitySessionState and Stop separate confirmed-child, unresolved, and owner transcripts", () => {
+  const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
+  const appDir = temp("wg-ag-states-"), prod = loopProduct(), store = ownerStore([{ name: "alpha", records: prod.records }]);
+  const env = isolatedEnv({ ANTIGRAVITY_APP_DATA_DIR: appDir, TMPDIR: temp("wg-ag-tmp-"), T3CODE_THREAD_ID: "", T3CODE_HOME: "" });
+  const wrap = body => `<USER_REQUEST>\n<t3_code_instructions>\n## Mode\n</t3_code_instructions>\n\n<user_request>\n${body}\n</user_request><runtime_info>info</runtime_info>\n</USER_REQUEST>`;
+  const step = (step_index, content, extra = {}) => ({ step_index, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-23T01:00:00Z", ...(content !== undefined ? { content } : {}), ...extra });
+  const writeTx = (id, name, rows) => {
+    const dir = join(appDir, "brain", id, ".system_generated", "logs");
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, name);
+    writeFileSync(file, rows.map(r => (typeof r === "string" ? r : JSON.stringify(r))).join("\n") + "\n");
+    return file;
+  };
+  const db = new DatabaseSync(join(appDir, "conversation_summaries.db"));
+  db.exec("CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, workspace_uris TEXT, status TEXT, parent_conversation_id TEXT DEFAULT '', nesting_depth INTEGER DEFAULT 0)");
+  const ins = db.prepare("INSERT INTO conversation_summaries (conversation_id, workspace_uris, status, parent_conversation_id, nesting_depth) VALUES (?, ?, ?, ?, ?)");
+  ins.run("c-db-child", JSON.stringify([pathToFileURL(prod.product).href]), "CASCADE_RUN_STATUS_IDLE", "parent-root", 1);
+  ins.run("c-unresolved", JSON.stringify([pathToFileURL(prod.product).href]), "CASCADE_RUN_STATUS_IDLE", "", 0);
+  ins.run("c-owner", JSON.stringify([pathToFileURL(prod.product).href]), "CASCADE_RUN_STATUS_IDLE", "", 0);
+  db.close();
+
+  const childLeadTx = writeTx("c-lead-child", "transcript_full.jsonl", [step(0, wrap("Act as the actor sub-agent for this task.\n\nself-loop call R-0001-actor"))]);
+  const dbChildTx = writeTx("c-db-child", "transcript_full.jsonl", [step(0, wrap("Subagent task without lead markers"))]);
+  const unclosedTx = writeTx("c-unresolved", "transcript.jsonl", [step(0, "<USER_REQUEST>\n<truncated 800 bytes>"), step(1, wrap("Unverified step-1"))]);
+  const corruptTx = writeTx("c-corrupt", "transcript.jsonl", ['{"step_index":0,"type":"USER_INPUT"', step(1, wrap("Unverified after corrupt"))]);
+  const ownerTx = writeTx("c-owner", "transcript_full.jsonl", [step(0, wrap("Verified owner prompt"))]);
+
+  assert.equal(antigravitySessionState(childLeadTx).state, "confirmed-child");
+  assert.equal(antigravityChildSession(childLeadTx), true);
+  assert.equal(antigravitySessionState(dbChildTx).state, "confirmed-child");
+  assert.equal(antigravityChildSession(dbChildTx), true);
+  assert.equal(antigravitySessionState(null, { summary: { nesting_depth: 1 } }).state, "confirmed-child");
+
+  for (const [label, tx] of [["unclosed", unclosedTx], ["corrupt", corruptTx], ["unreadable-dir", appDir]]) {
+    const st = antigravitySessionState(tx);
+    assert.equal(st.state, "unresolved", label);
+    assert.equal(st.unresolved, true, label);
+    assert.equal(st.agent, false, label);
+    assert.equal(antigravityChildSession(tx), false, label);
+  }
+
+  assert.equal(antigravitySessionState(ownerTx).state, "owner");
+  assert.equal(antigravityChildSession(ownerTx), false);
+  assert.equal(antigravitySessionState(join(appDir, "missing.jsonl")).state, "owner");
+
+  appendWords(prod.records, [
+    { ...word("W-0000000011", "c-unresolved", "Committed owner word"), source: "antigravity" },
+    { ...word("W-0000000012", "c-db-child", "Tagged to db child"), source: "antigravity" },
+  ]);
+  queueOwnerPrompt(prod.records, { source: "antigravity", session: "c-unresolved", event: "step-0", time: "2026-11-23T01:00:00Z", text: "Pending owner prompt" });
+
+  const openRes = sessionOpenWords(
+    { hookEventName: "Stop", conversationId: "c-unresolved", transcriptPath: unclosedTx, cwd: prod.product, continuationActive: false, fullyIdle: true, terminationReason: "NO_TOOL_CALL" },
+    { records: prod.records, projects: [prod.product], env, harness: "antigravity" }
+  );
+  assert.deepEqual(openRes.open.map(w => w.id), ["W-0000000011"]);
+  assert.equal(openRes.pending.length, 1);
+  assert.equal(committedWords(prod.records).some(w => w.text === "Unverified step-1"), false);
+
+  const runStop = (extraArgs, payload) => spawnSync(process.execPath, [join(scripts, "word-gate.mjs"), "--harness", "antigravity", ...extraArgs], { input: JSON.stringify(payload), encoding: "utf8", env });
+  const dbChildGlobal = runStop(["--owner-store", store], { hookEventName: "Stop", conversationId: "c-db-child", transcriptPath: dbChildTx, cwd: prod.product, continuationActive: false, fullyIdle: true, terminationReason: "NO_TOOL_CALL" });
+  assert.deepEqual(JSON.parse(dbChildGlobal.stdout), {});
+
+  const ownerStop = runStop(["--owner-store", store], { hookEventName: "Stop", conversationId: "c-owner", transcriptPath: ownerTx, cwd: prod.product, continuationActive: false, fullyIdle: true, terminationReason: "NO_TOOL_CALL" });
+  assert.equal(JSON.parse(ownerStop.stdout).decision, "continue");
+  assert.ok(committedWords(prod.records).some(w => w.text === "Verified owner prompt"));
 });

@@ -1,16 +1,9 @@
-// The owner's words, verbatim: every message the owner typed to the lead, read from the harness (a prompt hook) or from
-// the session transcripts Claude Code and Codex write, appended to `owner/words.jsonl` in the records and committed
-// there by plumbing (HEAD plus that one file, the branch moved by compare-and-swap), so nothing staged rides along and
-// a concurrent hand-off commit is never overwritten.
-//
-// A word: { id, time, source: "claude" | "codex", session, text, sha256 }. Its ID is derived from the session, the text
-// and its ordinal among identical texts of that session, so the hook and a later transcript sync agree on it.
-//
+// F-0002, F-0009, D-0006, D-0007, D-0052, R-0033-judge-hooks
 import { randomUUID } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { antigravityHookSession, antigravityTranscript, collectAntigravityWords } from "./antigravity-words.mjs";
+import { antigravityHookSession, antigravityTranscript, collectAntigravityStoreWords, collectAntigravityWords } from "./antigravity-words.mjs";
 import { git } from "./git-plumbing.mjs";
 import {
   captureOwnerText,
@@ -81,10 +74,10 @@ export function claudeHookSession(input, projects, env = process.env) {
     && !delegatedThread(env) && !(input.transcript_path && claudeAgentSession(input.transcript_path)));
 }
 
-function claudeTranscript(file, roots, expected) {
-  if (!existsSync(file)) return { words: [], echoes: [] };
+function claudeSessionItems(file, expected = null) {
+  if (!existsSync(file)) return { session: null, items: [], words: [], echoes: [] };
   const rows = rowsOf(file);
-  if (claudeAgent(rows)) return { words: [], echoes: [] };
+  if (claudeAgent(rows)) return { session: null, items: [], words: [], echoes: [] };
   const fileSession = basename(file, ".jsonl");
   const session = expected ?? (rows.some(r => r.sessionId === fileSession) ? fileSession : rows.find(r => r.sessionId)?.sessionId ?? fileSession);
   const seen = new Set(), sends = new LeadSends(), items = [], echoes = [];
@@ -100,8 +93,11 @@ function claudeTranscript(file, roots, expected) {
     if (sends.matches(prompt.text, item.time)) echoes.push({ ...item, source: "claude", session });
     else items.push(item);
   }
-  // Number the whole session before filtering CWD. Overlapping project lists must agree on every word's ID.
-  const words = numberWords(session, items, "claude");
+  return { session, items, words: numberWords(session, items, "claude"), echoes };
+}
+
+function claudeTranscript(file, roots, expected) {
+  const { items, words, echoes } = claudeSessionItems(file, expected);
   const inScope = item => item.cwd && inside(item.cwd, roots);
   return { words: roots ? words.filter((_, i) => inScope(items[i])) : words, echoes: roots ? echoes.filter(inScope) : echoes };
 }
@@ -114,8 +110,8 @@ function codexMessages(file) {
   const rows = rowsOf(file);
   const meta = rows.find(r => r.type === "session_meta")?.payload ?? {};
   let cwd = meta.cwd;
-  const submitted = [], completed = [], fallback = [];
-  const trackers = new Map([submitted, completed, fallback].map(items => [items, new LeadSends()]));
+  const submitted = [], completed = [], rawResponses = [];
+  const trackers = new Map([submitted, completed, rawResponses].map(items => [items, new LeadSends()]));
   const collect = (items, text, time, event) => {
     const owner = CODEX_INJECTED.test(text.trimStart()) ? null : ownerPromptText(text);
     const echoed = owner !== null && trackers.get(items).matches(owner, time);
@@ -127,7 +123,7 @@ function codexMessages(file) {
       try {
         const input = JSON.parse(p.arguments);
         for (const tracker of trackers.values()) tracker.add(p.name, input, row.timestamp);
-      } catch { /* incomplete tool-call log */ }
+      } catch {}
     }
     if (row.type === "turn_context" && p?.cwd) cwd = p.cwd;
     if (row.type === "event_msg" && p?.type === "user_message" && typeof p.message === "string")
@@ -135,15 +131,14 @@ function codexMessages(file) {
     if (row.type === "event_msg" && p?.type === "item_completed" && p.item?.type === "UserMessage")
       collect(completed, textOf(p.item.content), row.timestamp, p.item.id);
     if (row.type === "response_item" && p?.type === "message" && p.role === "user")
-      collect(fallback, textOf(p.content), row.timestamp, p.id);
+      collect(rawResponses, textOf(p.content), row.timestamp, p.id);
   }
-  // Structured user events take precedence over model input. Older rollouts may have only response items.
-  const messages = completed.length ? completed : submitted.length ? submitted : fallback;
+  const messages = completed.length ? completed : submitted.length ? submitted : rawResponses;
   return { meta, session: meta.id ?? meta.session_id ?? file, items: messages.filter(i => i.text) };
 }
 
-function codexWords({ meta, session, items }, roots, sessions) {
-  if (codexAgentSession(meta) || !items.length) return [];
+function codexSessionItems({ meta, session, items }, sessions) {
+  if (codexAgentSession(meta) || !items.length) return { session, items: [], words: [] };
   if (meta.forked_from_id) {
     const parent = sessions.get(meta.forked_from_id);
     if (parent) {
@@ -159,8 +154,13 @@ function codexWords({ meta, session, items }, roots, sessions) {
       items = items.filter(item => Date.parse(item.time ?? "") > forkedAt);
     }
   }
-  if (!items.length || isLeadPrompt(items[0].text)) return [];
-  return numberWords(session, items, "codex").filter((_, i) => items[i].cwd && inside(items[i].cwd, roots));
+  if (!items.length || isLeadPrompt(items[0].text)) return { session, items: [], words: [] };
+  return { session, items, words: numberWords(session, items, "codex") };
+}
+
+function codexWords(sessionData, roots, sessions) {
+  const { items, words } = codexSessionItems(sessionData, sessions);
+  return words.filter((_, i) => items[i].cwd && inside(items[i].cwd, roots));
 }
 
 export const codexSessionWords = (file, roots) => codexWords(codexMessages(file), roots, new Map());
@@ -173,22 +173,68 @@ export const claudeSlug = dir => resolve(dir).replace(/[/.]/g, "-");
 const defaultClaude = () => process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
 const defaultCodex = () => process.env.CODEX_HOME || join(homedir(), ".codex");
 
-/** Scan Claude, Codex and Antigravity transcripts; isolate Antigravity DB/transcript errors into a skip report. */
-export function transcriptWordsReport(roots, { claudeHome = defaultClaude(), codexHome = defaultCodex(), env = process.env, home, sqliteLoader } = {}) {
-  const claude = projectSessions(join(claudeHome, "projects")).flatMap(file => claudeSessionWords(file, roots));
+function loadCodexSessions(codexHome) {
   const rollouts = [...walk(join(codexHome, "sessions")), ...jsonl(join(codexHome, "archived_sessions"))];
   const sessions = new Map();
   for (const file of rollouts) {
     const session = codexMessages(file), prior = sessions.get(session.session);
     if (!prior || prior.items.length < session.items.length) sessions.set(session.session, session);
   }
+  return sessions;
+}
+
+export function transcriptWordsReport(roots, { claudeHome = defaultClaude(), codexHome = defaultCodex(), env = process.env, home, sqliteLoader } = {}) {
+  const claude = projectSessions(join(claudeHome, "projects")).flatMap(file => claudeSessionWords(file, roots));
+  const sessions = loadCodexSessions(codexHome);
   const codex = [...sessions.values()].flatMap(s => codexWords(s, roots, sessions));
   const antigravity = collectAntigravityWords(roots, { env, ...(home !== undefined ? { home } : {}), ...(sqliteLoader ? { sqliteLoader } : {}) });
   const words = [...claude, ...codex, ...antigravity.words].sort((a, b) => String(a.time).localeCompare(String(b.time)));
   return { words, antigravity: { skipped: antigravity.skipped, reason: antigravity.reason } };
 }
 
-/** Scan Claude, Codex and Antigravity transcripts and return the merged sorted words list. */
+export function transcriptStoreWordsReport(storeProducts, { routeProduct, claudeHome = defaultClaude(), codexHome = defaultCodex(), env = process.env, home, sqliteLoader } = {}) {
+  const byProduct = new Map(storeProducts.map(p => [p.name, { words: [], antigravity: { skipped: 0, reason: null }, unresolved: [] }]));
+  const unresolved = [];
+  const routeSession = (source, session, items, words) => {
+    if (!items.length) return;
+    const dirs = [...new Set(items.map(i => i.cwd).filter(Boolean))];
+    const routed = routeProduct(dirs, storeProducts);
+    if (routed.status === "skip") return;
+    if (routed.status === "ambiguous") {
+      unresolved.push({ status: "ambiguous", source, session, workspaces: dirs, products: routed.products ?? [], reason: routed.error });
+      return;
+    }
+    const matched = words.filter((_, i) => items[i].cwd && inside(items[i].cwd, routed.projects));
+    byProduct.get(routed.product.name).words.push(...matched);
+  };
+  for (const file of projectSessions(join(claudeHome, "projects"))) {
+    const { session, items, words } = claudeSessionItems(file);
+    routeSession("claude", session, items, words);
+  }
+  const sessions = loadCodexSessions(codexHome);
+  for (const s of sessions.values()) {
+    const { session, items, words } = codexSessionItems(s, sessions);
+    routeSession("codex", session, items, words);
+  }
+  const ag = collectAntigravityStoreWords(storeProducts, { routeProduct, env, ...(home !== undefined ? { home } : {}), ...(sqliteLoader ? { sqliteLoader } : {}) });
+  unresolved.push(...ag.unresolved);
+  let totalAgSkipped = ag.storeSkipped;
+  const allAgReasons = [...ag.storeReasons];
+  for (const p of storeProducts) {
+    const bucket = byProduct.get(p.name);
+    const agBucket = ag.byProduct.get(p.name) ?? { words: [], skipped: 0, reasons: [] };
+    totalAgSkipped += agBucket.skipped;
+    for (const r of agBucket.reasons) if (!allAgReasons.includes(r)) allAgReasons.push(r);
+    bucket.words.push(...agBucket.words);
+    bucket.words.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+    const reasons = [...ag.storeReasons];
+    for (const r of agBucket.reasons) if (!reasons.includes(r)) reasons.push(r);
+    bucket.antigravity = { skipped: agBucket.skipped + ag.storeSkipped, reason: reasons.length ? reasons.join("; ") : null };
+    bucket.unresolved = unresolved.filter(u => !u.products.length || u.products.includes(p.name));
+  }
+  return { byProduct, unresolved, antigravity: { skipped: totalAgSkipped, reason: allAgReasons.length ? allAgReasons.join("; ") : null } };
+}
+
 export function transcriptWords(roots, opts = {}) {
   return transcriptWordsReport(roots, opts).words;
 }
@@ -248,7 +294,6 @@ export function discardOwnerPrompt(records, key, note) {
   return true;
 }
 
-/** Apply today's capture filter to old entries. Keep unmatched owner prompts available for recovery. */
 export function pendingOwnerPrompts(records, session = null) {
   const dir = pendingDir(records);
   return entries(dir).filter(f => f.isFile() && f.name.endsWith(".json")).flatMap(f => {
@@ -278,7 +323,6 @@ export function reconcileOwnerPrompts(records, words, session = null, echoes = [
     const expectedSource = prompt.source ?? "claude";
     const textMatches = pool.filter(word => {
       if (word.source !== expectedSource || word.session !== prompt.session) return false;
-      // Interpret a raw slash prompt only when Claude confirms the command in the transcript.
       if (word.text !== prompt.text) {
         const args = word.command && prompt.text.startsWith(word.command) && prompt.text.slice(word.command.length);
         if (!args || !/^\s/.test(args) || args.trimStart() !== word.text.trimStart()) return false;
@@ -367,10 +411,8 @@ export function wordClasses(marks) {
   return latest;
 }
 
-/** The words committed at HEAD of the records. */
 export const committedWords = records => parseWords(recordsSnapshot(records).read(WORDS));
 
-/** Append new words without including any of the lead's staged files. */
 export function appendWords(records, words, { message = null, attempts = 5 } = {}) {
   const { commit, value: added } = commitRecords(records, ({ read, add }) => {
     const old = read(WORDS);
@@ -379,9 +421,9 @@ export function appendWords(records, words, { message = null, attempts = 5 } = {
     for (const word of words) {
       if (known.has(word.id)) continue;
       const matches = (id, text) => {
-        const legacy = known.get(id);
-        return legacy && !legacy.event && legacy.source === word.source && legacy.session === word.session
-          && legacy.text === text && Math.abs(Date.parse(legacy.time) - Date.parse(word.time)) <= 2_000;
+        const prior = known.get(id);
+        return prior && !prior.event && prior.source === word.source && prior.session === word.session
+          && prior.text === text && Math.abs(Date.parse(prior.time) - Date.parse(word.time)) <= 2_000;
       };
       if (matches(word.legacyId, word.text) || matches(word.trimmedId, word.text.trim())) continue;
       known.set(word.id, word);

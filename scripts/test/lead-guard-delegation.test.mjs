@@ -10,11 +10,12 @@ import {
   extractDelegationPrompts,
   isDelegationTool,
   liveCallNonces,
+  normalizeHookInput,
   refusal,
 } from "../lead-guard.mjs";
 import { ANTIGRAVITY_DELEGATION_TOOLS } from "../lib/antigravity.mjs";
 import { hasGitPush } from "../lib/git-push-command.mjs";
-import { git, repo, scripts, temp } from "./helpers.mjs";
+import { git, loopProduct, ownerStore, repo, scripts, temp } from "./helpers.mjs";
 
 function makeFixture() {
   const product = repo({ "src/a.mjs": "export const a = 1;\n", "docs/GUIDE.md": "# Guide\n" });
@@ -169,4 +170,21 @@ test("CLI fails closed on malformed or non-object stdin in both Claude and Antig
   }
   assert.equal(run("").stdout, "");
   assert.equal(run("   ", ["--harness", "antigravity"]).stdout, "");
+});
+
+test("normalizeHookInput, multi-records liveCallNonces, and ownerStore refusal enforce fail-closed rules", () => {
+  assert.match(normalizeHookInput({ hookEventName: "PreToolUse", toolCall: { name: "read_file", argumentsJson: "{bad" } }).argError, /malformed JSON/);
+  assert.match(normalizeHookInput({ tool_name: "Write", tool_input: "{bad" }).argError, /malformed JSON/);
+  assert.equal(normalizeHookInput({ tool_name: "Write", tool_input: JSON.stringify({ file_path: "a.js" }) }).args.file_path, "a.js");
+
+  const a = loopProduct(), b = loopProduct();
+  mkdirSync(join(a.records, "delegations"), { recursive: true });
+  mkdirSync(join(b.records, "delegations"), { recursive: true });
+  writeFileSync(join(a.records, "delegations", "T-0001.json"), JSON.stringify({ nonce: "aaaa1111bbbb2222", wt: null }));
+  writeFileSync(join(b.records, "delegations", "T-0002.json"), JSON.stringify({ nonce: "cccc3333dddd4444", wt: null }));
+  assert.deepEqual([...liveCallNonces([], [a.records, b.records])].sort(), ["aaaa1111bbbb2222", "cccc3333dddd4444"]);
+
+  const store = ownerStore([{ name: "alpha", records: a.records }, { name: "beta", records: b.records }]);
+  assert.equal(refusal({ hookEventName: "PreToolUse", cwd: a.product, toolCall: { name: "delegate_task", argumentsJson: JSON.stringify({ task: "nonce cccc3333dddd4444" }) } }, { ownerStore: store, format: "antigravity" }), null);
+  assert.match(refusal({ hookEventName: "PreToolUse", toolCall: { name: "write_file", argumentsJson: JSON.stringify({ Path: "src/a.js" }) } }, { ownerStore: store, format: "antigravity" }), /requires hook cwd/);
 });

@@ -8,11 +8,11 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { auditAccess } from "../audit-access.mjs";
 import { productCode } from "../lead-guard.mjs";
-import { antigravityAppDirs, geminiHome, PRE_TOOL_USE_PASSTHROUGH, unwrapAntigravityUserText } from "../lib/antigravity.mjs";
+import { antigravityAppDirs, decodeToolCallArgs, extractHookDirs, geminiHome, isAntigravityHook, PRE_TOOL_USE_PASSTHROUGH, unwrapAntigravityUserText } from "../lib/antigravity.mjs";
 import { antigravityTranscript } from "../lib/antigravity-words.mjs";
-import { ANTIGRAVITY_TEMPLATE, renderAntigravityHooks } from "../lib/hooks.mjs";
+import { ANTIGRAVITY_TEMPLATE, HooksError, renderAntigravityHooks } from "../lib/hooks.mjs";
 import { claudeSessionWords, claudeSlug, codexSessionWords, committedWords, pendingOwnerPrompts, transcriptWordsReport } from "../lib/owner-words.mjs";
-import { git, isolatedEnv, repo, scripts, temp } from "./helpers.mjs";
+import { git, isolatedEnv, loopProduct, ownerStore, repo, scripts, temp } from "./helpers.mjs";
 
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
 
@@ -32,19 +32,10 @@ const userStep = (step_index, content, extra = {}) => ({ step_index, source: "US
 
 function createSummaryDb(appDir, entries) {
   mkdirSync(appDir, { recursive: true });
-  const dbPath = join(appDir, "conversation_summaries.db");
-  const db = new DatabaseSync(dbPath);
-  db.exec(`CREATE TABLE IF NOT EXISTS conversation_summaries (
-    conversation_id TEXT PRIMARY KEY, workspace_uris TEXT, status TEXT,
-    parent_conversation_id TEXT DEFAULT '', nesting_depth INTEGER DEFAULT 0,
-    killed INTEGER DEFAULT 0, not_fully_idle INTEGER DEFAULT 0
-  )`);
-  const insert = db.prepare(`INSERT OR REPLACE INTO conversation_summaries
-    (conversation_id, workspace_uris, status, parent_conversation_id, nesting_depth, killed, not_fully_idle)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`);
-  for (const e of entries) {
-    insert.run(e.id, JSON.stringify((e.workspaces ?? []).map(w => pathToFileURL(w).href)), e.status ?? "CASCADE_RUN_STATUS_IDLE", e.parent ?? "", e.depth ?? 0, e.killed ?? 0, e.notFullyIdle ?? 0);
-  }
+  const dbPath = join(appDir, "conversation_summaries.db"), db = new DatabaseSync(dbPath);
+  db.exec("CREATE TABLE IF NOT EXISTS conversation_summaries (conversation_id TEXT PRIMARY KEY, workspace_uris TEXT, status TEXT, parent_conversation_id TEXT DEFAULT '', nesting_depth INTEGER DEFAULT 0, killed INTEGER DEFAULT 0, not_fully_idle INTEGER DEFAULT 0)");
+  const insert = db.prepare("INSERT OR REPLACE INTO conversation_summaries (conversation_id, workspace_uris, status, parent_conversation_id, nesting_depth, killed, not_fully_idle) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  for (const e of entries) insert.run(e.id, JSON.stringify((e.workspaces ?? []).map(w => pathToFileURL(w).href)), e.status ?? "CASCADE_RUN_STATUS_IDLE", e.parent ?? "", e.depth ?? 0, e.killed ?? 0, e.notFullyIdle ?? 0);
   db.close();
   return dbPath;
 }
@@ -461,4 +452,47 @@ test("R7 & B5: single geminiHome resolver and single-source assets/antigravity/h
   assert.equal(rendered["self-loop"].SessionStart[0].timeout, 22);
   assert.match(rendered["self-loop"].SessionStart[0].command, /--hours 6$/);
   assert.match(rendered["self-loop"].PreToolUse[0].hooks[0].command, /b5 space'\\''s-|b5 space'"'"'s-/);
+});
+
+test("decodeToolCallArgs and extractHookDirs decode cli-1.5.14 argumentsJson and fail closed on corruption/smuggling", () => {
+  assert.deepEqual(decodeToolCallArgs(undefined), { ok: true, present: false, args: {}, error: null });
+  assert.deepEqual(decodeToolCallArgs({ name: "preview_status" }), { ok: true, present: false, args: {}, error: null });
+  assert.deepEqual(decodeToolCallArgs({ name: "write_file", argumentsJson: '{"Path":"src/a.js"}' }), { ok: true, present: true, args: { Path: "src/a.js" }, error: null });
+  assert.deepEqual(decodeToolCallArgs({ name: "write_file", args: {}, argumentsJson: '{"Path":"src/a.js"}' }), { ok: true, present: true, args: { Path: "src/a.js" }, error: null });
+  assert.deepEqual(decodeToolCallArgs({ name: "write_file", args: { Path: "a" }, arguments: '{"Path":"a"}' }), { ok: true, present: true, args: { Path: "a" }, error: null });
+  assert.equal(decodeToolCallArgs({ name: "write_file", args: { Path: "a" }, argumentsJson: '{"Path":"b"}' }).ok, false);
+  for (const bad of [null, "bad", []]) assert.equal(decodeToolCallArgs(bad).ok, false);
+  for (const bad of ["", "{bad", "null", "[]", "123", '"s"', null, []]) {
+    assert.equal(decodeToolCallArgs({ name: "read_file", argumentsJson: bad }).ok, false, JSON.stringify(bad));
+  }
+  assert.equal(isAntigravityHook({ toolCall: null }), true);
+  assert.equal(isAntigravityHook({ toolCall: "bad" }), true);
+  const p = temp("ag-uri-");
+  assert.deepEqual(extractHookDirs({ cwd: p, workspacePaths: [pathToFileURL(p).href, "/tmp/other"] }), [p, "/tmp/other"]);
+});
+
+test("renderAntigravityHooks and SessionStart support --owner-store multi-product mode and fail closed on broken store", () => {
+  const a = loopProduct(), b = loopProduct(), bWt = temp("ag-ss-b-wt-");
+  git(b.product, "worktree", "add", "-q", "--detach", bWt);
+  const store = ownerStore([{ name: "alpha", records: a.records }, { name: "beta", records: b.records }]);
+  const rendered = renderAntigravityHooks({ ownerStore: store, scriptsDir: scripts });
+  for (const cmd of [rendered["self-loop"].SessionStart[0].command, rendered["self-loop"].PreInvocation[0].command, rendered["self-loop"].PreToolUse[0].hooks[0].command, rendered["self-loop"].Stop[0].command]) {
+    assert.match(cmd, /--owner-store/);
+  }
+  const hybrid = renderAntigravityHooks({ cfg: { product: a.product, records: a.records, workDir: join(a.dir, "work") }, ownerStore: store, scriptsDir: scripts });
+  assert.match(hybrid["self-loop"].SessionStart[0].command, /--owner-store/);
+  assert.match(hybrid["self-loop"].PreToolUse[0].hooks[0].command, /--product/);
+  assert.throws(() => renderAntigravityHooks({ ownerStore: temp("broken-store-"), scriptsDir: scripts }), HooksError);
+
+  const env = isolatedEnv({ GEMINI_HOME: temp("ag-ss-g-"), T3CODE_HOME: "", T3CODE_THREAD_ID: "" });
+  const runHook = (extraArgs, payload) => spawnSync(process.execPath, [join(scripts, "self-loop.mjs"), "start", "--hook", "antigravity", ...extraArgs], { input: JSON.stringify(payload), encoding: "utf8", env });
+  const badEmpty = runHook(["--owner-store", ""], { hookEventName: "SessionStart", conversationId: "s-empty", cwd: a.product });
+  assert.equal(badEmpty.status, 0);
+  assert.match(JSON.parse(badEmpty.stdout).injectSteps[0].systemMessage.systemMessage, /--owner-store requires/);
+  const explicitCfg = runHook(["--config", join(a.records, "loop.json")], { hookEventName: "SessionStart", conversationId: "s-cfg", cwd: temp("ag-ss-unreg-") });
+  assert.equal(explicitCfg.status, 0);
+  assert.match(JSON.parse(explicitCfg.stdout).injectSteps[0].systemMessage.systemMessage, /Phase v1 · loop\/v1/);
+  const wtHook = runHook(["--owner-store", store], { hookEventName: "SessionStart", conversationId: "s-wt", workspacePaths: [pathToFileURL(bWt).href] });
+  assert.equal(wtHook.status, 0);
+  assert.match(JSON.parse(wtHook.stdout).injectSteps[0].systemMessage.systemMessage, /This session: beta · /);
 });

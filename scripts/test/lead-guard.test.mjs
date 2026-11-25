@@ -4,7 +4,9 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import * as leadGuardModule from "../lead-guard.mjs";
 import { productCode, refusal } from "../lead-guard.mjs";
+import { commonGitDir } from "../lib/path-canonical.mjs";
 import { git, repo, scripts, temp } from "./helpers.mjs";
 
 function setup() {
@@ -171,4 +173,10 @@ test("CLI: a Git that cannot answer refuses the edit and names why; unreadable i
   assert.equal(truncated.status, 0);
   assert.equal(JSON.parse(truncated.stdout).hookSpecificOutput.permissionDecision, "deny");
   assert.match(JSON.parse(truncated.stdout).hookSpecificOutput.permissionDecisionReason, /malformed hook JSON/);
+});
+
+test("commonGitDir lives solely in lib/path-canonical.mjs and is not re-exported by lead-guard.mjs", () => {
+  const s = setup();
+  assert.equal("commonGitDir" in leadGuardModule, false);
+  assert.ok(commonGitDir(s.product)?.top);
 });

@@ -1,35 +1,18 @@
 #!/usr/bin/env node
-// The one command (design §2.2): the next-step driver for one product or every product in the owner store's registry,
-// the heartbeat's tick, the heartbeat itself and the registry. No harness or hook is needed for any of it; a session of
-// any agent, a terminal or the OS scheduler runs the same lines.
-//
-// node self-loop.mjs init  [--product <dir>] [--records <dir>] [--name <name>] [--branch <branch>] [--local-exclude] [--register] [--owner-store <dir>] [--json]
-// node self-loop.mjs start [--config <loop.json>] [--hours N] [--now <ISO time>] [--json] [--owner-store <dir>]
-// node self-loop.mjs start|next --parent-entry <public-input.json> [--owner-store <dir>]
-// node self-loop.mjs next  [--config <loop.json> | --all] [--owner-store <dir>]
-// node self-loop.mjs stall [--hours N] [--config <loop.json> | --all] [--now <ISO time>] [--json] [--owner-store <dir>]
-// node self-loop.mjs tick  [--hours N] [--now <ISO time>] [--json] [--owner-store <dir>]
-// node self-loop.mjs ssot  [check|attest] [--config <loop.json>] ... (see scripts/ssot-check.mjs)
-// node self-loop.mjs window open|status|close --records <dir> ... (see scripts/window.mjs)
-// node self-loop.mjs heartbeat install|uninstall [--dry-run] [--platform launchd|cron] [--release <dir>] [--owner-store <dir>]
-// node self-loop.mjs registry init [--roots <dir>,...] | add --name <name> --records <dir> [--aliases a,b] | list [--json]
-//
-// The configuration: --config, else SELF_LOOP_CONFIG, else an in-repo .self-loop/loop.json at the working tree root
-// containing cwd, else the registered product whose folders hold the working directory (lib/registry.mjs). The owner
-// store: --owner-store, else SELF_LOOP_OWNER_STORE, else ~/.self-loop/owner-store.
-// design/continuation-entry.md
+// P-0003, F-0003, F-0009, D-0010, D-0052, R-0032-reviewer-architecture, design/continuation-entry.md#entry
 import "./lib/unbind-git.mjs";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load, Stop } from "./call.mjs";
 import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
+import { extractHookDirs } from "./lib/antigravity.mjs";
 import { antigravityChildSession } from "./lib/antigravity-words.mjs";
 import { dryRun, heartbeatEntry, install, resolveRelease, uninstall } from "./lib/heartbeat.mjs";
 import { checkHooks, HooksError, installHooks, uninstallHooks } from "./lib/hooks.mjs";
 import { InitError, initLoop } from "./lib/init.mjs";
 import { delegatedThread } from "./lib/owner-words.mjs";
-import { addProduct, initStore, loadRegistry, loopSettings, productState, resolveConfig, resolveOwnerStore } from "./lib/registry.mjs";
+import { addProduct, CONFIG_ENV, discoverLocalLoop, initStore, loadHookStore, loadRegistry, loopSettings, matchHookProduct, productState, real, REGISTRY, resolveConfig, resolveOwnerStore } from "./lib/registry.mjs";
 import { continuationText, parentEntryInput, reconcileParentEntry, startReport, startText } from "./lib/start.mjs";
 import { stallThreshold, tick, tickText } from "./lib/tick.mjs";
 import { cliClock, nextLines, recordsOf, stallState } from "./loop.mjs";
@@ -38,7 +21,7 @@ import { main as runSsot } from "./ssot-check.mjs";
 import { main as runWindow } from "./window.mjs";
 
 const skill = join(dirname(fileURLToPath(import.meta.url)), "..");
-const USAGE = "self-loop.mjs init|start|next|stall|tick|ssot|window|dispatch|heartbeat|hooks|registry ... (see the header of scripts/self-loop.mjs)";
+const USAGE = "self-loop.mjs init|start|next|stall|tick|ssot|window|dispatch|heartbeat|hooks|registry ...";
 
 function hoursOf(args) {
   if (!("hours" in args)) return null;
@@ -54,7 +37,6 @@ function nowOf(args) {
   return now;
 }
 
-/** The products a next or stall runs on: every registered one (--all), or the one configuration resolved. */
 function selection(args, env, cwd) {
   const store = () => resolveOwnerStore({ flag: args["owner-store"], env });
   if ("all" in args) {
@@ -90,7 +72,7 @@ function runNext(products, all, store, clock) {
   return failed ? 1 : 0;
 }
 
-/** Each product's stall decision on its own: one whose records cannot be read is a result of its own (R-0001-judge R1-4). */
+// R-0001-judge
 function runStall(products, args) {
   const hours = hoursOf(args), now = nowOf(args);
   const results = products.map(p => {
@@ -120,7 +102,7 @@ function runHeartbeat(args, env) {
     return 0;
   }
   const store = resolveOwnerStore({ flag: args["owner-store"], env });
-  loadRegistry(store); // a heartbeat with no registry would tick nothing
+  loadRegistry(store);
   const entry = heartbeatEntry({ release: resolveRelease({ skill, release: args.release }), store: realpathSync(store.path) });
   if ("dry-run" in args) return void console.log(dryRun(entry));
   for (const line of install(entry, { platform })) console.log(line);
@@ -156,7 +138,7 @@ function runRegistry(args, env) {
   throw new UsageError("registry init [--roots <dir>,...] | add --name <name> --records <dir> [--aliases a,b] | list [--json]");
 }
 
-// design/continuation-entry.md
+// design/continuation-entry.md#entry
 async function runParentEntry(args, env, cwd) {
   need(args, "parent-entry");
   const command = args._[0], store = resolveOwnerStore({ flag: args["owner-store"], env });
@@ -187,10 +169,76 @@ function runStartAntigravityHook(args, env) {
       console.log("{}");
       return 0;
     }
-    const hookCwd = input?.cwd || (Array.isArray(input?.workspacePaths) ? input.workspacePaths[0] : null) || null;
-    if (!hookCwd) { console.log("{}"); return 0; }
+    const hookDirs = extractHookDirs(input);
+    if (!hookDirs.length) { console.log("{}"); return 0; }
     const clock = cliClock(args), hours = hoursOf(args);
-    const report = startReport({ store: resolveOwnerStore({ flag: args["owner-store"], env }), config: args.config, env, cwd: hookCwd, ...clock, hours, skill });
+    const hasConfig = "config" in args;
+    const hasOwnerStore = "owner-store" in args;
+    const store = hasOwnerStore
+      ? { path: args["owner-store"] ? resolve(args["owner-store"]) : "", source: "--owner-store" }
+      : resolveOwnerStore({ env });
+    const useStoreRouting = !hasConfig && (hasOwnerStore || (!env[CONFIG_ENV] && existsSync(join(store.path, REGISTRY))));
+    let sessionRoute = null;
+    let startCwd = hookDirs[0];
+    let explicitConfig = args.config;
+    if (!hasConfig && (hasOwnerStore || !env[CONFIG_ENV])) {
+      const localLoops = [];
+      for (const dir of hookDirs) {
+        const localLoop = discoverLocalLoop(dir);
+        if (localLoop) localLoops.push({ config: localLoop, records: real(dirname(localLoop)), cwd: dir });
+      }
+      const candidates = new Map();
+      if (useStoreRouting) {
+        const loaded = loadHookStore(hasOwnerStore ? args["owner-store"] : store.path);
+        if (!loaded.ok) {
+          if (!store.path) {
+            console.log(JSON.stringify({ injectSteps: [{ systemMessage: { systemMessage: `This session: ${loaded.error}` } }] }));
+            return 0;
+          }
+          sessionRoute = { problem: loaded.error };
+        } else {
+          const routed = matchHookProduct(hookDirs, loaded.products);
+          if (routed.status === "matched") {
+            const p = routed.product;
+            candidates.set(real(p.records), { kind: "store", product: p, cwd: routed.projects[0] ?? p.product, label: p.name });
+          } else if (routed.status === "ambiguous") {
+            const byName = new Map(loaded.products.map(p => [p.name, p]));
+            for (const name of routed.products) {
+              const p = byName.get(name);
+              if (p) candidates.set(real(p.records), { kind: "store", product: p, cwd: p.product, label: p.name });
+            }
+          }
+        }
+      }
+      if (!sessionRoute) {
+        for (const loc of localLoops) {
+          if (!candidates.has(loc.records)) {
+            candidates.set(loc.records, { kind: "local", config: loc.config, cwd: loc.cwd, label: `in-repo ${loc.records}` });
+          }
+        }
+        if (candidates.size === 0) {
+          console.log("{}");
+          return 0;
+        }
+        if (candidates.size > 1) {
+          const labels = [...candidates.values()].map(c => c.label).sort();
+          const dirs = [...hookDirs].sort();
+          const subject = dirs.length > 1 ? `workspaces [${dirs.join(", ")}] match` : `workspace ${dirs[0]} matches`;
+          sessionRoute = { problem: `${subject} multiple products: ${labels.join(", ")}` };
+          startCwd = dirs[0];
+        } else {
+          const [only] = candidates.values();
+          if (only.kind === "store") {
+            sessionRoute = { product: only.product };
+            startCwd = only.cwd;
+          } else {
+            explicitConfig = only.config;
+            startCwd = only.cwd;
+          }
+        }
+      }
+    }
+    const report = startReport({ store, config: explicitConfig, env, cwd: startCwd, ...clock, hours, skill, sessionRoute });
     const text = startText(report, { selfLoop: join(skill, "scripts", "self-loop.mjs") });
     console.log(JSON.stringify({ injectSteps: [{ systemMessage: { systemMessage: text } }] }));
   } catch (error) {
@@ -203,7 +251,7 @@ function runStartAntigravityHook(args, env) {
 function runHooks(args, env, cwd) {
   const [, action] = args._;
   if (!["install", "check", "uninstall"].includes(action)) {
-    throw new UsageError("hooks install|check|uninstall --harness antigravity [--scope workspace|global] [--target <hooks.json>] [--config <loop.json>] [--owner-store <dir>] [--release <dir>] [--dry-run] [--json]");
+    throw new UsageError("hooks install|check|uninstall --harness antigravity [--scope workspace|global] [--target <hooks.json>] [--all] [--config <loop.json>] [--owner-store <dir>] [--release <dir>] [--dry-run] [--json]");
   }
   need(args, "harness");
   const harness = args.harness;
@@ -211,21 +259,38 @@ function runHooks(args, env, cwd) {
   const target = args.target || null;
   const dryRunFlag = "dry-run" in args;
   const jsonFlag = "json" in args;
-  let cfg = null, settings = null;
-  const needConfig = action === "install" || (!target && scope === "workspace");
-  if (needConfig || "config" in args || env.SELF_LOOP_CONFIG) {
-    try {
-      const [selected] = selection(args, env, cwd);
-      cfg = selected.cfg;
-      settings = selected.settings;
-    } catch (error) {
-      if (needConfig) throw error;
+  const allFlag = "all" in args;
+  if (allFlag && "config" in args) throw new UsageError("--all and --config exclude each other");
+  if (allFlag && scope === "workspace" && !target) throw new UsageError("--all cannot be combined with --scope workspace without --target");
+  const hasOwnerStore = "owner-store" in args;
+  const store = resolveOwnerStore({ flag: hasOwnerStore ? (args["owner-store"] || undefined) : undefined, env });
+  const multiProductInstall = action === "install" && (
+    allFlag
+    || (!("config" in args) && (
+      (scope === "global" && (hasOwnerStore || (!env.SELF_LOOP_CONFIG && existsSync(join(store.path, REGISTRY)))))
+      || (Boolean(target) && hasOwnerStore)
+    ))
+  );
+  let cfg = null, settings = null, ownerStore = null;
+  if (multiProductInstall) {
+    ownerStore = hasOwnerStore ? args["owner-store"] : store.path;
+  } else {
+    const needConfig = action === "install" || (!target && scope === "workspace");
+    if (needConfig || "config" in args || (scope === "workspace" && !target && env.SELF_LOOP_CONFIG)) {
+      try {
+        const [selected] = selection(args, env, cwd);
+        cfg = selected.cfg;
+        settings = selected.settings;
+      } catch (error) {
+        if (needConfig) throw error;
+      }
     }
+    if (hasOwnerStore) ownerStore = args["owner-store"] ? resolve(args["owner-store"]) : "";
   }
   try {
     if (action === "install") {
       const scriptsDir = args.release ? join(resolveRelease({ skill, release: args.release }), "scripts") : join(skill, "scripts");
-      const res = installHooks({ harness, scope, target, cfg, settings, scriptsDir, env, cwd, dryRun: dryRunFlag });
+      const res = installHooks({ harness, scope, target, cfg, settings, ownerStore, scriptsDir, env, cwd, dryRun: dryRunFlag });
       if (jsonFlag) console.log(JSON.stringify(res, null, 2));
       else if (dryRunFlag) {
         console.log(`# would write ${res.target}`);
@@ -237,7 +302,7 @@ function runHooks(args, env, cwd) {
       return 0;
     }
     if (action === "check") {
-      const res = checkHooks({ harness, scope, target, cfg, env, cwd });
+      const res = checkHooks({ harness, scope, target, cfg, ownerStore, env, cwd });
       if (jsonFlag) console.log(JSON.stringify(res, null, 2));
       else {
         console.log(`${res.ok ? "ok" : "unhealthy"}: ${res.target} (${res.findings.length} finding(s))`);

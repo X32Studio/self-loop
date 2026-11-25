@@ -1,4 +1,4 @@
-// F-0009, D-0052, D-0060, design/antigravity-harness.md#adapter
+// F-0009, D-0052, D-0060, R-0032-reviewer-architecture, design/antigravity-harness.md#adapter
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -10,13 +10,7 @@ export const VERIFIED_ANTIGRAVITY_LS_VERSION = "cli-1.5.14";
 // F-0009, design/antigravity-harness.md#hooks
 export const PRE_TOOL_USE_PASSTHROUGH = "";
 
-export const ANTIGRAVITY_STEP_TYPES = Object.freeze([
-  "USER_INPUT",
-  "PLANNER_RESPONSE",
-  "GENERIC",
-  "SYSTEM_MESSAGE",
-  "CHECKPOINT",
-]);
+export const ANTIGRAVITY_STEP_TYPES = Object.freeze(["USER_INPUT", "PLANNER_RESPONSE", "GENERIC", "SYSTEM_MESSAGE", "CHECKPOINT"]);
 
 export const ANTIGRAVITY_FILE_TOOL_MAP = Object.freeze({
   read_file: { canonical: "Read" },
@@ -53,13 +47,8 @@ export const ANTIGRAVITY_SCALAR_PATH_KEYS = Object.freeze([
 
 export const ANTIGRAVITY_ARRAY_PATH_KEYS = Object.freeze(["paths"]);
 
-export const ANTIGRAVITY_NATIVE_DELEGATION_TOOLS = new Set([
-  "invoke_subagent",
-  "run_workflow",
-  "define_subagent",
-  "swarm",
-  "send_message",
-  "browser_subagent",
+const ANTIGRAVITY_NATIVE_DELEGATION_TOOLS = new Set([
+  "invoke_subagent", "run_workflow", "define_subagent", "swarm", "send_message", "browser_subagent",
 ]);
 
 // F-0008, F-0009, D-0060, design/mandatory-control-plane.md#2
@@ -74,29 +63,12 @@ export const ANTIGRAVITY_DELEGATION_TOOLS = new Set([
 export const T3_MCP_TOOL_PREFIX = /^(?:mcp_t3[-_]code_|mcp__t3[-_]code__)(.+)$/;
 
 // F-0009, design/antigravity-harness.md#audit
-export const T3_MCP_READ_ONLY_ALLOWLIST = new Set([
-  "t3_thread_read",
-  "t3_thread_list",
-  "t3_thread_search",
-  "t3_project_list",
-  "t3_project_read",
-  "t3_environment_read",
-  "t3_environment_links",
-  "t3_worktree_status",
-  "t3_worktree_list",
-  "list_scheduled_tasks",
-  "orchestrator_capabilities",
-  "pull_request_read",
-  "pull_request_list",
-  "ci_logs",
-  "list_issues",
-  "read_issue",
-  "list_thread_pull_requests",
-  "list_thread_issues",
-  "read_pull_request_guide",
-  "t3_preview_list",
-  "preview_status",
-  "html_preview",
+const T3_MCP_READ_ONLY_ALLOWLIST = new Set([
+  "t3_thread_read", "t3_thread_list", "t3_thread_search", "t3_project_list", "t3_project_read",
+  "t3_environment_read", "t3_environment_links", "t3_worktree_status", "t3_worktree_list",
+  "list_scheduled_tasks", "orchestrator_capabilities", "pull_request_read", "pull_request_list",
+  "ci_logs", "list_issues", "read_issue", "list_thread_pull_requests", "list_thread_issues",
+  "read_pull_request_guide", "t3_preview_list", "preview_status", "html_preview",
 ]);
 
 export function isDisallowedRoleTool(name) {
@@ -107,11 +79,13 @@ export function isDisallowedRoleTool(name) {
   return false;
 }
 
+const TOOL_CALL_ARG_KEYS = Object.freeze(["args", "arguments", "argumentsJson"]);
 const EMBEDDED_FILE_URL_RE = /file:\/\/[^\s"'<>`]+/gi;
 const MAX_ARG_TRAVERSAL_DEPTH = 32;
 const COMPACT_TRUNCATED_RE = /\n<truncated \d+ bytes>$/;
 const APP_SUBDIRS = ["antigravity-acp", "antigravity", "antigravity-cli", "antigravity-ide"];
 const BRACKET_OPENERS = Object.freeze({ ")": "(", "]": "[", "}": "{" });
+const isPlainObject = v => v !== null && typeof v === "object" && !Array.isArray(v);
 
 export function geminiHome(env = process.env, home = env?.HOME || homedir()) {
   return env?.GEMINI_HOME !== undefined && env.GEMINI_HOME !== ""
@@ -119,7 +93,7 @@ export function geminiHome(env = process.env, home = env?.HOME || homedir()) {
     : join(home, ".gemini");
 }
 
-export function t3Home(env = process.env, home = env?.HOME || homedir()) {
+function t3Home(env = process.env, home = env?.HOME || homedir()) {
   if (env?.T3CODE_HOME === "") return null;
   return env?.T3CODE_HOME !== undefined ? resolve(env.T3CODE_HOME) : join(home, ".t3");
 }
@@ -339,10 +313,60 @@ export function isAntigravityHook(input, harnessFlag = null) {
   if (harnessFlag === "claude") return false;
   return input?.hookEventName === "SessionStart"
     || input?.hookEventName === "PreInvocation"
-    || (input?.hookEventName === "PreToolUse" && ("conversationId" in input || Boolean(input?.toolCall)))
+    || (input?.hookEventName === "PreToolUse" && ("conversationId" in input || "toolCall" in input))
     || (input?.hookEventName === "Stop" && ("conversationId" in input || "terminationReason" in input || "continuationActive" in input || "fullyIdle" in input))
     || typeof input?.conversationId === "string"
-    || Boolean(input?.toolCall && typeof input.toolCall === "object");
+    || Boolean(isPlainObject(input) && "toolCall" in input);
+}
+
+// F-0008, F-0009, D-0052, D-0060, R-0032-reviewer-architecture
+export function decodeToolCallArgs(toolCall) {
+  if (toolCall === undefined) return { ok: true, present: false, args: {}, error: null };
+  if (!isPlainObject(toolCall)) {
+    return { ok: false, present: true, args: {}, error: "malformed toolCall (expected plain JSON object)" };
+  }
+  const carriers = TOOL_CALL_ARG_KEYS.filter(key => Object.hasOwn(toolCall, key) && toolCall[key] !== undefined);
+  if (!carriers.length) return { ok: true, present: false, args: {}, error: null };
+  const merged = {};
+  for (const key of carriers) {
+    const raw = toolCall[key];
+    let parsed;
+    if (isPlainObject(raw)) {
+      parsed = raw;
+    } else if (typeof raw === "string") {
+      try { parsed = JSON.parse(raw); }
+      catch (err) { return { ok: false, present: true, args: {}, error: `malformed JSON in toolCall.${key} (${err.message})` }; }
+      if (!isPlainObject(parsed)) {
+        return { ok: false, present: true, args: {}, error: `toolCall.${key} must decode to a plain JSON object` };
+      }
+    } else {
+      return { ok: false, present: true, args: {}, error: `toolCall.${key} must be a plain JSON object or JSON object string` };
+    }
+    for (const [prop, val] of Object.entries(parsed)) {
+      if (Object.hasOwn(merged, prop) && JSON.stringify(merged[prop]) !== JSON.stringify(val)) {
+        return { ok: false, present: true, args: {}, error: `conflicting values for "${prop}" across toolCall argument fields` };
+      }
+      Object.defineProperty(merged, prop, { value: val, enumerable: true, writable: true, configurable: true });
+    }
+  }
+  return { ok: true, present: true, args: merged, error: null };
+}
+
+export function extractHookDirs(input) {
+  const raw = [input?.cwd, ...(Array.isArray(input?.workspacePaths) ? input.workspacePaths : [])];
+  const seen = new Set();
+  const out = [];
+  for (const item of raw) {
+    if (typeof item !== "string" || !item) continue;
+    let dir = item;
+    if (/^file:\/\//i.test(dir)) {
+      try { dir = fileURLToPath(dir); } catch {}
+    }
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+    out.push(dir);
+  }
+  return out;
 }
 
 function trimFileUrlTail(raw) {
@@ -391,7 +415,7 @@ function collectFileUrls(value, out, depth = 0, seen = new WeakSet()) {
 }
 
 export function extractToolPaths(args) {
-  if (!args || typeof args !== "object" || Array.isArray(args)) return [];
+  if (!isPlainObject(args)) return [];
   const found = new Set();
   for (const key of ANTIGRAVITY_SCALAR_PATH_KEYS) {
     const v = args[key];

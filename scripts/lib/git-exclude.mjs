@@ -1,10 +1,9 @@
-// Shared byte-safe Git ignore and .git/info/exclude management (P4: single path for hooks and in-repo records).
+// P-0003, F-0009, D-0052, R-0032-reviewer-architecture
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { commonGitDir } from "../lead-guard.mjs";
+import { commonGitDir } from "./path-canonical.mjs";
 
-/** Canonical working-tree root of the Git repository containing `dir`, or null. */
 export function gitTopLevel(dir) {
   const r = spawnSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
   if (r.status !== 0) return null;
@@ -13,7 +12,6 @@ export function gitTopLevel(dir) {
   try { return realpathSync(top); } catch { return resolve(top); }
 }
 
-/** Split a Buffer into raw and line-ending-stripped slices without decoding UTF-8. */
 export function splitIgnoreLines(buf) {
   const lines = [];
   for (let start = 0; start < buf.length; ) {
@@ -27,14 +25,12 @@ export function splitIgnoreLines(buf) {
   return lines;
 }
 
-/** Check whether a path inside a Git working tree is already ignored (works before creation). */
 export function isGitIgnored(repoTop, relPosix, { directory = false } = {}) {
   const probe = directory ? `./${relPosix}/` : `./${relPosix}`;
   const check = spawnSync("git", ["-C", repoTop, "check-ignore", "-q", "--no-index", "--", probe], { encoding: "utf8" });
   return check.status === 0;
 }
 
-/** Fail-closed check whether a path (or any descendant) is tracked or staged in the Git index. */
 export function isPathTracked(repoTop, relPosix) {
   const git = (...argv) => spawnSync("git", ["-C", repoTop, ...argv], { encoding: "utf8" });
   const failed = r => (r.error?.message ?? r.stderr ?? "").trim() || `exit ${r.status}`;
@@ -51,7 +47,6 @@ export function isPathTracked(repoTop, relPosix) {
   return { tracked: false, files: [], error: null };
 }
 
-/** Resolve Git ignore/exclude metadata for a file or directory inside a Git working tree. */
 export function gitIgnoreTarget(file, { repo = null, directory = false } = {}) {
   const found = repo ?? commonGitDir(directory ? resolve(file) : dirname(file));
   if (!found) return null;
@@ -78,7 +73,6 @@ function findManagedExcludePair(lines, marker, patternBuf) {
   return null;
 }
 
-/** Idempotently append a managed marker+pattern block to .git/info/exclude, preserving raw bytes. */
 export function ensureExcludeEntry(info, { marker }) {
   if (!info || info.ignored) return { changed: false, excludeFile: info?.excludeFile ?? null, pattern: info?.pattern ?? null };
   mkdirSync(dirname(info.excludeFile), { recursive: true });
@@ -96,7 +90,6 @@ export function ensureExcludeEntry(info, { marker }) {
   return { changed: true, excludeFile: info.excludeFile, pattern: info.pattern };
 }
 
-/** Remove a managed marker+pattern block from .git/info/exclude, restoring prior trailing-newline state byte-for-byte. */
 export function removeExcludeEntry(info, { marker }) {
   if (!info || !existsSync(info.excludeFile)) return { changed: false, excludeFile: info?.excludeFile ?? null };
   const existing = readFileSync(info.excludeFile);
@@ -113,7 +106,6 @@ export function removeExcludeEntry(info, { marker }) {
   return { changed: true, excludeFile: info.excludeFile };
 }
 
-/** Idempotently append a relative path rule to <repoTop>/.gitignore while preserving existing bytes verbatim. */
 export function ensureGitignoreEntry(repoTop, relPosix, { directory = true } = {}) {
   const file = join(repoTop, ".gitignore");
   const pattern = directory ? `${relPosix}/` : relPosix;

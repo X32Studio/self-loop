@@ -1,16 +1,16 @@
-// owner-words.mjs: the owner's words recorded verbatim by mechanism. Transcripts are written here in the shapes Claude
-// Code and Codex write (fields seen in the ExampleApp sessions of 2026-11-18..21: Claude `promptSource`, `origin`,
-// `isCompactSummary`; Codex `session_meta` with `thread_source`, `forked_from_id`, `originator`).
+// F-0002, D-0002, D-0006, D-0007, D-0052, R-0032-reviewer-architecture
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
+import { antigravityTranscript } from "../lib/antigravity-words.mjs";
 import { appendWords, claudeSessionWords, claudeSlug, codexSessionWords, committedWords, transcriptWords, WORDS } from "../lib/owner-words.mjs";
 import { hookWord } from "../owner-words.mjs";
 import { sessionOpenWords } from "../word-gate.mjs";
 import { openWords } from "../records-check.mjs";
-import { git, repo, scripts, skill, temp } from "./helpers.mjs";
+import { git, isolatedEnv, loopProduct, ownerStore, repo, scripts, selfLoop, skill, temp } from "./helpers.mjs";
 
 const project = "/work/example-app";
 const claudeRow = (text, extra = {}) => ({ type: "user", cwd: project, sessionId: "s1", timestamp: "2026-11-21T01:00:00Z", promptSource: "sdk", message: { role: "user", content: text }, ...extra });
@@ -42,7 +42,7 @@ test("Claude: the owner's prompts count; notices, tool results, summaries and ag
   assert.deepEqual(claudeSessionWords(lead2), []);
 });
 
-// Claude user rows from the review's /goal and /compact probes. Payload prose and IDs are redacted.
+// D-0006
 test("Claude slash commands keep the typed arguments, including through capture and sync", () => {
   const r = records(), dir = temp(), fixture = join(scripts, "test/fixtures/d0006-claude-slash.jsonl");
   const args = "检查回归，  保留空格。";
@@ -78,7 +78,7 @@ test("Codex: only sessions the owner drove inside the project; injected context 
   assert.deepEqual(codexSessionWords(write(join(dir, "else.jsonl"), codexRows({ cwd: "/elsewhere" }, ["x"])), [project]), []);
 });
 
-// User rows from the real Codex delta hand-off and goal continuation, with IDs, paths and private text redacted.
+// D-0006
 test("Codex prefers user events and excludes hand-off fragments and internal context in every representation", () => {
   const file = join(scripts, "test/fixtures/d0006-codex-handoff.jsonl"), dir = temp();
   const rows = readFileSync(file, "utf8").trimEnd().split("\n").map(line => JSON.parse(line));
@@ -359,4 +359,108 @@ test("T3 agent relays and child-thread completions are notices in every transcri
   const r = records();
   for (const prompt of notices) assert.equal(hookWord({ session_id: 'notice-hook', cwd: project, prompt }, [project], r, {}), null);
   assert.equal(hookWord({ session_id: 'notice-hook', cwd: project, prompt: quoted }, [project], r, {}).text, quoted);
+});
+
+test("owner-words sync --owner-store syncs every registered product and rejects --records combination", () => {
+  const shared = temp("ow-mp-shared-");
+  const a = loopProduct({ loop: { projects: [shared] } }), b = loopProduct({ loop: { projects: [shared] } });
+  const bWt = temp("ow-mp-b-wt-");
+  git(b.product, "worktree", "add", "-q", "--detach", bWt);
+  const aChildWt = join(a.dir, "work", "0001-actor", "wt");
+  mkdirSync(join(a.dir, "work", "0001-actor"), { recursive: true });
+  git(a.product, "worktree", "add", "-q", "--detach", aChildWt);
+  const store = ownerStore([{ name: "alpha", records: a.records }, { name: "beta", records: b.records }]);
+  const claudeHome = temp("ow-mp-claude-"), codexHome = temp("ow-mp-codex-");
+  write(join(claudeHome, "projects", claudeSlug(a.product), "s1.jsonl"), [claudeRow("alpha sync word", { cwd: a.product })]);
+  write(join(claudeHome, "projects", claudeSlug(bWt), "s2.jsonl"), [claudeRow("beta worktree word", { sessionId: "s2", cwd: bWt })]);
+  write(join(claudeHome, "projects", claudeSlug(aChildWt), "s3.jsonl"), [claudeRow("child skip word", { sessionId: "s3", cwd: aChildWt })]);
+  write(join(codexHome, "archived_sessions", "r1.jsonl"), codexRows({ id: "cx-b", cwd: bWt }, ["codex beta worktree word"]));
+  const env = isolatedEnv({ CLAUDE_CONFIG_DIR: claudeHome, CODEX_HOME: codexHome, GEMINI_HOME: temp("g-"), ANTIGRAVITY_APP_DATA_DIR: "", T3CODE_HOME: "" });
+  const res = spawnSync(process.execPath, [join(scripts, "owner-words.mjs"), "sync", "--owner-store", store], { encoding: "utf8", env });
+  assert.equal(res.status, 0, res.stderr);
+  const reports = JSON.parse(res.stdout);
+  assert.deepEqual(reports.map(r => r.product), ["alpha", "beta"]);
+  assert.deepEqual(reports.map(r => r.unresolved), [[], []]);
+  assert.deepEqual(committedWords(a.records).map(w => w.text), ["alpha sync word"]);
+  assert.deepEqual(committedWords(b.records).map(w => w.text).sort(), ["beta worktree word", "codex beta worktree word"]);
+
+  write(join(claudeHome, "projects", claudeSlug(shared), "s-ambig.jsonl"), [claudeRow("shared ambig word", { sessionId: "s-ambig", cwd: shared })]);
+  const ambigRes = spawnSync(process.execPath, [join(scripts, "owner-words.mjs"), "sync", "--owner-store", store], { encoding: "utf8", env });
+  assert.equal(ambigRes.status, 1, ambigRes.stdout + ambigRes.stderr);
+  const ambigReports = JSON.parse(ambigRes.stdout);
+  assert.equal(ambigReports[0].unresolved.length, 1);
+  assert.equal(ambigReports[1].unresolved.length, 1);
+  assert.deepEqual(ambigReports[0].unresolved[0].products, ["alpha", "beta"]);
+  assert.match(ambigRes.stderr, /ambiguous.*s-ambig.*alpha.*beta/);
+  assert.deepEqual(committedWords(a.records).map(w => w.text), ["alpha sync word"]);
+  assert.deepEqual(committedWords(b.records).map(w => w.text).sort(), ["beta worktree word", "codex beta worktree word"]);
+
+  const conflict = spawnSync(process.execPath, [join(scripts, "owner-words.mjs"), "sync", "--owner-store", store, "--records", a.records], { encoding: "utf8", env });
+  assert.equal(conflict.status, 64);
+  const badCap = spawnSync(process.execPath, [join(scripts, "owner-words.mjs"), "capture", "--harness", "antigravity", "--owner-store", store, "--records", a.records], { input: JSON.stringify({ conversationId: "c1", cwd: a.product }), encoding: "utf8", env });
+  assert.equal(badCap.status, 0);
+  assert.match(JSON.parse(badCap.stdout).injectSteps[0].systemMessage.systemMessage, /NOT recorded/);
+});
+
+test("antigravityTranscript refuses step 1+ admission when step 0 is truncated, missing, or corrupt, while admitting step-0 SYSTEM_MESSAGE sessions", () => {
+  const dir = temp("ow-ag-admit-");
+  const u = (step_index, content, extra = {}) => ({ step_index, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-23T01:00:00Z", content, ...extra });
+
+  const trunc = write(join(dir, "trunc", ".system_generated", "logs", "transcript.jsonl"), [
+    u(0, "cut...", { truncated_fields: ["content"] }),
+    u(1, "step-1 must not be admitted"),
+  ]);
+  const rTrunc = antigravityTranscript(trunc, null, "conv-trunc");
+  assert.deepEqual(rTrunc.words, []);
+  assert.equal(rTrunc.unresolved, true);
+
+  const missing0 = write(join(dir, "miss0", ".system_generated", "logs", "transcript_full.jsonl"), [
+    u(1, "step-1 without step-0"),
+  ]);
+  const rMiss0 = antigravityTranscript(missing0, null, "conv-miss0");
+  assert.deepEqual(rMiss0.words, []);
+  assert.equal(rMiss0.unresolved, true);
+
+  const corruptFile = join(dir, "corrupt", ".system_generated", "logs", "transcript_full.jsonl");
+  mkdirSync(join(corruptFile, ".."), { recursive: true });
+  writeFileSync(corruptFile, `{"step_index":0,"type":"USER_INPUT"\n${JSON.stringify(u(1, "step-1 after corrupt line"))}\n`);
+  const rCorrupt = antigravityTranscript(corruptFile, null, "conv-corrupt");
+  assert.deepEqual(rCorrupt.words, []);
+  assert.equal(rCorrupt.unresolved, true);
+
+  const withSys0 = write(join(dir, "sys0", ".system_generated", "logs", "transcript_full.jsonl"), [
+    { step_index: 0, source: "SYSTEM", type: "SYSTEM_MESSAGE", status: "DONE", content: "session start" },
+    u(1, "Genuine owner word after step-0 system message"),
+  ]);
+  const rSys0 = antigravityTranscript(withSys0, null, "conv-sys0");
+  assert.equal(rSys0.unresolved, false);
+  assert.deepEqual(rSys0.words.map(w => w.text), ["Genuine owner word after step-0 system message"]);
+});
+
+test("SessionStart --hook antigravity deduplicates init --register by canonical records dir, flags dual-config conflict, and selects standalone local .self-loop", () => {
+  const store = ownerStore([], { dir: temp("ss-dedup-store-") });
+  const env = isolatedEnv({ GEMINI_HOME: temp("ss-dedup-g-"), T3CODE_HOME: "", T3CODE_THREAD_ID: "", SELF_LOOP_OWNER_STORE: store });
+  const regLocal = repo({ "src/a.js": "export const a = 1;\n" }, temp("ss-reg-local-"));
+  assert.equal(selfLoop(["init", "--local-exclude", "--register", "--name", "reg-local", "--owner-store", store], { cwd: regLocal, env }).status, 0);
+  const localOnly = repo({ "src/b.js": "export const b = 2;\n" }, temp("ss-local-only-"));
+  assert.equal(selfLoop(["init", "--local-exclude", "--name", "local-only"], { cwd: localOnly, env }).status, 0);
+  const dual = loopProduct();
+  assert.equal(selfLoop(["registry", "add", "--owner-store", store, "--name", "dual", "--records", dual.records], { env }).status, 0);
+  assert.equal(selfLoop(["init", "--local-exclude"], { cwd: dual.product, env }).status, 0);
+
+  const runHook = payload => spawnSync(process.execPath, [join(scripts, "self-loop.mjs"), "start", "--hook", "antigravity", "--owner-store", store], {
+    input: JSON.stringify(payload), encoding: "utf8", env,
+  });
+
+  const regMsg = JSON.parse(runHook({ hookEventName: "SessionStart", conversationId: "s1", workspacePaths: [pathToFileURL(regLocal).href] }).stdout).injectSteps[0].systemMessage.systemMessage;
+  assert.match(regMsg, /This session: reg-local · /);
+  assert.match(regMsg, /Phase v1 · loop\/v1/);
+
+  const localMsg = JSON.parse(runHook({ hookEventName: "SessionStart", conversationId: "s2", workspacePaths: [pathToFileURL(localOnly).href] }).stdout).injectSteps[0].systemMessage.systemMessage;
+  assert.ok(localMsg.includes(join(localOnly, ".self-loop", "loop.json")), localMsg);
+  assert.match(localMsg, /Phase v1 · loop\/v1/);
+
+  const dualMsg = JSON.parse(runHook({ hookEventName: "SessionStart", conversationId: "s3", cwd: dual.product }).stdout).injectSteps[0].systemMessage.systemMessage;
+  assert.match(dualMsg, /This session: workspace .* matches multiple products:.*dual.*in-repo/);
+  assert.doesNotMatch(dualMsg, /Phase v1 · /);
 });

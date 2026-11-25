@@ -1,19 +1,20 @@
 #!/usr/bin/env node
+// F-0002, F-0009, D-0052, R-0032-reviewer-architecture
 import "./lib/unbind-git.mjs";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { appendJsonLines, commitRecords, recordsSnapshot } from "./lib/records-commit.mjs";
 import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
-import { isAntigravityHook, resolveAuthoritativeTranscript, unwrapAntigravityUserText } from "./lib/antigravity.mjs";
+import { extractHookDirs, isAntigravityHook, resolveAuthoritativeTranscript, unwrapAntigravityUserText } from "./lib/antigravity.mjs";
 import { antigravityHookSession, checkAntigravityTurnConfirmation } from "./lib/antigravity-words.mjs";
 import { appendWords, captureOwnerText, claudeHookSession, CLASSES, committedWords, discardOwnerPrompt, hasPendingForSession, LINKS, MARKS,
-  markProblem, parseWords, projectRoots, queueOwnerPrompt, reconcileOwnerPrompts, sameClass, sha, syncPromptSession, transcriptWordsReport,
+  markProblem, parseWords, projectRoots, queueOwnerPrompt, reconcileOwnerPrompts, sameClass, sha, syncPromptSession, transcriptStoreWordsReport, transcriptWordsReport,
   wordClasses, WORDS } from "./lib/owner-words.mjs";
+import { loadHookStore, matchHookProduct } from "./lib/registry.mjs";
 import { openWords } from "./records-check.mjs";
 
 const agInject = message => JSON.stringify({ injectSteps: [{ systemMessage: { systemMessage: message } }] });
 
-/** Validate the raw hook payload. The hook does not guess its ordinal from words already committed. */
 export function hookWord(input, projects, _records, env = process.env, harness = null) {
   if (isAntigravityHook(input, harness)) {
     if (typeof input?.lastUserInput !== "string" || !antigravityHookSession(input, projects, env)) return null;
@@ -31,7 +32,6 @@ export function hookWord(input, projects, _records, env = process.env, harness =
 }
 
 function captureAntigravity(input, projects, records, env = process.env) {
-  // Probed cli-1.5.14: invocationNum is 0-based (0 on initial user turn, 1..N on post-tool re-invocations).
   const invocationNum = typeof input?.invocationNum === "number" ? input.invocationNum : null;
   if (invocationNum !== null && invocationNum > 0) {
     if (!hasPendingForSession(records, input?.conversationId)) return "{}";
@@ -43,23 +43,26 @@ function captureAntigravity(input, projects, records, env = process.env) {
   const prompt = hookWord(input, projects, records, env, "antigravity");
   if (!prompt) return "{}";
   const actual = input.transcriptPath ? resolveAuthoritativeTranscript(input.transcriptPath) : null;
-  const synced = actual && existsSync(actual)
-    ? syncPromptSession("antigravity", records, projects, input)
-    : { words: [], echoes: [] };
+  const synced = actual && existsSync(actual) ? syncPromptSession("antigravity", records, projects, input) : { words: [], echoes: [] };
   const { confirmed, event } = checkAntigravityTurnConfirmation({
-    transcriptPath: actual,
-    text: prompt.text,
-    initialNumSteps: input.initialNumSteps,
-    words: synced.words,
-    echoes: synced.echoes,
+    transcriptPath: actual, text: prompt.text, initialNumSteps: input.initialNumSteps, words: synced.words, echoes: synced.echoes,
   });
   if (confirmed) return "{}";
-  const anchorStep = Number.isInteger(input.initialNumSteps) && input.initialNumSteps >= 1
-    ? input.initialNumSteps - 1 : null;
+  const anchorStep = Number.isInteger(input.initialNumSteps) && input.initialNumSteps >= 1 ? input.initialNumSteps - 1 : null;
   const pendingEvent = event ?? (anchorStep !== null ? `step-${anchorStep}` : null);
   const key = sha(JSON.stringify(["antigravity", prompt.session, input.initialNumSteps ?? "turn", sha(prompt.text)]));
   queueOwnerPrompt(records, { ...prompt, event: pendingEvent, ...(anchorStep !== null ? { anchorStep } : {}), pendingKey: key });
   return agInject("owner-words: prompt saved pending transcript confirmation; run owner-words.mjs sync if it is still pending after the turn");
+}
+
+function runCaptureScoped(input, isAg, projects, records) {
+  if (isAg) { console.log(captureAntigravity(input, projects, records)); return; }
+  const prompt = hookWord(input, projects, records);
+  if (!prompt) return;
+  const queued = queueOwnerPrompt(records, { ...prompt, text: input.prompt });
+  const { pending, words } = input.transcript_path ? syncPromptSession("claude", records, projects, input) : { pending: [queued], words: [] };
+  if (queued && pending.includes(queued) && !words.some(word => word.text === prompt.text))
+    console.log("owner-words: prompt saved pending transcript confirmation; run owner-words.mjs sync if it is still pending after the turn");
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -69,33 +72,61 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const harnessFlag = args.harness || null;
     let isAg = harnessFlag === "antigravity";
     try {
-      need(args, "records", "project");
+      const hasOwnerStore = "owner-store" in args;
+      if (hasOwnerStore && "records" in args) throw new UsageError("--owner-store and --records exclude each other");
       const input = JSON.parse(readFileSync(0, "utf8") || "{}");
       isAg = isAntigravityHook(input, harnessFlag);
-      const projects = projectRoots(args.project);
-      if (isAg) {
-        console.log(captureAntigravity(input, projects, args.records));
-      } else {
-        const prompt = hookWord(input, projects, args.records);
-        if (prompt) {
-          const queued = queueOwnerPrompt(args.records, { ...prompt, text: input.prompt });
-          const { pending, words } = input.transcript_path
-            ? syncPromptSession("claude", args.records, projects, input) : { pending: [queued], words: [] };
-          if (queued && pending.includes(queued) && !words.some(word => word.text === prompt.text)) console.log("owner-words: prompt saved pending transcript confirmation; run owner-words.mjs sync if it is still pending after the turn");
+      if (hasOwnerStore) {
+        const hookDirs = isAg ? extractHookDirs(input) : (typeof input?.cwd === "string" && input.cwd ? [input.cwd] : []);
+        if (!hookDirs.length) { if (isAg) console.log("{}"); }
+        else {
+          const loaded = loadHookStore(args["owner-store"]);
+          if (!loaded.ok) throw new Error(loaded.error);
+          const routed = matchHookProduct(hookDirs, loaded.products);
+          if (routed.status === "skip") { if (isAg) console.log("{}"); }
+          else if (routed.status === "ambiguous") throw new Error(routed.error);
+          else runCaptureScoped(input, isAg, routed.projects, routed.product.records);
         }
+      } else {
+        need(args, "records", "project");
+        runCaptureScoped(input, isAg, projectRoots(args.project), args.records);
       }
     } catch (e) {
       const firstLine = String(e?.message ?? e).split("\n")[0];
       const msg = `owner-words: the owner's message was NOT recorded (${firstLine}); run owner-words.mjs sync`;
-      if (isAg) {
-        console.error(msg);
-        console.log(agInject(msg));
-      } else {
-        console.log(msg);
-      }
+      if (isAg) { console.error(msg); console.log(agInject(msg)); }
+      else console.log(msg);
     }
     process.exitCode = 0;
   } else cli(async () => {
+    if (command === "sync" && "owner-store" in args) {
+      if ("records" in args) throw new UsageError("--owner-store and --records exclude each other");
+      const loaded = loadHookStore(args["owner-store"]);
+      if (!loaded.ok) throw new UsageError(loaded.error);
+      const synced = transcriptStoreWordsReport(loaded.products, { routeProduct: matchHookProduct });
+      const reports = loaded.products.map(p => {
+        const bucket = synced.byProduct.get(p.name);
+        const { added, commit } = appendWords(p.records, bucket.words, { message: "owner: record the owner's words from the session transcripts" });
+        const pending = reconcileOwnerPrompts(p.records, bucket.words);
+        return {
+          product: p.name,
+          records: p.records,
+          found: bucket.words.length,
+          added,
+          recorded: committedWords(p.records).length,
+          commit,
+          pending,
+          antigravity: bucket.antigravity,
+          unresolved: bucket.unresolved,
+        };
+      });
+      console.log(JSON.stringify(reports));
+      for (const item of synced.unresolved) {
+        const target = item.session ? `${item.source} session ${item.session}` : item.source;
+        console.error(`owner-words: ${item.status} ${target}: ${item.reason}`);
+      }
+      return synced.unresolved.length || synced.antigravity.skipped > 0 ? 1 : 0;
+    }
     need(args, "records");
     if (command === "sync") {
       need(args, "project");
@@ -139,8 +170,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       commitRecords(args.records, ({ read, add, files }) => {
         if (!parseWords(read(WORDS)).some(w => w.id === args.id)) throw new UsageError(`${args.id} is not a recorded word`);
         if (args.as === "answer" && !files.has(`owner/${args.batch}.md`)) throw new UsageError(`${args.batch} is not a sent batch (owner/${args.batch}.md)`);
-        const old = read(MARKS);
-        const current = wordClasses(parseWords(old)).get(args.id);
+        const old = read(MARKS), current = wordClasses(parseWords(old)).get(args.id);
         if (sameClass(current, mark)) throw new UsageError(`${args.id} is already marked ${current.as}${link ? ` ${current[link.flag]}` : ""}`);
         add(MARKS, appendJsonLines(old, [mark]));
         return { message: `owner: mark a word (${MARKS})` };
