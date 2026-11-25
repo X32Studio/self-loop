@@ -1,4 +1,4 @@
-// D-0061, R-0032-reviewer-architecture, design/suite-once.md#2
+// D-0061, R-0032-reviewer-architecture, R-0041-judge-final, design/suite-once.md#2, design/antigravity-multi-product-hooks.md#1
 import { readFileSync, readdirSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,7 @@ import {
   ANTIGRAVITY_STEP_TYPES,
   decodeCompactArg,
   decodeToolCallArgs,
+  extractStructuredToolPaths,
   extractToolPaths,
   isDisallowedRoleTool,
 } from "./lib/antigravity.mjs";
@@ -20,7 +21,7 @@ export { canonical };
 const system = /^\/(bin|usr|dev\/null|opt\/homebrew|System|Library\/Developer)(\/|$)/;
 export const FILE_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep"];
 const SHELL_TOOLS = ["Bash"];
-const WRITE_TOOLS = new Set(["Write", "Edit"]);
+const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 const normCommand = cmd => String(cmd).trim().replace(/\s+/g, " ");
 
 export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = null, cwd = undefined, stagedSuiteCommand = null } = {}) {
@@ -96,13 +97,15 @@ export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = n
         const record = rejected ? denied : violations;
         if (isDisallowedRoleTool(part.name)) record.push({ id, tool: part.name, path: "(delegation/disallowed tool not allowed in role audit)" });
         if (tools && !tools.includes(part.name)) record.push({ id, tool: part.name, path: "(tool not allowed)" });
-        if (SHELL_TOOLS.includes(part.name) && typeof part.input?.command === "string") screenCommand(id, part.input.command, rejected);
-        const paths = extractToolPaths(part.input);
+        const isShell = SHELL_TOOLS.includes(part.name);
+        const isFile = FILE_TOOLS.includes(part.name) || WRITE_TOOLS.has(part.name);
+        if (isShell && typeof part.input?.command === "string") screenCommand(id, part.input.command, rejected);
+        const paths = (isFile || isShell) ? extractStructuredToolPaths(part.input) : extractToolPaths(part.input);
         for (const value of paths) {
           filePath(id, part.name, value, rejected);
           if (WRITE_TOOLS.has(part.name)) noteWrite(value, rejected);
         }
-        if (tools && !forbidden && FILE_TOOLS.includes(part.name) && paths.length === 0) filePath(id, part.name, ".", rejected);
+        if (tools && !forbidden && isFile && paths.length === 0) filePath(id, part.name, ".", rejected);
       }
     }
     if (event.type === "PLANNER_RESPONSE" && Array.isArray(event.tool_calls)) {
@@ -130,6 +133,8 @@ export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = n
         const outcome = canCreditDenied ? generics[k] : null;
         const rejected = outcome?.status === "ERROR";
         const record = rejected ? denied : violations;
+        const fileSpec = Object.hasOwn(ANTIGRAVITY_FILE_TOOL_MAP, tc.name) ? ANTIGRAVITY_FILE_TOOL_MAP[tc.name] : null;
+        const isShell = ANTIGRAVITY_SHELL_TOOLS.has(tc.name);
         let decodedArgs = decodedTc.args;
         let pathOrUrlDecodeFailed = false;
         let shellDecodeFailed = false;
@@ -139,7 +144,7 @@ export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = n
             if (typeof val === "string") {
               const decoded = decodeCompactArg(val);
               if (decoded.ok) decodedArgs[key] = decoded.value;
-              else if (ANTIGRAVITY_SCALAR_PATH_KEYS.includes(key) || ANTIGRAVITY_ARRAY_PATH_KEYS.includes(key) || /file:\/\//i.test(val)) {
+              else if (ANTIGRAVITY_SCALAR_PATH_KEYS.includes(key) || ANTIGRAVITY_ARRAY_PATH_KEYS.includes(key) || (!fileSpec && !isShell && /file:\/\//i.test(val))) {
                 pathOrUrlDecodeFailed = true;
               } else if (key === "CommandLine" || key === "command") {
                 shellDecodeFailed = true;
@@ -150,11 +155,10 @@ export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = n
           }
         }
         if (isDisallowedRoleTool(tc.name)) record.push({ id, tool: tc.name, path: "(delegation/disallowed tool not allowed in role audit)" });
-        const fileSpec = ANTIGRAVITY_FILE_TOOL_MAP[tc.name];
         if (tools && !tools.includes(tc.name) && !(fileSpec && tools.includes(fileSpec.canonical))) {
           record.push({ id, tool: tc.name, path: "(tool not allowed)" });
         }
-        const paths = extractToolPaths(decodedArgs);
+        const paths = (fileSpec || isShell) ? extractStructuredToolPaths(decodedArgs) : extractToolPaths(decodedArgs);
         for (const p of paths) {
           filePath(id, tc.name, p, rejected);
           if (fileSpec && WRITE_TOOLS.has(fileSpec.canonical)) noteWrite(p, rejected);
@@ -166,7 +170,7 @@ export function auditAccess(visible, events, { tools = FILE_TOOLS, forbidden = n
           unparsedCalls++;
           if (stepTruncated) record.push({ id, tool: tc.name, path: "(truncated/unparseable tool argument)" });
         }
-        if (ANTIGRAVITY_SHELL_TOOLS.has(tc.name)) {
+        if (isShell) {
           const cmd = decodedArgs.CommandLine ?? decodedArgs.command;
           if (shellDecodeFailed || typeof cmd !== "string" || !cmd) {
             unparsedCalls++;

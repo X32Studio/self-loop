@@ -17,6 +17,8 @@ export const ANTIGRAVITY_FILE_TOOL_MAP = Object.freeze({
   write_file: { canonical: "Write" },
   edit_file: { canonical: "Edit" },
   view_file: { canonical: "Read" },
+  view_file_outline: { canonical: "Read" },
+  view_code_item: { canonical: "Read" },
   write_to_file: { canonical: "Write" },
   replace_file_content: { canonical: "Edit" },
   multi_replace_file_content: { canonical: "Edit" },
@@ -41,7 +43,7 @@ export const ANTIGRAVITY_SHELL_TOOLS = new Set(["run_command", "shell_exec"]);
 
 export const ANTIGRAVITY_SCALAR_PATH_KEYS = Object.freeze([
   "path", "Path", "file_path", "notebook_path",
-  "AbsolutePath", "TargetFile", "DirectoryPath", "SearchPath", "SearchDirectory",
+  "AbsolutePath", "File", "TargetFile", "DirectoryPath", "SearchPath", "SearchDirectory",
   "worktreePath", "workspaceRoot", "destinationPath",
 ]);
 
@@ -414,19 +416,39 @@ function collectFileUrls(value, out, depth = 0, seen = new WeakSet()) {
   for (const v of Object.values(value)) collectFileUrls(v, out, depth + 1, seen);
 }
 
-export function extractToolPaths(args) {
+function decodeStructuredPath(value) {
+  const trimmed = value.trim();
+  if (!/^file:\/\//i.test(trimmed)) return value;
+  try { return fileURLToPath(trimmed); } catch { return trimmed.replace(/^file:\/\//i, ""); }
+}
+
+export function extractStructuredToolPaths(args) {
   if (!isPlainObject(args)) return [];
   const found = new Set();
   for (const key of ANTIGRAVITY_SCALAR_PATH_KEYS) {
     const v = args[key];
-    if (typeof v === "string" && v.trim()) found.add(decodeFileUrl(v) ?? v);
+    if (typeof v === "string" && v.trim()) {
+      const decoded = decodeStructuredPath(v);
+      if (decoded) found.add(decoded);
+    }
   }
   for (const key of ANTIGRAVITY_ARRAY_PATH_KEYS) {
     const v = args[key];
     if (Array.isArray(v)) {
-      for (const item of v) if (typeof item === "string" && item.trim()) found.add(decodeFileUrl(item) ?? item);
+      for (const item of v) {
+        if (typeof item === "string" && item.trim()) {
+          const decoded = decodeStructuredPath(item);
+          if (decoded) found.add(decoded);
+        }
+      }
     }
   }
+  return [...found];
+}
+
+export function extractToolPaths(args) {
+  if (!isPlainObject(args)) return [];
+  const found = new Set(extractStructuredToolPaths(args));
   collectFileUrls(args, found);
   return [...found];
 }

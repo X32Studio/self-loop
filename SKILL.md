@@ -425,10 +425,14 @@ node scripts/self-loop.mjs hooks uninstall --harness antigravity [--scope worksp
 
 For multi-product hosts, `--scope global` with `--owner-store <dir>` (or `--all`, or without `--config` when an owner-store
 `products.json` exists) binds `SessionStart`, `PreInvocation`, `PreToolUse`, and `Stop` dynamically to `--owner-store <dir>`:
-`lead-guard.mjs` enforces product code, linked Git worktrees, role workspaces (`<workDir>/tasks/**` only), and cross-product
-live `call.json` nonces across every registered product fail-closed (including products added later via `registry add` without
-reinstalling hooks), while `owner-words.mjs capture` and `word-gate.mjs` route each session by `cwd`/`workspacePaths` and
-cleanly skip unregistered or child workspaces. `owner-words.mjs sync --owner-store <dir>` syncs every registered product.
+`lead-guard.mjs` extracts write destinations strictly from tool-defined path fields (`extractStructuredToolPaths`, decoding
+`file://` URIs inside those path fields without scanning content/body text and failing closed when no structured destination
+is present), enforces product code, linked Git worktrees, role workspaces (`<workDir>/tasks/**` only for the lead), and
+cross-product live `call.json` nonces across every registered product fail-closed (including products added later via
+`registry add` without reinstalling hooks), and exhaustively scopes confirmed Antigravity delegated children matched to a
+single live `call.json` nonce to their own `<ws>/out/**` (plus `<ws>/wt/**` excluding `.git` for `critic` and `actor`),
+while `owner-words.mjs capture` and `word-gate.mjs` route each session by `cwd`/`workspacePaths` and cleanly skip
+unregistered or child workspaces. `owner-words.mjs sync --owner-store <dir>` syncs every registered product.
 
 For T3 child threads (`runner: "t3"`), `provider` may be `codex`, `claude`, or `antigravity` (`t3:codex` is refused for
 the frame reviewer; `t3:antigravity` and `t3:claude` run the frame reviewer in confined mode with fail-closed transcript

@@ -1,11 +1,14 @@
-// F-0004, F-0008, D-0060
+// F-0004, F-0008, F-0009, D-0052, D-0060
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import * as leadGuardModule from "../lead-guard.mjs";
 import { productCode, refusal } from "../lead-guard.mjs";
+import { extractStructuredToolPaths, extractToolPaths } from "../lib/antigravity.mjs";
+import { antigravitySessionState } from "../lib/antigravity-words.mjs";
 import { commonGitDir } from "../lib/path-canonical.mjs";
 import { git, repo, scripts, temp } from "./helpers.mjs";
 
@@ -179,4 +182,287 @@ test("commonGitDir lives solely in lib/path-canonical.mjs and is not re-exported
   const s = setup();
   assert.equal("commonGitDir" in leadGuardModule, false);
   assert.ok(commonGitDir(s.product)?.top);
+});
+
+test("Antigravity confirmed-child PreToolUse scopes writes to own bound out/ and writer wt/ while failing closed everywhere else", () => {
+  const s = setup();
+  const appDir = temp("lg-child-app-");
+  const wrap = body => `<USER_REQUEST>\n<t3_code_instructions>\n## Mode\n</t3_code_instructions>\n\n<user_request>\n${body}\n</user_request><runtime_info>info</runtime_info>\n</USER_REQUEST>`;
+  const step0 = (content, extra = {}) => ({ step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-25T01:00:00Z", ...(content !== undefined ? { content } : {}), ...extra });
+  const writeTx = (id, name, rows) => {
+    const dir = join(appDir, "brain", id, ".system_generated", "logs");
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, name);
+    writeFileSync(file, rows.map(r => (typeof r === "string" ? r : JSON.stringify(r))).join("\n") + "\n");
+    return file;
+  };
+  const prep = (name, { role, nonce, withWt = true, recorded = false, cancelled = false }) => {
+    const ws = join(s.workspaces, name);
+    mkdirSync(join(ws, "out"), { recursive: true });
+    let wt = null;
+    if (withWt) {
+      wt = join(ws, "wt");
+      git(s.product, "worktree", "add", "-q", "--detach", wt);
+    }
+    writeFileSync(join(ws, "call.json"), JSON.stringify({
+      ws, wt, role, nonce,
+      ...(recorded ? { recorded: true } : {}),
+      ...(cancelled ? { cancelled: true } : {}),
+    }));
+    const prompt = `Act as the test sub-agent for this task.\n\nself-loop call R-0039-${name} · nonce ${nonce}`;
+    return { ws, wt, nonce, prompt };
+  };
+
+  const reviewer = prep("0039-rev", { role: "reviewer", nonce: "aaaa1111bbbb2222", withWt: true });
+  const judge = prep("0039-judge", { role: "judge", nonce: "cccc3333dddd4444", withWt: true });
+  const actor = prep("0039-actor", { role: "actor", nonce: "eeee5555ffff6666", withWt: true });
+  const critic = prep("0039-critic", { role: "critic", nonce: "1111aaaa2222bbbb", withWt: true });
+  const recorded = prep("0039-rec", { role: "actor", nonce: "3333cccc4444dddd", withWt: true, recorded: true });
+  const cancelled = prep("0039-can", { role: "actor", nonce: "5555eeee6666ffff", withWt: true, cancelled: true });
+  const symlinkOutCall = prep("0039-sym-out", { role: "actor", nonce: "7777888899990000", withWt: true });
+  rmSync(join(symlinkOutCall.ws, "out"), { recursive: true, force: true });
+  symlinkSync(s.product, join(symlinkOutCall.ws, "out"));
+
+  symlinkSync(s.product, join(actor.wt, "escape-prod"));
+  symlinkSync(join(actor.ws, "call.json"), join(actor.ws, "out", "escape-call.json"));
+
+  const revTx = writeTx("c-rev", "transcript_full.jsonl", [step0(wrap(reviewer.prompt))]);
+  const judgeTx = writeTx("c-judge", "transcript_full.jsonl", [step0(wrap(judge.prompt))]);
+  const actorTx = writeTx("c-actor", "transcript_full.jsonl", [step0(wrap(actor.prompt))]);
+  const criticTx = writeTx("c-critic", "transcript_full.jsonl", [step0(wrap(critic.prompt))]);
+  const recTx = writeTx("c-rec", "transcript_full.jsonl", [step0(wrap(recorded.prompt))]);
+  const canTx = writeTx("c-can", "transcript_full.jsonl", [step0(wrap(cancelled.prompt))]);
+  const ambigTx = writeTx("c-ambig", "transcript_full.jsonl", [step0(wrap(`${actor.prompt}\n${critic.prompt}`))]);
+  const truncTx = writeTx("c-trunc", "transcript.jsonl", [step0(wrap(actor.prompt), { truncated_fields: ["content"] })]);
+  const corruptTx = writeTx("c-corrupt", "transcript_full.jsonl", ['{"step_index":0,"type":"USER_INPUT"']);
+  const ownerTx = writeTx("c-owner", "transcript_full.jsonl", [step0(wrap(`Inspect nonce ${actor.nonce}`))]);
+  const symOutTx = writeTx("c-sym-out", "transcript_full.jsonl", [step0(wrap(symlinkOutCall.prompt))]);
+
+  assert.equal(antigravitySessionState(actorTx).firstPrompt, actor.prompt);
+  assert.equal(antigravitySessionState(truncTx).firstPrompt, null);
+  assert.equal(antigravitySessionState(truncTx, { summary: { nesting_depth: 1 } }).firstPrompt, null);
+  assert.equal(antigravitySessionState(corruptTx).firstPrompt, null);
+
+  const agOpts = { ...s.opts, format: "antigravity" };
+  const agWrite = (tx, target, cwd = s.product) => refusal({
+    hookEventName: "PreToolUse",
+    conversationId: "c-test",
+    transcriptPath: tx,
+    cwd,
+    toolCall: { name: "write_file", argumentsJson: JSON.stringify({ Path: target, Content: "x" }) },
+  }, agOpts);
+
+  for (const [tx, call] of [[revTx, reviewer], [judgeTx, judge]]) {
+    assert.equal(agWrite(tx, join(call.ws, "out", "report.md")), null);
+    assert.equal(agWrite(tx, join(call.ws, "out", "design", "note.md")), null);
+    assert.ok(agWrite(tx, join(call.wt, "src", "a.js")));
+    assert.ok(agWrite(tx, join(call.ws, "call.json")));
+    assert.ok(agWrite(tx, join(s.workspaces, "tasks", "R-0039.md")));
+    assert.ok(agWrite(tx, join(actor.ws, "out", "report.md")));
+    assert.ok(agWrite(tx, join(s.product, "src", "a.js")));
+    assert.ok(agWrite(tx, join(s.product, "docs", "PRODUCT.md")));
+  }
+
+  for (const [tx, call] of [[actorTx, actor], [criticTx, critic]]) {
+    assert.equal(agWrite(tx, join(call.ws, "out", "report.md")), null);
+    assert.equal(agWrite(tx, join(call.wt, "src", "a.js")), null);
+    assert.equal(agWrite(tx, "src/new.js", call.wt), null);
+    assert.ok(agWrite(tx, join(call.wt, ".git")));
+    assert.ok(agWrite(tx, join(call.wt, ".git", "config")));
+    assert.ok(agWrite(tx, join(call.ws, "call.json")));
+    assert.ok(agWrite(tx, join(s.workspaces, "tasks", "R-0039.md")));
+    assert.ok(agWrite(tx, join(s.product, "src", "a.js")));
+    assert.ok(agWrite(tx, join(s.product, "docs", "PRODUCT.md")));
+    assert.ok(refusal({
+      hookEventName: "PreToolUse",
+      conversationId: "c-test",
+      transcriptPath: tx,
+      cwd: call.wt,
+      toolCall: { name: "run_command", argumentsJson: JSON.stringify({ CommandLine: "git push origin main" }) },
+    }, agOpts));
+  }
+
+  assert.ok(agWrite(actorTx, join(actor.wt, "escape-prod", "src", "a.js")));
+  assert.ok(agWrite(actorTx, join(actor.ws, "out", "escape-call.json")));
+  assert.ok(agWrite(symOutTx, join(symlinkOutCall.ws, "out", "src", "a.js")));
+  assert.ok(agWrite(actorTx, join(critic.wt, "src", "a.js")));
+
+  for (const [tx, call] of [
+    [recTx, recorded],
+    [canTx, cancelled],
+    [ambigTx, actor],
+    [truncTx, actor],
+    [corruptTx, actor],
+    [ownerTx, actor],
+    [join(appDir, "missing.jsonl"), actor],
+  ]) {
+    assert.ok(agWrite(tx, join(call.ws, "out", "report.md")));
+    assert.ok(agWrite(tx, join(call.wt, "src", "a.js")));
+  }
+
+  assert.ok(refusal({
+    tool_name: "Write",
+    cwd: s.product,
+    transcriptPath: actorTx,
+    tool_input: { file_path: join(actor.ws, "out", "report.md") },
+  }, { ...s.opts, format: "claude" }));
+});
+
+test("Antigravity bound child refuses all out-of-scope targets exhaustively without falling through to lead policy", () => {
+  const s = setup();
+  writeFileSync(join(s.product, ".git", "info", "exclude"), "/.env\n");
+  const records = temp("lg-child-rec-");
+  const external = temp("lg-child-ext-");
+  const appDir = temp("lg-child-exh-app-");
+  const wrap = body => `<USER_REQUEST>\n<t3_code_instructions>\n## Mode\n</t3_code_instructions>\n\n<user_request>\n${body}\n</user_request><runtime_info>info</runtime_info>\n</USER_REQUEST>`;
+  const writeTx = (id, body) => {
+    const dir = join(appDir, "brain", id, ".system_generated", "logs");
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, "transcript_full.jsonl");
+    writeFileSync(file, JSON.stringify({ step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-25T01:00:00Z", content: wrap(body) }) + "\n");
+    return file;
+  };
+  const prep = (name, role, nonce) => {
+    const ws = join(s.workspaces, name);
+    mkdirSync(join(ws, "out"), { recursive: true });
+    const wt = join(ws, "wt");
+    git(s.product, "worktree", "add", "-q", "--detach", wt);
+    writeFileSync(join(ws, "call.json"), JSON.stringify({ ws, wt, role, nonce }));
+    const tx = writeTx(`c-${name}`, `Act as the test sub-agent for this task.\n\nself-loop call R-0040-${name} · nonce ${nonce}`);
+    return { ws, wt, tx };
+  };
+
+  const rev = prep("0040-rev", "reviewer", "1010202030304040");
+  const judge = prep("0040-judge", "judge", "5050606070708080");
+  const actor = prep("0040-actor", "actor", "a0a0b0b0c0c0d0d0");
+  const critic = prep("0040-critic", "critic", "e0e0f0f011223344");
+  const ownerTx = writeTx("c-owner", "Update docs and dispatch the next task");
+  const agOpts = { ...s.opts, records, format: "antigravity" };
+  const agWrite = (tx, target, cwd = s.product) => refusal({
+    hookEventName: "PreToolUse",
+    conversationId: "c-exh",
+    ...(tx ? { transcriptPath: tx } : {}),
+    ...(cwd !== null ? { cwd } : {}),
+    toolCall: { name: "write_file", argumentsJson: JSON.stringify({ Path: target, Content: "x" }) },
+  }, agOpts);
+
+  const leadAllowedTargets = [
+    join(s.workspaces, "tasks", "hijack.md"),
+    join(records, "rounds", "0040-fake.md"),
+    join(s.product, "docs", "PRODUCT.md"),
+    join(s.product, "README.md"),
+    join(s.product, ".env"),
+    join(external, "escape.txt"),
+    "/tmp/lead-guard-child-escape.txt",
+  ];
+
+  for (const target of leadAllowedTargets) {
+    assert.equal(agWrite(ownerTx, target), null, `owner lead allows ${target}`);
+    assert.equal(agWrite(null, target), null, `no-transcript lead allows ${target}`);
+  }
+  assert.match(agWrite(ownerTx, join(s.product, "src", "a.js")), /product code/);
+  assert.match(agWrite(ownerTx, join(actor.ws, "out", "report.md")), /inside workspace root/);
+
+  for (const child of [rev, judge]) {
+    assert.equal(agWrite(child.tx, join(child.ws, "out", "report.md")), null);
+    assert.match(agWrite(child.tx, "out/report.md", null), /requires hook cwd/);
+    for (const target of [...leadAllowedTargets, join(child.wt, "src", "a.js")]) {
+      const denied = agWrite(child.tx, target);
+      assert.ok(denied, `denied ${target}`);
+      assert.match(denied, /outside delegated child workspace scope/);
+      const granted = denied.split("write only under ")[1] ?? "";
+      assert.ok(granted.includes("/out/"), denied);
+      assert.equal(granted.includes("/wt/"), false, denied);
+    }
+  }
+
+  for (const child of [actor, critic]) {
+    assert.equal(agWrite(child.tx, join(child.ws, "out", "report.md")), null);
+    assert.equal(agWrite(child.tx, join(child.wt, "src", "a.js")), null);
+    assert.match(agWrite(child.tx, "src/a.js", null), /requires hook cwd/);
+    for (const target of [...leadAllowedTargets, join(child.wt, ".git", "config")]) {
+      const denied = agWrite(child.tx, target);
+      assert.ok(denied, `denied ${target}`);
+      assert.match(denied, /outside delegated child workspace scope/);
+      const granted = denied.split("write only under ")[1] ?? "";
+      assert.ok(granted.includes("/out/"), denied);
+      assert.ok(granted.includes("/wt/"), denied);
+    }
+  }
+});
+
+test("structured write destination extraction ignores embedded body file:// URIs while enforcing structured targets and fail-closed missing paths", () => {
+  const s = setup();
+  const records = temp("lg-wt-rec-"), external = temp("lg-wt-ext-"), appDir = temp("lg-wt-app-");
+  const recFile = join(records, "rounds", "0040.md"), extFile = join(external, "outside.txt"), prodSrc = join(s.product, "src", "a.js");
+  const recUri = pathToFileURL(recFile).href, extUri = pathToFileURL(extFile).href, srcUri = pathToFileURL(prodSrc).href;
+  const body = `See [round](${recUri}), [src](${srcUri}), and ${extUri}\n`;
+
+  assert.deepEqual(extractStructuredToolPaths({ Path: "/ws/out/report.md", Content: body }), ["/ws/out/report.md"]);
+  assert.deepEqual(extractStructuredToolPaths({ TargetFile: recUri, CodeContent: extUri }), [recFile]);
+  assert.deepEqual(extractStructuredToolPaths({ file_path: prodSrc, Target: recUri, Replacement: extUri }), [prodSrc]);
+  assert.deepEqual(extractStructuredToolPaths({
+    TargetFile: "/ws/wt/src/a.js",
+    TargetContent: recUri,
+    ReplacementContent: extUri,
+    ReplacementChunks: [{ TargetContent: srcUri, ReplacementContent: extUri }],
+  }), ["/ws/wt/src/a.js"]);
+  assert.deepEqual(extractStructuredToolPaths({ Path: "/ws/out/report.md", paths: [extUri] }), ["/ws/out/report.md", extFile]);
+  assert.deepEqual(extractStructuredToolPaths({ Content: body }), []);
+  assert.deepEqual(extractStructuredToolPaths({ Path: "" }), []);
+  assert.deepEqual(extractStructuredToolPaths({ Path: "   " }), []);
+  assert.deepEqual(extractStructuredToolPaths({ Path: "file://" }), ["/"]);
+  const auditPaths = extractToolPaths({ Path: "/ws/out/report.md", Content: body });
+  assert.ok(auditPaths.includes("/ws/out/report.md") && auditPaths.includes(recFile) && auditPaths.includes(prodSrc) && auditPaths.includes(extFile));
+
+  const wrap = text => `<USER_REQUEST>\n<t3_code_instructions>\n## Mode\n</t3_code_instructions>\n\n<user_request>\n${text}\n</user_request><runtime_info>info</runtime_info>\n</USER_REQUEST>`;
+  const writeTx = (id, text) => {
+    const dir = join(appDir, "brain", id, ".system_generated", "logs");
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, "transcript_full.jsonl");
+    writeFileSync(file, JSON.stringify({ step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-25T01:00:00Z", content: wrap(text) }) + "\n");
+    return file;
+  };
+  const prep = (name, role, nonce) => {
+    const ws = join(s.workspaces, name), wt = join(ws, "wt");
+    mkdirSync(join(ws, "out"), { recursive: true });
+    git(s.product, "worktree", "add", "-q", "--detach", wt);
+    writeFileSync(join(ws, "call.json"), JSON.stringify({ ws, wt, role, nonce }));
+    return { ws, wt, tx: writeTx(`c-${name}`, `Act as the test sub-agent for this task.\n\nself-loop call R-0041-${name} · nonce ${nonce}`) };
+  };
+  const actor = prep("0041-actor", "actor", "1234abcd5678ef90");
+  const rev = prep("0041-rev", "reviewer", "90ef7856cdab3412");
+  const ownerTx = writeTx("c-owner", "Update docs with links");
+  const agOpts = { ...s.opts, records, format: "antigravity" };
+  const callWrite = (tx, name, args) => refusal({
+    hookEventName: "PreToolUse",
+    conversationId: "c-wt",
+    transcriptPath: tx,
+    cwd: s.product,
+    toolCall: { name, argumentsJson: JSON.stringify(args) },
+  }, agOpts);
+
+  const actorWtFile = join(actor.wt, "src", "a.js"), actorOut = join(actor.ws, "out", "report.md"), revOut = join(rev.ws, "out", "report.md");
+  for (const [name, args] of [
+    ["write_file", { Path: actorOut, Content: body }],
+    ["write_file", { Path: actorWtFile, Content: body }],
+    ["edit_file", { Path: actorWtFile, Target: recUri, Replacement: extUri }],
+    ["write_to_file", { TargetFile: actorWtFile, CodeContent: body }],
+    ["replace_file_content", { TargetFile: actorWtFile, TargetContent: recUri, ReplacementContent: extUri }],
+    ["multi_replace_file_content", { TargetFile: actorWtFile, ReplacementChunks: [{ TargetContent: "x", ReplacementContent: body }] }],
+  ]) assert.equal(callWrite(actor.tx, name, args), null, `actor allows ${name}`);
+  assert.equal(callWrite(rev.tx, "write_file", { Path: revOut, Content: body }), null);
+  assert.equal(callWrite(ownerTx, "write_file", { Path: join(s.product, "docs", "PRODUCT.md"), Content: body }), null);
+
+  for (const [label, tx, name, args] of [
+    ["actor Path outside", actor.tx, "write_file", { Path: recFile, Content: "x" }],
+    ["actor file:// Path outside", actor.tx, "write_file", { Path: extUri, Content: "x" }],
+    ["actor file:// TargetFile outside", actor.tx, "replace_file_content", { TargetFile: recUri, TargetContent: "a", ReplacementContent: "b" }],
+    ["actor file:// paths outside", actor.tx, "write_file", { Path: actorOut, paths: [extUri], Content: "x" }],
+    ["reviewer file:// Path wt", rev.tx, "write_file", { Path: pathToFileURL(join(rev.wt, "src", "a.js")).href, Content: "x" }],
+    ["reviewer Path outside", rev.tx, "edit_file", { file_path: prodSrc, Target: "a", Replacement: "b" }],
+    ["actor missing destination", actor.tx, "write_file", { Content: body }],
+    ["actor bare file:// destination", actor.tx, "write_file", { Path: "file://", Content: "x" }],
+    ["owner missing destination", ownerTx, "write_file", { Content: "x" }],
+  ]) assert.ok(callWrite(tx, name, args), `expected deny for ${label}`);
 });

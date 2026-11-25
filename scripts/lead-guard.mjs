@@ -8,8 +8,9 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/args.mjs";
 import {
   ANTIGRAVITY_DELEGATION_TOOLS, ANTIGRAVITY_SHELL_TOOLS, ANTIGRAVITY_WRITE_TOOLS,
-  decodeToolCallArgs, extractHookDirs, extractToolPaths, isAntigravityHook, PRE_TOOL_USE_PASSTHROUGH, T3_MCP_TOOL_PREFIX,
+  decodeToolCallArgs, extractHookDirs, extractStructuredToolPaths, isAntigravityHook, PRE_TOOL_USE_PASSTHROUGH, T3_MCP_TOOL_PREFIX,
 } from "./lib/antigravity.mjs";
+import { antigravitySessionState } from "./lib/antigravity-words.mjs";
 import { hasGitPush } from "./lib/git-push-command.mjs";
 import { canonical, commonGitDir } from "./lib/path-canonical.mjs";
 import { DEFAULT_HOOK_ALLOW, loadHookStore, real } from "./lib/registry.mjs";
@@ -17,6 +18,7 @@ import { DEFAULT_HOOK_ALLOW, loadHookStore, real } from "./lib/registry.mjs";
 const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit", ...ANTIGRAVITY_WRITE_TOOLS]);
 const SHELL_TOOLS = new Set(["Bash", ...ANTIGRAVITY_SHELL_TOOLS]);
 export const DELEGATION_TOOLS = new Set(["Agent", "spawn_agent", ...ANTIGRAVITY_DELEGATION_TOOLS]);
+const CHILD_WT_ROLES = new Set(["critic", "actor"]);
 const DELEGATION_PROMPT_KEYS = Object.freeze(["task", "prompt", "Prompt", "message", "brief", "Script"]);
 const NONCE_RE = /^[0-9a-f]{16}$/;
 const NONCE_TOKEN_RE = /\b[0-9a-f]{16}\b/g;
@@ -100,8 +102,8 @@ function isLiveCallManifest(meta, expectedWs = null) {
   return existsSync(meta.wt);
 }
 
-export function liveCallNonces(workspaces = [], records = null) {
-  const live = new Set();
+function liveCallManifests(workspaces = [], records = null) {
+  const manifests = [];
   for (const root of workspaces) {
     if (!root || !existsSync(root)) continue;
     let entries;
@@ -112,7 +114,14 @@ export function liveCallNonces(workspaces = [], records = null) {
       if (!existsSync(manifest)) continue;
       try {
         const meta = JSON.parse(readFileSync(manifest, "utf8"));
-        if (isLiveCallManifest(meta, ws)) live.add(meta.nonce);
+        if (isLiveCallManifest(meta, ws)) {
+          manifests.push({
+            nonce: meta.nonce,
+            ws: canonical(meta.ws ?? ws),
+            wt: typeof meta.wt === "string" && meta.wt ? canonical(meta.wt) : null,
+            role: typeof meta.role === "string" ? meta.role : null,
+          });
+        }
       } catch {}
     }
   }
@@ -126,11 +135,54 @@ export function liveCallNonces(workspaces = [], records = null) {
       if (!entry.isFile() || !/^T-.*\.json$/.test(entry.name)) continue;
       try {
         const meta = JSON.parse(readFileSync(join(delegationsDir, entry.name), "utf8"));
-        if (isLiveCallManifest(meta)) live.add(meta.nonce);
+        if (isLiveCallManifest(meta)) {
+          manifests.push({
+            nonce: meta.nonce,
+            ws: null,
+            wt: typeof meta.wt === "string" && meta.wt ? canonical(meta.wt) : null,
+            role: typeof meta.role === "string" ? meta.role : null,
+          });
+        }
       } catch {}
     }
   }
-  return live;
+  return manifests;
+}
+
+export function liveCallNonces(workspaces = [], records = null) {
+  return new Set(liveCallManifests(workspaces, records).map(m => m.nonce));
+}
+
+function hasGitSegment(root, target) {
+  return relative(root, target).split(sep).some(part => part.toLowerCase() === ".git");
+}
+
+function resolveChildWriteScope(input, format, allWorkspaces) {
+  if (format !== "antigravity") return null;
+  if (typeof input?.transcriptPath !== "string" || !input.transcriptPath) return null;
+  const session = antigravitySessionState(input.transcriptPath, { conversationId: input?.conversationId ?? null });
+  if (session.state !== "confirmed-child" || typeof session.firstPrompt !== "string" || !session.firstPrompt) return null;
+  const tokens = new Set();
+  for (const match of session.firstPrompt.matchAll(NONCE_TOKEN_RE)) tokens.add(match[0]);
+  if (!tokens.size) return null;
+  const matches = liveCallManifests(allWorkspaces).filter(m => m.ws && tokens.has(m.nonce));
+  if (matches.length !== 1) return null;
+  const [manifest] = matches;
+  const rawOut = canonical(join(manifest.ws, "out"));
+  const out = withinStrict(rawOut, manifest.ws) ? rawOut : null;
+  const wt = CHILD_WT_ROLES.has(manifest.role) && manifest.wt && withinStrict(manifest.wt, manifest.ws) ? manifest.wt : null;
+  return { ws: manifest.ws, out, wt };
+}
+
+function allowedByChildScope(path, scope) {
+  if (scope.out && withinStrict(path, scope.out)) return true;
+  return Boolean(scope.wt && withinStrict(path, scope.wt) && !hasGitSegment(scope.wt, path));
+}
+
+function childScopeRefusal(path, scope) {
+  const granted = [scope.out && `${scope.out}/`, scope.wt && `${scope.wt}/ (excluding .git)`].filter(Boolean);
+  const dirs = granted.length ? granted.join(" and ") : `no valid directories inside ${scope.ws}`;
+  return `${path} is outside delegated child workspace scope (${scope.ws}). This child may write only under ${dirs}.`;
 }
 
 function promptContainsLiveNonce(text, liveNonces) {
@@ -162,7 +214,7 @@ export function productCode(top, rel, { timeoutMs = GIT_TIMEOUT_MS } = {}) {
 }
 
 export function refusal(input, { product = null, workspaces = [], allow = null, records = null, ownerStore = null, format = null, gitTimeoutMs = GIT_TIMEOUT_MS } = {}) {
-  const { tool, args, cwd, argError } = normalizeHookInput(input, format);
+  const { format: hookFormat, tool, args, cwd, argError } = normalizeHookInput(input, format);
   if (argError) return argError;
   const allProducts = [], rawWorkspaces = [...workspaces], rawRecords = Array.isArray(records) ? [...records] : records ? [records] : [];
   const explicitAllow = Array.isArray(allow) ? allow : null;
@@ -186,15 +238,20 @@ export function refusal(input, { product = null, workspaces = [], allow = null, 
     return null;
   }
   if (WRITE_TOOLS.has(tool)) {
-    const files = extractToolPaths(args);
-    if (!files.length) return null;
+    const files = extractStructuredToolPaths(args);
+    if (!files.length) return `${tool} requires a structured destination path`;
+    const childScope = resolveChildWriteScope(input, hookFormat, allWorkspaces);
     for (const file of files) {
       if (!isAbsolute(file) && !cwd) return `relative write path "${file}" requires hook cwd`;
       const path = canonical(resolve(cwd ?? "/", file));
+      if (childScope) {
+        if (allowedByChildScope(path, childScope)) continue;
+        return childScopeRefusal(path, childScope);
+      }
       const containingWs = allWorkspaces.filter(w => within(path, w));
       if (containingWs.length > 0) {
         if (containingWs.every(w => withinStrict(path, join(w, "tasks")))) continue;
-        const ws = containingWs.find(w => !withinStrict(path, join(w, "tasks")));
+        const ws = containingWs.find(w => !withinStrict(path, join(w, "tasks"))) ?? containingWs[0];
         const relWs = relative(canonical(ws), path).split(sep).join("/") || ".";
         return `${relWs} is inside workspace root ${ws}. The lead may write only under ${join(ws, "tasks")}/, never inside role workspaces, worktrees, call.json, or out/.`;
       }

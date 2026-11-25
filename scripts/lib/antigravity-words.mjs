@@ -31,26 +31,35 @@ function unwrapHandoffText(text) {
   return current;
 }
 
-function antigravityAgent(rows, summary = null, { parseErrors = 0 } = {}) {
-  const res = (agent, extra = {}) => ({ agent, unresolved: false, unparseableFirstPrompt: false, truncatedFirstPrompt: false, reason: null, ...extra });
-  if (isChildSummary(summary)) return res(true);
-  if (parseErrors > 0) return res(false, { unresolved: true, unparseableFirstPrompt: true, reason: "transcript has unparseable JSON line(s)" });
+function parseFirstPrompt(rows, parseErrors = 0) {
+  if (parseErrors > 0) return { ok: false, unresolved: true, unparseableFirstPrompt: true, truncatedFirstPrompt: false, reason: "transcript has unparseable JSON line(s)", text: null };
   const first = rows.find(isExplicitUserRow);
-  if (!first) {
+  if (!first) return { ok: false, unresolved: false, unparseableFirstPrompt: false, truncatedFirstPrompt: false, reason: null, text: null };
+  if (Number.isInteger(first.step_index) && first.step_index > 0 && !rows.some(r => r?.step_index === 0)) {
+    return { ok: false, unresolved: true, unparseableFirstPrompt: false, truncatedFirstPrompt: false, reason: "transcript is missing step 0 before first USER_INPUT", text: null };
+  }
+  if (typeof first.content !== "string") return { ok: false, unresolved: true, unparseableFirstPrompt: true, truncatedFirstPrompt: false, reason: "first USER_INPUT has missing content", text: null };
+  if (isTruncatedContent(first)) return { ok: false, unresolved: true, unparseableFirstPrompt: false, truncatedFirstPrompt: true, reason: TRUNCATED_REASON, text: null };
+  const unwrapped = unwrapAntigravityUserText(first.content);
+  if (unwrapped === null) return { ok: false, unresolved: true, unparseableFirstPrompt: true, truncatedFirstPrompt: false, reason: "unparseable first prompt", text: null };
+  return { ok: true, unresolved: false, unparseableFirstPrompt: false, truncatedFirstPrompt: false, reason: null, text: unwrapped };
+}
+
+function antigravityAgent(rows, summary = null, { parseErrors = 0 } = {}) {
+  const res = (agent, extra = {}) => ({ agent, unresolved: false, unparseableFirstPrompt: false, truncatedFirstPrompt: false, reason: null, firstPrompt: null, ...extra });
+  const parsed = parseFirstPrompt(rows, parseErrors);
+  if (isChildSummary(summary)) return res(true, { firstPrompt: parsed.ok ? parsed.text : null });
+  if (!parsed.ok) {
+    if (parsed.unresolved) return res(false, { unresolved: true, unparseableFirstPrompt: parsed.unparseableFirstPrompt, truncatedFirstPrompt: parsed.truncatedFirstPrompt, reason: parsed.reason });
     return Number.isInteger(summary?.last_user_input_step_index) && summary.last_user_input_step_index >= 0
       ? res(false, { unresolved: true, reason: "transcript is missing first USER_INPUT step" })
       : res(false);
   }
-  if (Number.isInteger(first.step_index) && first.step_index > 0 && !rows.some(r => r?.step_index === 0)) {
-    return res(false, { unresolved: true, reason: "transcript is missing step 0 before first USER_INPUT" });
+  const trimmed = unwrapHandoffText(parsed.text.trim());
+  if (T3_AGENT_NOTICE.test(trimmed) || DELEGATED_NOTICE.test(trimmed) || isLeadPrompt(ownerPrompt(parsed.text)?.text ?? "")) {
+    return res(true, { firstPrompt: parsed.text });
   }
-  if (typeof first.content !== "string") return res(false, { unresolved: true, unparseableFirstPrompt: true, reason: "first USER_INPUT has missing content" });
-  if (isTruncatedContent(first)) return res(false, { unresolved: true, truncatedFirstPrompt: true, reason: TRUNCATED_REASON });
-  const unwrapped = unwrapAntigravityUserText(first.content);
-  if (unwrapped === null) return res(false, { unresolved: true, unparseableFirstPrompt: true, reason: "unparseable first prompt" });
-  const trimmed = unwrapHandoffText(unwrapped.trim());
-  if (T3_AGENT_NOTICE.test(trimmed) || DELEGATED_NOTICE.test(trimmed) || isLeadPrompt(ownerPrompt(unwrapped)?.text ?? "")) return res(true);
-  return res(false);
+  return res(false, { firstPrompt: parsed.text });
 }
 
 function lookupConversationSummary(actual, conversationId = null) {
@@ -61,16 +70,27 @@ function lookupConversationSummary(actual, conversationId = null) {
 }
 
 export function antigravitySessionState(file, { summary = undefined, conversationId = null } = {}) {
-  const empty = { agent: false, unresolved: false, unparseableFirstPrompt: false, truncatedFirstPrompt: false, reason: null };
-  if (isChildSummary(summary)) return { state: "confirmed-child", ...empty, agent: true };
-  if (!file) return { state: "owner", ...empty };
+  const empty = { agent: false, unresolved: false, unparseableFirstPrompt: false, truncatedFirstPrompt: false, reason: null, firstPrompt: null };
+  if (!file) {
+    return isChildSummary(summary)
+      ? { state: "confirmed-child", ...empty, agent: true }
+      : { state: "owner", ...empty };
+  }
   const actual = resolveAuthoritativeTranscript(file);
   const resolved = summary === undefined ? lookupConversationSummary(actual, conversationId) : summary;
-  if (isChildSummary(resolved)) return { state: "confirmed-child", ...empty, agent: true };
-  if (!existsSync(actual)) return { state: "owner", ...empty };
+  const childBySummary = isChildSummary(resolved);
+  if (!existsSync(actual)) {
+    return childBySummary
+      ? { state: "confirmed-child", ...empty, agent: true }
+      : { state: "owner", ...empty };
+  }
   let read;
   try { read = readTranscriptRows(actual); }
-  catch (error) { return { state: "unresolved", ...empty, unresolved: true, reason: error?.message ?? String(error) }; }
+  catch (error) {
+    return childBySummary
+      ? { state: "confirmed-child", ...empty, agent: true }
+      : { state: "unresolved", ...empty, unresolved: true, reason: error?.message ?? String(error) };
+  }
   const status = antigravityAgent(read.rows, resolved, { parseErrors: read.parseErrors });
   return { state: status.agent ? "confirmed-child" : status.unresolved ? "unresolved" : "owner", ...status };
 }
