@@ -20,7 +20,7 @@ const json = v => JSON.stringify(v, null, 2) + "\n";
 const jsonl = (...rows) => rows.map(r => JSON.stringify(r)).join("\n") + "\n";
 const mkRepo = (files, dir) => { mkdirSync(dir, { recursive: true }); return repo(files, dir); };
 const obs = (runner, model) => ({ runner, model, observedModel: model, observedModels: [model] });
-const t3Ag = (model = "gemini-2.5-flash-high") => ({ runner: "t3", provider: "antigravity", model, effort: "high" });
+const t3Ag = (model = "gemini-2.5-flash") => ({ runner: "t3", provider: "antigravity", model, effort: "high" });
 const agObs = model => obs("t3:antigravity", model);
 const codexObs = model => obs("t3:codex", model);
 const claudeObs = model => obs("t3:claude", model);
@@ -94,7 +94,7 @@ function makeCallWorld(t) {
   writeFileSync(cfgPath, json({
     product, branch: "loop/v1", records, phase: "v1", workDir, briefs: BRIEFS, sealed: [sealed],
     purpose: ["src/a.js"], owns: { critic: ["test"], actor: ["src"] }, protected: ["main"],
-    agents: { critic: t3Ag(), actor: t3Ag(), judge: t3Ag("gemini-2.5-flash-lite-high"), reviewer: t3Ag("gemini-2.5-flash-lite-high") },
+    agents: { critic: t3Ag(), actor: t3Ag(), judge: t3Ag("gemini-2.5-pro"), reviewer: t3Ag("gemini-2.5-pro") },
   }));
   const env = isolatedEnv({ ANTIGRAVITY_APP_DATA_DIR: appDir, GEMINI_HOME: gHome, T3CODE_HOME: "", SELF_LOOP_LOAD_DIR: loadDir });
   const prepare = (role, taskBody, extra = []) => {
@@ -118,7 +118,7 @@ test("[R44-1] plain local Antigravity launch mentioning </paseo-system> passes r
   writeSummaryDb(w.appDir, summaryRows);
   writeTranscript(w.appDir, "conv-plain-prefix", [
     userStep(0, wrapUserReq(`Context note: handle </paseo-system> closing tags safely.\n\n${prepAuto.prompt}`)),
-    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-26T01:00:05Z", model: "gemini-2.5-flash-high" },
+    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-26T01:00:05Z", model: "gemini-2.5-flash" },
   ]);
   assert.equal(w.recordAuto(prepAuto.ws).status, 0);
 
@@ -128,7 +128,7 @@ test("[R44-1] plain local Antigravity launch mentioning </paseo-system> passes r
   writeSummaryDb(w.appDir, summaryRows);
   const txPlain = writeTranscript(w.appDir, "conv-plain-suffix", [
     userStep(0, wrapUserReq(`${prepTx.prompt}\nNote about </paseo-system>.`)),
-    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-26T01:00:05Z", model: "gemini-2.5-flash-high" },
+    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-26T01:00:05Z", model: "gemini-2.5-flash" },
   ]);
   assert.equal(w.recordTx(prepTx.ws, txPlain).status, 0);
   assert.equal(w.handoffs().length, 2);
@@ -148,7 +148,7 @@ test("[R44-1] plain local Antigravity launch mentioning </paseo-system> passes r
     writeSummaryDb(w.appDir, summaryRows);
     const txBad = writeTranscript(w.appDir, cid, [
       userStep(0, step0),
-      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-26T01:00:05Z", model: "gemini-2.5-flash-lite-high" },
+      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-26T01:00:05Z", model: "gemini-2.5-pro" },
     ]);
     assert.equal(w.recordAuto(prepRev.ws).status, EXIT.failure, `${label} auto-discovery must fail`);
     assert.equal(w.recordTx(prepRev.ws, txBad).status, EXIT.records, `${label} --transcript must fail`);
@@ -273,9 +273,9 @@ function makeWaveWorld(t, { judgeIndependence = "model", rounds } = {}) {
 }
 
 test("[R44-2] judgeIndependence model requires observed telemetry across all four gates and refuses unrecognized observedModel under both vendor and model [loss: false-verdict]", t => {
-  const flash = agObs("gemini-2.5-flash-high");
+  const neon = agObs("gemini-2.5-flash");
   const singleWave = judgeAgent => ({
-    actors: [{ round: 2, step: "actor-a", agent: flash }],
+    actors: [{ round: 2, step: "actor-a", agent: neon }],
     critics: [{ round: 2, step: "critic", commitIndex: 0, needs: "actor-a", reviews: "actor-a" }],
     judges: [{ round: 3, commitIndex: 0, needs: "critic", agent: judgeAgent }],
   });
@@ -305,19 +305,19 @@ test("[R44-2] judgeIndependence model requires observed telemetry across all fou
 });
 
 test("[R44-3] unjudged multi-actor wave overlap is refused identically across gated-push, window close, and loop next while distinct judge and sequential rounds pass [loss: false-verdict]", t => {
-  const liteModel = agObs("gemini-2.5-flash-lite-high"), flash = agObs("gemini-2.5-flash-high"), proExp = agObs("gemini-2.5-pro-exp-high");
+  const carbon = agObs("gemini-2.5-pro"), neon = agObs("gemini-2.5-flash"), argon = agObs("gemini-2.5-pro-exp");
   const twoActorWave = judgeAgent => ({
-    actors: [{ round: 2, step: "actor-a", agent: liteModel }, { round: 3, step: "actor-b", agent: flash }],
+    actors: [{ round: 2, step: "actor-a", agent: carbon }, { round: 3, step: "actor-b", agent: neon }],
     critics: [{ round: 3, step: "critic", commitIndex: 1, needs: "actor-b", reviews: "actor-a, actor-b" }],
     judges: [{ round: 4, commitIndex: 1, needs: "critic", agent: judgeAgent }],
   });
 
-  const wOverlap = makeWaveWorld(t, { judgeIndependence: "model", rounds: twoActorWave(liteModel) });
+  const wOverlap = makeWaveWorld(t, { judgeIndependence: "model", rounds: twoActorWave(carbon) });
   assert.equal(wOverlap.verifyPush().status, 2);
   assert.equal(wOverlap.closeWin().status, 2);
   assert.match(wOverlap.loopNext().stdout, /judge\/actor independence needs confirmation/);
 
-  const wDistinct = makeWaveWorld(t, { judgeIndependence: "model", rounds: twoActorWave(proExp) });
+  const wDistinct = makeWaveWorld(t, { judgeIndependence: "model", rounds: twoActorWave(argon) });
   assert.equal(wDistinct.verifyPush().status, 0);
   assert.equal(wDistinct.closeWin().status, 0);
   assert.match(wDistinct.loopNext().stdout, /The recorded convergence checks are satisfied/);
@@ -326,14 +326,14 @@ test("[R44-3] unjudged multi-actor wave overlap is refused identically across ga
     judgeIndependence: "model",
     rounds: {
       horizon: 2,
-      actors: [{ round: 2, step: "actor-a", agent: liteModel }, { round: 3, step: "actor-b", agent: flash }],
+      actors: [{ round: 2, step: "actor-a", agent: carbon }, { round: 3, step: "actor-b", agent: neon }],
       critics: [
         { round: 2, step: "critic-a", commitIndex: 0, needs: "actor-a", reviews: "actor-a" },
         { round: 3, step: "critic-b", commitIndex: 1, needs: "actor-b", reviews: "actor-b" },
       ],
       judges: [
-        { round: 2, commitIndex: 0, needs: "critic-a", agent: flash },
-        { round: 3, commitIndex: 1, needs: "critic-b", agent: liteModel },
+        { round: 2, commitIndex: 0, needs: "critic-a", agent: neon },
+        { round: 3, commitIndex: 1, needs: "critic-b", agent: carbon },
       ],
     },
   });
@@ -404,13 +404,13 @@ function runJudgeSwitchCase(t, { judgeConfig, actorAgent, kind, models, expectPa
 }
 
 test("[R45-1-multimodel] resumed Codex and Claude judges switching models preserve full observedModels and fail closed across all four gates while single-model Codex passes [loss: false-verdict]", t => {
-  const codexSwitch = runJudgeSwitchCase(t, { judgeConfig: { runner: "t3", provider: "codex", model: "gpt-5.4", effort: "high" }, actorAgent: codexObs("gpt-5.4-pro"), kind: "codex", models: ["gpt-5.4", "gpt-5.4-pro"], expectPass: false });
-  assert.deepEqual(codexSwitch.agent.observedModels, ["gpt-5.4", "gpt-5.4-pro"]);
+  const codexSwitch = runJudgeSwitchCase(t, { judgeConfig: { runner: "t3", provider: "codex", model: "gpt-5.4", effort: "high" }, actorAgent: codexObs("gpt-5.4-mini"), kind: "codex", models: ["gpt-5.4", "gpt-5.4-mini"], expectPass: false });
+  assert.deepEqual(codexSwitch.agent.observedModels, ["gpt-5.4", "gpt-5.4-mini"]);
 
-  const claudeSwitch = runJudgeSwitchCase(t, { judgeConfig: { runner: "t3", provider: "claude", model: "claude-opus-4-6", effort: "high" }, actorAgent: claudeObs("claude-sonnet-5-5"), kind: "claude", models: ["claude-opus-4-6", "claude-sonnet-5-5"], expectPass: false });
-  assert.deepEqual(claudeSwitch.agent.observedModels, ["claude-opus-4-6", "claude-sonnet-5-5"]);
+  const claudeSwitch = runJudgeSwitchCase(t, { judgeConfig: { runner: "t3", provider: "claude", model: "claude-opus-4-6", effort: "high" }, actorAgent: claudeObs("claude-sonnet-4-6"), kind: "claude", models: ["claude-opus-4-6", "claude-sonnet-4-6"], expectPass: false });
+  assert.deepEqual(claudeSwitch.agent.observedModels, ["claude-opus-4-6", "claude-sonnet-4-6"]);
 
-  const codexSingle = runJudgeSwitchCase(t, { judgeConfig: { runner: "t3", provider: "codex", model: "gpt-5.4", effort: "high" }, actorAgent: codexObs("gpt-5.4-pro"), kind: "codex", models: ["gpt-5.4", "gpt-5.4"], expectPass: true });
+  const codexSingle = runJudgeSwitchCase(t, { judgeConfig: { runner: "t3", provider: "codex", model: "gpt-5.4", effort: "high" }, actorAgent: codexObs("gpt-5.4-mini"), kind: "codex", models: ["gpt-5.4", "gpt-5.4"], expectPass: true });
   assert.deepEqual(codexSingle.agent.observedModels, ["gpt-5.4"]);
 });
 

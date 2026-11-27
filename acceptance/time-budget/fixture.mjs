@@ -1,7 +1,7 @@
 // D-0060
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
@@ -12,7 +12,7 @@ export const digest = b => createHash('sha256').update(b).digest('hex');
 export const json = x => JSON.stringify(x, null, 2) + '\n';
 export const host = { admits:true, over:[], calls:[], cores:20, load:0.1, availableGB:32 };
 export function fixture(t, { deadline = 24, packages, timed = true } = {}) {
-  const dir = mkdtempSync(fileURLToPath(new URL('./.fixture-', import.meta.url)));
+  const dir = realpathSync(mkdtempSync(fileURLToPath(new URL('./.fixture-', import.meta.url))));
   t.after(() => rmSync(dir, { recursive:true, force:true }));
   const records = join(dir, 'records'), work = join(dir, 'work'), store = join(dir, 'store');
   for (const d of [records, work, store]) mkdirSync(d, { recursive:true });

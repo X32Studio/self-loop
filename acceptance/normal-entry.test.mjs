@@ -4,7 +4,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { put, json, jsonl, status, skill } from './fixture.mjs';
@@ -18,7 +18,7 @@ const copy = value => structuredClone(value);
 const section = text => text.match(/^Normal opportunities:[^\n]*(?:\n  [^\n]*)*/m)?.[0];
 
 function fixture(t) {
-  const dir = mkdtempSync(join(process.env.NORMAL_ACCEPTANCE_TMP ?? tmpdir(), 'normal-entry-'));
+  const dir = realpathSync(mkdtempSync(join(process.env.NORMAL_ACCEPTANCE_TMP ?? tmpdir(), 'normal-entry-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const bin = join(dir, 'bin'), home = join(dir, 'home'), owner = join(dir, 'owner');
   for (const path of [bin, home, owner]) mkdirSync(path, { recursive: true });
@@ -113,7 +113,6 @@ async function pending(t) {
 const current = p => p.items.filter(i => i.current);
 const reason = (p, code) => assert.ok(p.items.some(i => i.reason === code) || p.diagnostics.some(d => d.code === code), `expected ${code}: ${JSON.stringify(p)}`);
 
-// evidence/0010/normal-response/examples.json A01-A20; NG03 v4.
 test('A01 ordered: ordinary next/start exposes bounded pending despite unknown completeness', async t => {
   const f = await pending(t), p = await f.check('pending');
   assert.equal(p.items.length, 1); assert.equal(p.items[0].reason, 'absent');

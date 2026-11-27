@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -18,11 +18,11 @@ const sha256 = v => createHash("sha256").update(v).digest("hex");
 const canonical = v => (v === null || typeof v !== "object" ? JSON.stringify(v) : Array.isArray(v) ? `[${v.map(canonical).join(",")}]` : `{${Object.keys(v).sort().map(k => `${JSON.stringify(k)}:${canonical(v[k])}`).join(",")}}`);
 
 function makeSandbox(t) {
-  const root = mkdtempSync(join(tmpdir(), "sl-plan-ownership-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "sl-plan-ownership-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const [home, ownerStore, loadDir, claudeHome, codexHome, geminiHome] = ["home", "owner-store", "load", "claude-home", "codex-home", "gemini-home"].map(n => join(root, n));
   for (const d of [home, ownerStore, loadDir, claudeHome, codexHome, geminiHome]) mkdirSync(d, { recursive: true });
-  const env = { ...process.env, HOME: home, SELF_LOOP_TEST: "1", SELF_LOOP_OWNER_STORE: ownerStore, SELF_LOOP_LOAD_DIR: loadDir, CLAUDE_CONFIG_DIR: claudeHome, CODEX_HOME: codexHome, GEMINI_HOME: geminiHome, ANTIGRAVITY_APP_DATA_DIR: "", T3CODE_HOME: "", T3CODE_THREAD_ID: "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ALLOW_PROTOCOL: "file", GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "Critic Test", GIT_AUTHOR_EMAIL: "critic@example.invalid", GIT_COMMITTER_NAME: "Critic Test", GIT_COMMITTER_EMAIL: "critic@example.invalid" };
+  const env = { ...process.env, HOME: home, SELF_LOOP_TEST: "1", SELF_LOOP_OWNER_STORE: ownerStore, SELF_LOOP_LOAD_DIR: loadDir, CLAUDE_CONFIG_DIR: claudeHome, CODEX_HOME: codexHome, GEMINI_HOME: geminiHome, ANTIGRAVITY_APP_DATA_DIR: "", ANTIGRAVITY_LS_VERSION: "", T3CODE_HOME: "", T3CODE_THREAD_ID: "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ALLOW_PROTOCOL: "file", GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "Critic Test", GIT_AUTHOR_EMAIL: "critic@example.invalid", GIT_COMMITTER_NAME: "Critic Test", GIT_COMMITTER_EMAIL: "critic@example.invalid" };
   delete env.SELF_LOOP_CONFIG;
   const git = (repoDir, ...args) => execFileSync("git", ["-C", repoDir, ...args], { encoding: "utf8", env }).trim();
   const put = (baseDir, rel, content) => { const abs = join(baseDir, rel); mkdirSync(dirname(abs), { recursive: true }); writeFileSync(abs, content); return abs; };

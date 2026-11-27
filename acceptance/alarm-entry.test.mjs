@@ -4,7 +4,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { firings, undiagnosedAlarms } from '../scripts/lib/diagnosis.mjs';
@@ -26,7 +26,7 @@ const copy = value => structuredClone(value);
 const section = text => text.match(/^Normal opportunities:[^\n]*(?:\n  [^\n]*)*/m)?.[0];
 
 function fixture(t) {
-  const dir = mkdtempSync(join(process.env.NORMAL_ACCEPTANCE_TMP ?? tmpdir(), 'normal-entry-'));
+  const dir = realpathSync(mkdtempSync(join(process.env.NORMAL_ACCEPTANCE_TMP ?? tmpdir(), 'normal-entry-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const bin = join(dir, 'bin'), home = join(dir, 'home'), owner = join(dir, 'owner');
   for (const path of [bin, home, owner]) mkdirSync(path, { recursive: true });
@@ -182,7 +182,6 @@ async function account(f) {
   return f.project();
 }
 
-// evidence/0012/alarm-response@9f4cef3; AE01-AE17; E01-E14; synthetic only, AE18 excluded.
 test('AE01 AE12 AE14: normal next/start retain diagnosis, ready work and one event/cadence packet', async t => {
   const { f } = await pending(t), p = await f.check('pending');
   assert.equal(p.schema, 'normal-entry-projection/v2');

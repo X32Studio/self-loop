@@ -411,12 +411,12 @@ test("transcriptEvents collects complete multi-turn distinct observedModels for 
     { timestamp: ts, type: "session_meta", payload: { id: "cx-1", cwd: "/wt" } },
     { timestamp: ts, type: "turn_context", payload: { model: "gpt-5.4" } },
     { timestamp: ts, type: "turn_context", payload: { model: "gpt-5.4" } },
-    { timestamp: ts, type: "turn_context", payload: { model: "gpt-5.4-pro" } },
+    { timestamp: ts, type: "turn_context", payload: { model: "gpt-5.4-mini" } },
     { timestamp: ts, type: "event_msg", payload: { type: "task_complete" } },
   ]);
   const cm = transcriptEvents("R-0046-judge", { runner: "codex", file: codexMulti });
   assert.equal(cm.observedModel, "gpt-5.4");
-  assert.deepEqual(cm.observedModels, ["gpt-5.4", "gpt-5.4-pro"]);
+  assert.deepEqual(cm.observedModels, ["gpt-5.4", "gpt-5.4-mini"]);
 
   const codexEmpty = writeJsonl("codex-empty.jsonl", [
     { timestamp: ts, type: "session_meta", payload: { id: "cx-2", cwd: "/wt" } },
@@ -430,11 +430,11 @@ test("transcriptEvents collects complete multi-turn distinct observedModels for 
     { type: "system", subtype: "init", model: "claude-opus-4-6", timestamp: ts },
     { type: "user", sessionId: "cl-1", cwd: "/wt", timestamp: ts, message: { role: "user", content: "Hi" } },
     { type: "assistant", sessionId: "cl-1", cwd: "/wt", timestamp: ts, message: { model: "claude-opus-4-6", content: [] } },
-    { type: "assistant", sessionId: "cl-1", cwd: "/wt", timestamp: ts, message: { model: "claude-sonnet-5-5", stop_reason: "end_turn", content: [] } },
+    { type: "assistant", sessionId: "cl-1", cwd: "/wt", timestamp: ts, message: { model: "claude-sonnet-4-6", stop_reason: "end_turn", content: [] } },
   ]);
   const clm = transcriptEvents("R-0046-judge", { runner: "claude", file: claudeMulti });
   assert.equal(clm.observedModel, "claude-opus-4-6");
-  assert.deepEqual(clm.observedModels, ["claude-opus-4-6", "claude-sonnet-5-5"]);
+  assert.deepEqual(clm.observedModels, ["claude-opus-4-6", "claude-sonnet-4-6"]);
 });
 
 test("D-0068: ADAPTERS, resolveAdapter, and generic transcript recording support arbitrary providers", t => {

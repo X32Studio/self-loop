@@ -1,18 +1,18 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { loopProduct, ownerStore, ROOMY, isolatedEnv, selfLoop, git } from './helpers.mjs';
 
-// evidence/0012/alarm-response/proposal.md; AE01, AE02, AE06, AE07, AE16.
+// D-0016, D-0017, D-0069
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const detectorRevision = '32c9634ed2457e47e1e12f4a3d4e59a337a3472a';
 const manifestPath = 'evidence/normal-entry/manifest.json';
 const section = text => text.slice(text.indexOf('Normal opportunities:'), text.indexOf('\n\n-', text.indexOf('Normal opportunities:')));
 function fixture(t) {
-  const root = mkdtempSync(join(tmpdir(), 'alarm-entry-wiring-'));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'alarm-entry-wiring-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const p = loopProduct({ dir: join(root, 'loop'), activity: '2026-11-22T00:00:00Z' });
   const write = (path, raw) => { mkdirSync(dirname(join(p.records, path)), { recursive: true }); writeFileSync(join(p.records, path), raw); };

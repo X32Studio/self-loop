@@ -2,7 +2,7 @@ import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import cp from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -12,7 +12,7 @@ import { firings } from '../lib/diagnosis.mjs';
 const digest = x => createHash('sha256').update(x).digest('hex');
 const manifestPath = 'evidence/normal-entry/manifest.json';
 function fixture(t) {
-  const records = mkdtempSync(join(process.env.NORMAL_ENTRY_TEST_TMP ?? tmpdir(), 'normal-source-'));
+  const records = realpathSync(mkdtempSync(join(process.env.NORMAL_ENTRY_TEST_TMP ?? tmpdir(), 'normal-source-')));
   t.after(() => rmSync(records, { recursive: true, force: true }));
   const git = (...a) => cp.execFileSync('git', ['-C', records, ...a], { encoding: 'utf8', stdio: ['ignore','pipe','pipe'] }).trim();
   const write = (p, s) => { mkdirSync(dirname(join(records,p)), { recursive: true }); writeFileSync(join(records,p),s); };
@@ -133,7 +133,7 @@ test('completed reducer consumes adapter history without duplicate versions and 
 });
 test('ordinary next and start forward committed opportunities alongside existing work', async t => {
   const {loopProduct,ownerStore,ROOMY,isolatedEnv,selfLoop,git}=await import('./helpers.mjs');
-  const root=mkdtempSync(join(process.env.NORMAL_ENTRY_TEST_TMP??tmpdir(),'normal-entry-integration-'));
+  const root=realpathSync(mkdtempSync(join(process.env.NORMAL_ENTRY_TEST_TMP??tmpdir(),'normal-entry-integration-')));
   t.after(()=>rmSync(root,{recursive:true,force:true}));
   const p=loopProduct({dir:join(root,'loop'),activity:'2026-11-22T00:00:00Z'});
   const write=(path,raw)=>{mkdirSync(dirname(join(p.records,path)),{recursive:true});writeFileSync(join(p.records,path),raw);};
@@ -203,7 +203,7 @@ test('snapshot repair: actual next/start recover the same version after a consum
   const {normalOpportunities}=await import('../lib/normal-entry.mjs');
   const {loopProduct,ownerStore,ROOMY,isolatedEnv,selfLoop}=await import('./helpers.mjs');
   const f=fixture(t), d=exactDisposition(f);
-  const root=mkdtempSync(join(tmpdir(),'normal-repair-product-'));
+  const root=realpathSync(mkdtempSync(join(tmpdir(),'normal-repair-product-')));
   t.after(()=>rmSync(root,{recursive:true,force:true}));
   const p=loopProduct({dir:root});
   f.write('loop.json',readFileSync(join(p.records,'loop.json')));

@@ -47,31 +47,31 @@ test("JUDGE_INDEPENDENCE_POLICIES and validateJudgeIndependence fail closed on i
 });
 
 test("vendorOfModel, observedModelsOf, modelVendor, and independenceModel harden observedModels fail-closed", () => {
-  assert.equal(vendorOfModel("gemini-2.5-flash-lite-high"), "google");
+  assert.equal(vendorOfModel("gemini-2.5-pro"), "google");
   assert.equal(vendorOfModel("Claude-Opus-4-6"), "anthropic");
   assert.equal(vendorOfModel("gpt-5.4"), "openai");
   assert.equal(vendorOfModel("custom-unknown"), null);
 
-  assert.deepEqual(observedModelsOf({ observedModels: [" gemini-2.5-flash-high "] }), ["gemini-2.5-flash-high"]);
+  assert.deepEqual(observedModelsOf({ observedModels: [" gemini-2.5-flash "] }), ["gemini-2.5-flash"]);
   assert.deepEqual(observedModelsOf({ observedModel: "gpt-5.4" }), ["gpt-5.4"]);
   assert.deepEqual(observedModelsOf({}), []);
 
-  assert.equal(modelVendor(ag("gemini-2.5-flash-lite-high")), "google");
-  assert.equal(independenceModel(ag("gemini-2.5-flash-lite-high")), "gemini-2.5-flash-lite-high");
-  assert.equal(modelVendor(ag("gemini-2.5-flash-lite-high", ["gemini-2.5-flash-lite-high", "Gemini-2.5-Flash-Lite-High"])), "google");
-  assert.equal(independenceModel(ag("gemini-2.5-flash-lite-high", ["gemini-2.5-flash-lite-high", "Gemini-2.5-Flash-Lite-High"])), "gemini-2.5-flash-lite-high");
+  assert.equal(modelVendor(ag("gemini-2.5-pro")), "google");
+  assert.equal(independenceModel(ag("gemini-2.5-pro")), "gemini-2.5-pro");
+  assert.equal(modelVendor(ag("gemini-2.5-pro", ["gemini-2.5-pro", "Gemini-2.5-Pro"])), "google");
+  assert.equal(independenceModel(ag("gemini-2.5-pro", ["gemini-2.5-pro", "Gemini-2.5-Pro"])), "gemini-2.5-pro");
 
   const invalidAgents = [
     null,
     {},
-    ag("gemini-2.5-flash-lite-high", []),
-    ag("gemini-2.5-flash-lite-high", ["gemini-2.5-flash-lite-high", ""]),
-    ag("gemini-2.5-flash-lite-high", ["gemini-2.5-flash-lite-high", "   "]),
-    ag("gemini-2.5-flash-lite-high", ["gemini-2.5-flash-lite-high", null]),
-    ag("gemini-2.5-flash-lite-high", ["gemini-2.5-flash-lite-high", "gemini-2.5-flash-high"]),
+    ag("gemini-2.5-pro", []),
+    ag("gemini-2.5-pro", ["gemini-2.5-pro", ""]),
+    ag("gemini-2.5-pro", ["gemini-2.5-pro", "   "]),
+    ag("gemini-2.5-pro", ["gemini-2.5-pro", null]),
+    ag("gemini-2.5-pro", ["gemini-2.5-pro", "gemini-2.5-flash"]),
     ag("custom-unknown", ["custom-unknown"]),
-    { runner: "t3:antigravity", model: "gemini-2.5-flash-lite-high" },
-    { runner: "t3:antigravity", observedModels: "gemini-2.5-flash-lite-high" },
+    { runner: "t3:antigravity", model: "gemini-2.5-pro" },
+    { runner: "t3:antigravity", observedModels: "gemini-2.5-pro" },
   ];
   for (const agent of invalidAgents) {
     assert.equal(modelVendor(agent), null, JSON.stringify(agent));
@@ -91,20 +91,20 @@ test("vendorOfModel, observedModelsOf, modelVendor, and independenceModel harden
 });
 
 test("judgeIndependenceProblem enforces vendor default, model opt-in, case-insensitive model overlap, and fail-closed inputs", () => {
-  const flash = ag("gemini-2.5-flash-high");
-  const liteModel = ag("gemini-2.5-flash-lite-high");
-  const flashCase = ag("Gemini-2.5-Flash-High");
+  const flash = ag("gemini-2.5-flash");
+  const pro = ag("gemini-2.5-pro");
+  const flashCase = ag("Gemini-2.5-Flash");
   const codex = { runner: "t3:codex", model: "gpt-5.4", observedModel: "gpt-5.4", observedModels: ["gpt-5.4"] };
 
   assert.equal(judgeIndependenceProblem(codex, flash), null);
   assert.equal(judgeIndependenceProblem(codex, flash, "vendor"), null);
   assert.equal(judgeIndependenceProblem(codex, flash, "model"), null);
 
-  assert.match(judgeIndependenceProblem(liteModel, flash), /same-vendor judge/);
-  assert.match(judgeIndependenceProblem(liteModel, flash, "vendor"), /same-vendor judge/);
+  assert.match(judgeIndependenceProblem(pro, flash), /same-vendor judge/);
+  assert.match(judgeIndependenceProblem(pro, flash, "vendor"), /same-vendor judge/);
   assert.match(judgeIndependenceProblem(flash, flash), /same-vendor judge/);
   assert.match(judgeIndependenceProblem(flashCase, flash, "vendor"), /same-vendor judge/);
-  assert.equal(judgeIndependenceProblem(liteModel, flash, "model"), null);
+  assert.equal(judgeIndependenceProblem(pro, flash, "model"), null);
 
   assert.match(judgeIndependenceProblem(flash, flash, "model"), /same-model judge/);
   assert.match(judgeIndependenceProblem(flashCase, flash, "model"), /same-model judge/);
@@ -113,25 +113,25 @@ test("judgeIndependenceProblem enforces vendor default, model opt-in, case-insen
     /same-model judge/,
   );
 
-  assert.match(judgeIndependenceProblem(ag("gemini-2.5-flash-lite-high", []), flash, "model"), /judge has unknown/);
-  assert.match(judgeIndependenceProblem(liteModel, ag("gemini-2.5-flash-high", []), "model"), /actor has unknown/);
-  assert.match(judgeIndependenceProblem(ag("x", ["gemini-2.5-flash-lite-high", "gemini-2.5-flash-high"]), flash, "model"), /judge has unknown/);
+  assert.match(judgeIndependenceProblem(ag("gemini-2.5-pro", []), flash, "model"), /judge has unknown/);
+  assert.match(judgeIndependenceProblem(pro, ag("gemini-2.5-flash", []), "model"), /actor has unknown/);
+  assert.match(judgeIndependenceProblem(ag("x", ["gemini-2.5-pro", "gemini-2.5-flash"]), flash, "model"), /judge has unknown/);
   assert.match(judgeIndependenceProblem({ runner: "t3:codex", model: "gpt-5.4", observedModel: null }, flash, "model"), /judge has unknown/);
-  assert.match(judgeIndependenceProblem(liteModel, { runner: "t3:claude", model: "claude-opus-4-6", observedModel: null }, "model"), /actor has unknown/);
+  assert.match(judgeIndependenceProblem(pro, { runner: "t3:claude", model: "claude-opus-4-6", observedModel: null }, "model"), /actor has unknown/);
   assert.match(judgeIndependenceProblem({ runner: "codex", observedModel: "mystery-model-xyz" }, flash, "vendor"), /judge has unknown/);
   assert.match(judgeIndependenceProblem({ runner: "codex", observedModel: "mystery-model-xyz" }, flash, "model"), /judge has unknown/);
   assert.equal(judgeIndependenceProblem({ runner: "codex", model: "gpt-5.4" }, { runner: "claude", model: "fixture-actor" }, "vendor"), null);
-  assert.match(judgeIndependenceProblem(liteModel, flash, "none"), /invalid judgeIndependence/);
-  assert.match(judgeIndependenceProblem(liteModel, flash, null), /invalid judgeIndependence/);
+  assert.match(judgeIndependenceProblem(pro, flash, "none"), /invalid judgeIndependence/);
+  assert.match(judgeIndependenceProblem(pro, flash, null), /invalid judgeIndependence/);
 });
 
 test("unjudgedCoveringActors, priorConvergedCommits, and waveIndependenceProblem enforce multi-actor wave coverage", () => {
-  const liteModel = ag("gemini-2.5-flash-lite-high"), flash = ag("gemini-2.5-flash-high"), proExp = ag("gemini-2.5-pro-exp-high");
+  const pro = ag("gemini-2.5-pro"), flash = ag("gemini-2.5-flash"), proExp = ag("gemini-2.5-pro-exp");
   const order = ["c1", "c2", "c3"];
   const isAncestor = (a, b) => order.indexOf(a) >= 0 && order.indexOf(b) >= 0 && order.indexOf(a) <= order.indexOf(b);
-  const a1 = { id: "R-0002-actor-a", role: "actor", round: 2, agent: liteModel, product: { commit: "c1" } };
+  const a1 = { id: "R-0002-actor-a", role: "actor", round: 2, agent: pro, product: { commit: "c1" } };
   const a2 = { id: "R-0003-actor-b", role: "actor", round: 3, agent: flash, product: { commit: "c2" } };
-  const jOverlap = { id: "R-0004-judge", role: "judge", round: 4, agent: liteModel, product: { base: "c2", commit: "c2" } };
+  const jOverlap = { id: "R-0004-judge", role: "judge", round: 4, agent: pro, product: { base: "c2", commit: "c2" } };
   const jDistinct = { id: "R-0004-judge", role: "judge", round: 4, agent: proExp, product: { base: "c2", commit: "c2" } };
 
   assert.deepEqual(unjudgedCoveringActors({ actors: [a1, a2], targetCommit: "c2", isAncestor }).map(a => a.id), ["R-0002-actor-a", "R-0003-actor-b"]);
@@ -142,10 +142,10 @@ test("unjudgedCoveringActors, priorConvergedCommits, and waveIndependenceProblem
   assert.equal(waveIndependenceProblem({ judge: jDistinct, actors: [a1, a2], targetCommit: "c2", isAncestor, policy: "model" }), null);
 
   const j1Good = { id: "R-0002-judge", role: "judge", round: 2, agent: flash, product: { base: "c1", commit: "c1" } };
-  const j1Bad = { id: "R-0002-judge", role: "judge", round: 2, agent: liteModel, product: { base: "c1", commit: "c1" } };
+  const j1Bad = { id: "R-0002-judge", role: "judge", round: 2, agent: pro, product: { base: "c1", commit: "c1" } };
   const r1 = { round: 2, role: "judge", verdict: "CONVERGED", commit: "c1", suite: "1/0" };
   const r2 = { round: 3, role: "judge", verdict: "CONVERGED", commit: "c2", suite: "1/0" };
-  const j2 = { id: "R-0003-judge", role: "judge", round: 3, agent: liteModel, product: { base: "c2", commit: "c2" } };
+  const j2 = { id: "R-0003-judge", role: "judge", round: 3, agent: pro, product: { base: "c2", commit: "c2" } };
 
   const validPriors = priorConvergedCommits({ rows: [r1, r2], judges: [j1Good, j2], actors: [a1, a2], targetCommit: "c2", targetRuling: r2, isAncestor, policy: "model" });
   assert.deepEqual(validPriors, ["c1"]);
@@ -200,12 +200,12 @@ test("judgeIndependence end-to-end across provenance, gated-push, loop next, and
   const loadDir = join(dir, "load");
   mkdirSync(workDir, { recursive: true });
   mkdirSync(loadDir, { recursive: true });
-  const flash = ag("gemini-2.5-flash-high");
-  const liteModel = ag("gemini-2.5-flash-lite-high");
+  const flash = ag("gemini-2.5-flash");
+  const pro = ag("gemini-2.5-pro");
   const codex = { runner: "t3:codex", model: "gpt-5.4", observedModel: "gpt-5.4", observedModels: ["gpt-5.4"] };
   const makeLoop = ji => ({
     product, records, workDir, branch: "loop/v1", phase: "v1", briefs: {},
-    agents: { actor: flash, critic: codex, judge: liteModel },
+    agents: { actor: flash, critic: codex, judge: pro },
     protected: ["main"], gates: { remote: "origin", require: ["github-actions/verify"] },
     provenanceBaseline: baseline,
     ...(ji !== undefined ? { judgeIndependence: ji } : {}),
@@ -234,7 +234,7 @@ test("judgeIndependence end-to-end across provenance, gated-push, loop next, and
       { id: "R-0001-reviewer-frame", time: "2026-11-26T00:00:00Z", phase: "v1", round: 1, step: "reviewer-frame", role: "reviewer", attempt: 1, agent: codex, view: "a".repeat(40), product: null, audit: { violations: 0 }, record: "rounds/0001-reviewer-frame.md", files: ["rounds/0001-reviewer-frame.md"] },
       { id: "R-0002-actor", time: "2026-11-26T01:00:00Z", phase: "v1", round: 2, step: "actor", role: "actor", attempt: 1, agent: flash, view: "a".repeat(40), product: { base: baseline, commit }, audit: { violations: 0 }, record: "rounds/0002-actor.md", files: ["rounds/0002-actor.md"], dispatch: { plan: "PL-0001", package: "actor", files: ["scripts/a.mjs"] } },
       { id: "R-0002-critic", time: "2026-11-26T01:10:00Z", phase: "v1", round: 2, step: "critic", role: "critic", attempt: 1, agent: codex, view: "a".repeat(40), product: { base: commit, commit }, audit: { violations: 0 }, record: "rounds/0002-critic.md", files: ["rounds/0002-critic.md"], dispatch: { plan: "PL-0001", package: "critic", files: ["acceptance/a.test.mjs"] } },
-      { id: "R-0003-judge", time: "2026-11-26T02:00:00Z", phase: "v1", round: 3, step: "judge", role: "judge", attempt: 1, agent: liteModel, view: "a".repeat(40), product: { base: commit, commit }, audit: { violations: 0 }, record: "rounds/0003-judge.md", files: ["rounds/0003-judge.md", "sealed/judge/0003/judge-1.md"], dispatch: { plan: "PL-0001", package: "judge", files: [] } },
+      { id: "R-0003-judge", time: "2026-11-26T02:00:00Z", phase: "v1", round: 3, step: "judge", role: "judge", attempt: 1, agent: pro, view: "a".repeat(40), product: { base: commit, commit }, audit: { violations: 0 }, record: "rounds/0003-judge.md", files: ["rounds/0003-judge.md", "sealed/judge/0003/judge-1.md"], dispatch: { plan: "PL-0001", package: "judge", files: [] } },
     ),
     "metrics/trajectory.jsonl": jsonl({ round: 3, phase: "v1", role: "judge", area: "policy", verdict: "CONVERGED", commit, suite: "1/0", ci: "success", ciReceipt: "evidence/0003/ci.json", time: "2026-11-26T02:00:00Z" }),
   }, records);
@@ -273,14 +273,14 @@ test("judgeIndependence end-to-end across provenance, gated-push, loop next, and
 });
 
 test("baseline-bounded unjudgedCoveringActors, historical vendor priorConvergedCommits, and multi-model Codex/Claude rejection", () => {
-  const liteModel = ag("gemini-2.5-flash-lite-high"), flash = ag("gemini-2.5-flash-high");
+  const pro = ag("gemini-2.5-pro"), flash = ag("gemini-2.5-flash");
   const order = ["b0", "b1", "c1", "c2"];
   const isAncestor = (a, b) => order.indexOf(a) >= 0 && order.indexOf(b) >= 0 && order.indexOf(a) <= order.indexOf(b);
-  const histActor = { id: "R-0002-actor-hist", role: "actor", round: 2, agent: liteModel, product: { commit: "b1" } };
+  const histActor = { id: "R-0002-actor-hist", role: "actor", round: 2, agent: pro, product: { commit: "b1" } };
   const curActor = { id: "R-0003-actor", role: "actor", round: 3, agent: flash, product: { commit: "c1" } };
-  const curActorOverlap = { id: "R-0004-actor-b", role: "actor", round: 4, agent: liteModel, product: { commit: "c2" } };
+  const curActorOverlap = { id: "R-0004-actor-b", role: "actor", round: 4, agent: pro, product: { commit: "c2" } };
   const histVendorJudge = { id: "R-0002-judge", role: "judge", round: 2, agent: { runner: "codex", model: "gpt-5.4" }, product: { base: "b1", commit: "b1" } };
-  const curModelJudge = { id: "R-0004-judge", role: "judge", round: 4, agent: liteModel, product: { base: "c1", commit: "c1" } };
+  const curModelJudge = { id: "R-0004-judge", role: "judge", round: 4, agent: pro, product: { base: "c1", commit: "c1" } };
   const rHist = { round: 2, role: "judge", verdict: "CONVERGED", commit: "b1", suite: "1/0" };
   const rCur = { round: 4, role: "judge", verdict: "CONVERGED", commit: "c1", suite: "1/0" };
 
@@ -326,20 +326,20 @@ test("baseline-bounded unjudgedCoveringActors, historical vendor priorConvergedC
     /R-0004-actor-b.*same-model judge/,
   );
 
-  const forgedHistJudge = { id: "R-0002-judge", role: "judge", round: 2, agent: liteModel, product: { base: "b1", commit: "b1" } };
+  const forgedHistJudge = { id: "R-0002-judge", role: "judge", round: 2, agent: pro, product: { base: "b1", commit: "b1" } };
   assert.deepEqual(
     priorConvergedCommits({ rows: [rHist, rCur], judges: [forgedHistJudge, curModelJudge], actors: [histActor, curActor], targetCommit: "c1", targetRuling: rCur, isAncestor, policy: "model" }),
     [],
   );
 
-  const codexSwitch = { runner: "t3:codex", model: "gpt-5.4", observedModel: "gpt-5.4", observedModels: ["gpt-5.4", "gpt-5.4-pro"] };
-  const claudeSwitch = { runner: "t3:claude", model: "claude-opus-4-6", observedModel: "claude-opus-4-6", observedModels: ["claude-opus-4-6", "claude-sonnet-5-5"] };
+  const codexSwitch = { runner: "t3:codex", model: "gpt-5.4", observedModel: "gpt-5.4", observedModels: ["gpt-5.4", "gpt-5.4-mini"] };
+  const claudeSwitch = { runner: "t3:claude", model: "claude-opus-4-6", observedModel: "claude-opus-4-6", observedModels: ["claude-opus-4-6", "claude-sonnet-4-6"] };
   const codexSingle = { runner: "t3:codex", model: "gpt-5.4", observedModel: "gpt-5.4", observedModels: ["gpt-5.4"] };
-  const codexActor = { runner: "t3:codex", model: "gpt-5.4-pro", observedModel: "gpt-5.4-pro", observedModels: ["gpt-5.4-pro"] };
+  const codexActor = { runner: "t3:codex", model: "gpt-5.4-mini", observedModel: "gpt-5.4-mini", observedModels: ["gpt-5.4-mini"] };
   for (const pol of ["vendor", "model"]) {
     assert.match(judgeIndependenceProblem(codexSwitch, flash, pol), /judge has unknown/);
     assert.match(judgeIndependenceProblem(claudeSwitch, flash, pol), /judge has unknown/);
-    assert.match(judgeIndependenceProblem(liteModel, codexSwitch, pol), /actor has unknown/);
+    assert.match(judgeIndependenceProblem(pro, codexSwitch, pol), /actor has unknown/);
   }
   assert.equal(judgeIndependenceProblem(codexSingle, codexActor, "model"), null);
   assert.equal(judgeIndependenceProblem(codexSingle, flash, "vendor"), null);
@@ -364,7 +364,7 @@ test("D-0064 T10: independent no-dispute critic satisfies judgeIndependence acro
   const records = join(dir, "records"), workDir = join(dir, "work"), loadDir = join(dir, "load"), storeDir = join(dir, "store");
   for (const d of [workDir, loadDir, storeDir]) mkdirSync(d, { recursive: true });
   const flash = ag("gemini-2.5-flash");
-  const proModel = ag("gemini-2.5-pro");
+  const pro = ag("gemini-2.5-pro");
   const codex = { runner: "t3:codex", model: "gpt-5.4", observedModel: "gpt-5.4", observedModels: ["gpt-5.4"] };
   const makeLoop = (ji, criticAgent) => ({
     product, records, workDir, branch: "loop/v1", phase: "v1", briefs: {},
@@ -383,14 +383,14 @@ test("D-0064 T10: independent no-dispute critic satisfies judgeIndependence acro
     { id: "R-0002-critic", time: "2026-11-27T01:10:00Z", phase: "v1", round: 2, step: "critic", role: "critic", attempt: 1, agent: criticAgent, view: "a".repeat(40), product: { base: commit, commit }, audit: { violations: 0 }, record: "rounds/0002-critic.md", files: ["rounds/0002-critic.md", "sealed/critic/0002/critic-1.md"], dispatch: { plan: "PL-0001", package: "critic", files: [] } },
   );
   mk({
-    "README.md": "# Records\n", "records.json": "{}\n", "loop.json": json(makeLoop("model", proModel)),
+    "README.md": "# Records\n", "records.json": "{}\n", "loop.json": json(makeLoop("model", pro)),
     "decisions/D-0064.md": "# D-0064\n\nid: D-0064\nby: owner\nstatus: active\n",
     "plans/PL-0001.md": plan,
     "rounds/0001-reviewer-frame.md": "# R-0001-reviewer-frame\n",
     "rounds/0002-actor.md": "# R-0002-actor\n",
     "rounds/0002-critic.md": "# R-0002-critic\n",
     "sealed/critic/0002/critic-1.md": "# R-0002-critic\n\nVERDICT: CONVERGED\nACCEPTANCE: pass\nDISPUTES: none\nOPENED: none\n",
-    "metrics/handoffs.jsonl": mkHandoffs(proModel),
+    "metrics/handoffs.jsonl": mkHandoffs(pro),
     "metrics/trajectory.jsonl": "",
   }, records);
   const suiteFile = join(dir, "suite.json");
@@ -407,7 +407,7 @@ test("D-0064 T10: independent no-dispute critic satisfies judgeIndependence acro
   assert.equal(dryModel.status, 0, dryModel.stderr);
   assert.match(dryModel.stdout, /would push/);
 
-  writeFileSync(join(records, "loop.json"), json(makeLoop("vendor", proModel)));
+  writeFileSync(join(records, "loop.json"), json(makeLoop("vendor", pro)));
   git(records, "add", "loop.json");
   git(records, "commit", "-qm", "vendor policy");
   assert.equal(verifyProvenance({ repo: product, records, sha: commit, branch: "main" }).ok, false);
@@ -428,7 +428,7 @@ test("D-0066: paseo:better-paseo-antigravity enforces strict observedModels inde
     observedModels,
   });
   const flash = bpa("gemini-2.5-flash");
-  const proModel = bpa("gemini-2.5-pro");
+  const pro = bpa("gemini-2.5-pro");
   const proExp = bpa("gemini-2.5-pro-exp");
 
   assert.equal(modelVendor(flash), "google");
@@ -436,7 +436,7 @@ test("D-0066: paseo:better-paseo-antigravity enforces strict observedModels inde
   assert.equal(modelVendor({ runner: "paseo:codex", model: "gpt-5.4" }), "openai");
   assert.equal(modelVendor({ runner: "paseo:claude", model: "claude-opus-4-6" }), "anthropic");
 
-  assert.equal(judgeIndependenceProblem(proModel, flash, "model"), null);
+  assert.equal(judgeIndependenceProblem(pro, flash, "model"), null);
   assert.equal(judgeIndependenceProblem(proExp, flash, "model"), null);
   assert.match(judgeIndependenceProblem(proExp, flash, "vendor"), /same-vendor judge/);
   assert.match(judgeIndependenceProblem(flash, flash, "model"), /same-model judge/);
@@ -460,7 +460,7 @@ test("D-0066: paseo:better-paseo-antigravity enforces strict observedModels inde
   const isAncestor = (a, b) => order.indexOf(a) >= 0 && order.indexOf(b) >= 0 && order.indexOf(a) <= order.indexOf(b);
   const actorH = { id: "R-0052-actor", role: "actor", round: 52, agent: flash, product: { commit: "c1" } };
   const judgeOk = { id: "R-0052-judge", role: "judge", round: 52, agent: proExp, product: { base: "c1", commit: "c1" } };
-  const criticOk = { id: "R-0052-critic", role: "critic", round: 52, agent: proModel, product: { base: "c1", commit: "c1" } };
+  const criticOk = { id: "R-0052-critic", role: "critic", round: 52, agent: pro, product: { base: "c1", commit: "c1" } };
   const judgeSame = { id: "R-0052-judge", role: "judge", round: 52, agent: flash, product: { base: "c1", commit: "c1" } };
   const judgeNoObs = { id: "R-0052-judge", role: "judge", round: 52, agent: { runner: "paseo:better-paseo-antigravity", model: "gemini-2.5-pro-exp" }, product: { base: "c1", commit: "c1" } };
 
@@ -566,7 +566,7 @@ test("D-0068 horizontal sweep: router-prefix model equality, digit-suffixed fami
   const bare = ag("gemini-2.5-pro-exp");
   assert.match(judgeIndependenceProblem(bare, routed, "model"), /same-model judge/);
   assert.match(judgeIndependenceProblem(routed, bare, "model"), /same-model judge/);
-  assert.equal(judgeIndependenceProblem(ag("gemini-2.5-flash-lite"), routed, "model"), null);
+  assert.equal(judgeIndependenceProblem(ag("gemini-2.5-pro"), routed, "model"), null);
   assert.equal(modelVendor({ runner: "t3:opencode", observedModels: ["openrouter/gemini-2.5-pro-exp", "gemini-2.5-pro-exp"] }), "google");
 
   assert.deepEqual(

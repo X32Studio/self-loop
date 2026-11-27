@@ -1,5 +1,5 @@
-// F-0009, F-0010, D-0052, D-0060, D-0066, D-0067, R-0032-reviewer-architecture, design/antigravity-harness.md#hooks-cli
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+// F-0009, F-0010, D-0052, D-0060, D-0066, D-0067, D-0069, R-0032-reviewer-architecture, design/antigravity-harness.md#hooks-cli
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -317,12 +317,17 @@ export function discoverSkill({ cwd = null, product = null, env = process.env } 
   return { discovered: false, path: null, checked };
 }
 
+function hookIgnoreTarget(file) {
+  const info = gitIgnoreTarget(file);
+  return info && gitOk(info.repo.top, "rev-parse", "--git-dir") ? info : null;
+}
+
 export function installHooks({ harness, scope = "workspace", target = null, cfg = null, settings = null, ownerStore = null, scriptsDir, env = process.env, cwd = process.cwd(), dryRun = false }) {
   const adapter = getHarness(harness);
   const files = globalHookTargets({ harness, adapter, scope, target, cfg, env, cwd });
   const rendered = adapter.render({ cfg, settings, ownerStore, scriptsDir });
   const plans = files.map(file => {
-    const ignoreInfo = gitIgnoreTarget(file);
+    const ignoreInfo = hookIgnoreTarget(file);
     if (ignoreInfo && isGitTracked(ignoreInfo)) {
       throw new HooksError(`${file}: tracked by Git; refusing to modify tracked user hooks (use --scope global or merge the "${HOOK_KEY}" entry manually)`, 2);
     }
@@ -355,7 +360,7 @@ function checkSecondaryHooksFile(file, label, findings) {
   } catch (error) {
     findings.push(`${label}: ${error.message}`);
   }
-  const ignoreInfo = gitIgnoreTarget(file);
+  const ignoreInfo = hookIgnoreTarget(file);
   if (ignoreInfo && !ignoreInfo.ignored && !isGitTracked(ignoreInfo)) {
     findings.push(`${file}: untracked and not git-ignored (${ignoreInfo.pattern} missing from ${ignoreInfo.excludeFile})`);
   }
@@ -375,7 +380,7 @@ export function checkHooks({ harness, scope = "workspace", target = null, cfg = 
     const loaded = loadHookStore(ownerStore);
     if (!loaded.ok && !findings.some(f => f.includes(loaded.error))) findings.push(loaded.error);
   }
-  const ignoreInfo = gitIgnoreTarget(file);
+  const ignoreInfo = hookIgnoreTarget(file);
   if (ignoreInfo && !ignoreInfo.ignored && !isGitTracked(ignoreInfo)) {
     findings.push(`${file}: untracked and not git-ignored (${ignoreInfo.pattern} missing from ${ignoreInfo.excludeFile})`);
   }
@@ -432,7 +437,7 @@ export function uninstallHooks({ harness, scope = "workspace", target = null, cf
   const plans = files.map(file => {
     const { exists, data } = readJsonObject(file);
     const hadKey = exists && Object.hasOwn(data, HOOK_KEY);
-    const ignoreInfo = gitIgnoreTarget(file);
+    const ignoreInfo = hookIgnoreTarget(file);
     const next = { ...data };
     if (hadKey) delete next[HOOK_KEY];
     return { file, hadKey, ignoreInfo, next, willDeleteFile: hadKey && Object.keys(next).length === 0 && !isGitTracked(ignoreInfo) };
@@ -451,10 +456,6 @@ export function uninstallHooks({ harness, scope = "workspace", target = null, cf
       if (p.willDeleteFile) {
         rmSync(p.file, { force: true });
         removedFile = true;
-        const parent = dirname(p.file);
-        if (basename(parent) === ".agents") {
-          try { if (readdirSync(parent).length === 0) rmdirSync(parent); } catch {}
-        }
       } else {
         writeAtomic(p.file, `${JSON.stringify(p.next, null, 2)}\n`);
       }

@@ -259,7 +259,7 @@ test("AG-MP-02: cross-product call.json nonces admit delegation and registry add
 });
 
 // R-0032-reviewer-architecture, design/mandatory-control-plane.md#2
-test("AG-MP-03: lead-guard fails closed with deny across all 7 --owner-store corruption states", () => {
+test("AG-MP-03: lead-guard fails closed with deny across all 8 --owner-store corruption states", () => {
   const env = isolatedEnv({ T3CODE_HOME: "" });
   const benignPayload = cwd => ({
     hookEventName: "PreToolUse",
@@ -299,6 +299,14 @@ test("AG-MP-03: lead-guard fails closed with deny across all 7 --owner-store cor
   loopG.product = nonGitDir;
   writeFileSync(join(prodG.records, "loop.json"), JSON.stringify(loopG, null, 2) + "\n");
   assertDeny(runCli("lead-guard.mjs", ["--harness", "antigravity", "--owner-store", storeG], benignPayload(nonGitDir), env), /Git repository/, "g: non-git product");
+
+  const strayParent = realTemp("ag-c-stray-");
+  mkdirSync(join(strayParent, ".git", "info"), { recursive: true });
+  const nonGitUnderStray = join(strayParent, "non-git-child");
+  mkdirSync(nonGitUnderStray, { recursive: true });
+  loopG.product = nonGitUnderStray;
+  writeFileSync(join(prodG.records, "loop.json"), JSON.stringify(loopG, null, 2) + "\n");
+  assertDeny(runCli("lead-guard.mjs", ["--harness", "antigravity", "--owner-store", storeG], benignPayload(nonGitUnderStray), env), /Git repository/, "h: non-git product under stray ancestor .git dir");
 });
 
 // R-0032-reviewer-architecture, design/antigravity-harness.md#lifecycle-hooks-adapter

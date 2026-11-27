@@ -1,7 +1,8 @@
-// P-0006, F-0012, D-0060, D-0063, D-0064, design/dispatch.md#file-ownership, design/dispatch.md#ready-state, design/mandatory-control-plane.md#4
+// P-0006, F-0012, D-0060, D-0063, D-0064, D-0069, design/dispatch.md#file-ownership, design/dispatch.md#ready-state, design/mandatory-control-plane.md#4
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { git, regularFiles, run } from './git-plumbing.mjs';
+import { canonical } from './path-canonical.mjs';
 import { HEAVY_ROLES, normalize, preparedIn } from '../call.mjs';
 import { HANDOFFS, parseHandoffs, ROLES } from './handoff.mjs';
 import { batchesFrom } from '../decisions.mjs';
@@ -281,7 +282,7 @@ export function loadPlan(state, id) {
 export function planContext(state, plan, { live = true } = {}) {
   if (!state.files.has('loop.json')) throw new Error('missing committed loop.json');
   const cfg = { ...normalize(JSON.parse(state.read('loop.json')), state.records), configFile: join(state.records, 'loop.json') };
-  if (resolve(cfg.records) !== state.records || cfg.phase !== plan.phase) throw new Error('plan and loop.json must name the same records repository and phase');
+  if (canonical(cfg.records) !== state.records || cfg.phase !== plan.phase) throw new Error('plan and loop.json must name the same records repository and phase');
   return { cfg, handoffs: parseHandoffs(state.read('metrics/handoffs.jsonl')),
     trajectory: parseRows(state.read('metrics/trajectory.jsonl')),
     batches: batchesFrom([...state.files], state.read), plans: plansFrom(state), prepared: live ? preparedIn(cfg) : [] };
@@ -317,7 +318,7 @@ export function readyPlan(state, plan, { context = planContext(state, plan), hos
   const pending = prepared.filter(p => (!p.phase || p.phase === plan.phase) && !completed(p.id));
   const matching = id => pending.filter(p => p.id === id);
   const active = pending.filter(p => p.liveWorkspace);
-  const leases = id => (host.calls ?? []).filter(c => c.kind === 'call' && c.id === id && c.records && resolve(c.records) === resolve(cfg.records));
+  const leases = id => (host.calls ?? []).filter(c => c.kind === 'call' && c.id === id && c.records && canonical(c.records) === canonical(cfg.records));
   const rows = plan.packages.map(p => ({ id: p.id, handoff: p.handoff, role: p.role,
     settings: !p.settings || p.settings === 'current' ? cfg.agents[p.role] : { ...cfg.agents[p.role], ...p.settings },
     status: completed(p.handoff) ? 'done' : matching(p.handoff).some(w => w.liveWorkspace) || leases(p.handoff).length ? 'running' : 'ready', holds: [] }));

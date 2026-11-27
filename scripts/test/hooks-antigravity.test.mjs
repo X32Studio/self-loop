@@ -234,3 +234,37 @@ test("D-0066/D-0067: checkAntigravityHooks detects and validates standalone ANTI
   assert.equal(startRes.status, 0, startRes.stderr);
   assert.match(startRes.stdout, /hooks \(antigravity\):/);
 });
+
+test("D-0067/D-0069: workspace uninstall removes empty .agents/hooks.json while preserving the .agents directory", () => {
+  const { product, file, runHooks } = fixture();
+  const agentsDir = join(product, ".agents");
+  assert.equal(existsSync(agentsDir), false);
+
+  const inst = runHooks("install");
+  assert.equal(inst.status, 0, inst.stderr);
+  assert.equal(existsSync(file), true);
+  assert.equal(existsSync(agentsDir), true);
+
+  const uninst = runHooks("uninstall");
+  assert.equal(uninst.status, 0, uninst.stderr);
+  assert.equal(existsSync(file), false);
+  assert.equal(existsSync(agentsDir), true, ".agents directory must remain present so live Antigravity CLI sessions do not lose cmd.Dir");
+  assert.equal(git(product, "status", "--porcelain"), "");
+});
+
+test("D-0067/D-0069: stray non-repo ancestor .git directory does not pollute exclude or fail global checkHooks", () => {
+  const prod = loopProduct();
+  const store = ownerStore([{ name: "stub-git-app", records: prod.records }]);
+  const parent = temp("ag-stray-git-");
+  mkdirSync(join(parent, ".git", "info"), { recursive: true });
+  const gHome = join(parent, "gem");
+  mkdirSync(join(gHome, "config", "skills", "self-loop"), { recursive: true });
+  writeFileSync(join(gHome, "config", "skills", "self-loop", "SKILL.md"), "# self-loop\n");
+  const env = isolatedEnv({ GEMINI_HOME: gHome, T3CODE_HOME: "", ANTIGRAVITY_HOME: "" });
+
+  const inst = installHooks({ harness: "antigravity", scope: "global", ownerStore: store, scriptsDir: scripts, env });
+  assert.equal(inst.exclude.excludeFile, null);
+  assert.equal(existsSync(join(parent, ".git", "info", "exclude")), false);
+  const checked = checkHooks({ harness: "antigravity", scope: "global", ownerStore: store, env });
+  assert.equal(checked.ok, true, JSON.stringify(checked.findings));
+});

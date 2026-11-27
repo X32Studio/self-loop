@@ -1,7 +1,7 @@
 // D-0060, D-0017, D-0058, design/mandatory-control-plane.md#3
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -21,7 +21,7 @@ const GIT_ENV = {
 };
 
 function makeTempDir(t, prefix) {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   return dir;
 }

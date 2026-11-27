@@ -45,7 +45,7 @@ export function s4History() {
     commits.set(sha, replay);
     for (const ref of refs) git(product, "update-ref", ref, replay);
   }
-  git(product, "remote", "add", "origin", "https://github.com/example/example-app.git");
+  git(product, "remote", "add", "origin", "https://github.com/example-org/example-app.git");
   return { product, commits };
 }
 

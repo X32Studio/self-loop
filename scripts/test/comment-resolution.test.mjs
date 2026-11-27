@@ -30,14 +30,14 @@ test("flow: ordinary prose and recognized directives reach hand-off; loss: false
   assert.deepEqual(proseLines("a.mjs", "// @ts-check\nexport {};\n"), []);
 });
 
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { commentResolutions, proseInTree } from "../lib/comments.mjs";
 
 test("flow: audited judge resolves a frozen source at hand-off and phase-close; loss: actor bypass or stale approval", t => {
-  const root = mkdtempSync(join(tmpdir(), "comment-resolution-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "comment-resolution-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const records = join(root, "records"), product = join(root, "product");
   const git = (repo, ...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -177,7 +177,7 @@ test("source prose retains identity and cannot spend coverage labels as move cre
 
 // D-0016, D-0064
 test("publication binds resolution and audit bytes; a fresh judge can resolve pending source", t => {
-  const records = mkdtempSync(join(tmpdir(), "comment-publication-"));
+  const records = realpathSync(mkdtempSync(join(tmpdir(), "comment-publication-")));
   t.after(() => rmSync(records, { recursive: true, force: true }));
   const git = (...args) => execFileSync("git", ["-C", records, ...args], { encoding: "utf8" }).trim();
   git("init", "-q"); git("config", "user.name", "Test"); git("config", "user.email", "test@example.test");

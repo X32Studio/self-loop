@@ -129,7 +129,6 @@ test("TICK-05 concurrent ticks record each product's distinct idle periods once 
   const [earlier] = assertLedger(w, peer, [peer.activityAt]);
   assertLedger(w, idle, [idle.activityAt]);
 
-  // One product resumes, then lapses again. The other's first idle period remains current.
   const resumedAt = shift(now, hours(1));
   const event = status(w.run([
     "set", "--records", peer.records, "--feature", peer.feature, "--status", "designing",
