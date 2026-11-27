@@ -2,6 +2,7 @@
 import { gunzipSync } from 'node:zlib';
 import { git } from './git-plumbing.mjs';
 import { parseHandoffs } from './handoff.mjs';
+import { planPackageMap } from './plan.mjs';
 import { projectPlanTime } from './plan-time.mjs';
 import { batchesFrom } from '../decisions.mjs';
 
@@ -17,7 +18,7 @@ export function firstPublication(state, path) {
 export function executionInterval(state, handoff) {
   if (!handoff) return { start: null, end: null, seconds: null, unknowns: ['no committed handoff'] };
   const source = handoff.files.find(p => p.endsWith('.log.gz'));
-  const fallback = Number.isFinite(handoff.agent?.seconds) && handoff.agent.seconds >= 0 ? handoff.agent.seconds : null;
+  const recordedSeconds = Number.isFinite(handoff.agent?.seconds) && handoff.agent.seconds >= 0 ? handoff.agent.seconds : null;
   const unknowns = [];
   let start = null, end = null;
   if (source && state.files.has(source)) {
@@ -33,7 +34,7 @@ export function executionInterval(state, handoff) {
     } catch (error) { unknowns.push(`${source}: cannot reconstruct timestamps (${error.message})`); }
   }
   if (delta(start, end) === null) unknowns.push('execution start/end unavailable; handoff time is not execution end');
-  return { start, end, seconds: delta(start, end) ?? fallback, source: source ?? 'metrics/handoffs.jsonl agent.seconds', unknowns };
+  return { start, end, seconds: delta(start, end) ?? recordedSeconds, source: source ?? 'metrics/handoffs.jsonl agent.seconds', unknowns };
 }
 
 function settlement(batches, batch) {
@@ -50,18 +51,21 @@ export function measurePlan(state, plan, { published = path => firstPublication(
   if (typeof now === 'string') now = Date.parse(now);
   const handoffs = parseHandoffs(state.read('metrics/handoffs.jsonl'));
   const batches = batchesFrom([...state.files], state.read);
-  const byId = new Map(plan.packages.map(p => [p.id, p]));
+  const byRef = planPackageMap(plan);
   const measurements = new Map(plan.packages.map(p => {
     const h = handoffs.find(h => h.id === p.handoff && h.phase === plan.phase && state.files.has(h.record));
     return [p.id, { handoff: h, ...executionInterval(state, h) }];
   }));
-  const paths = new Map();
+  const paths = new Map(), visiting = new Set();
   function pathTo(id) {
     if (paths.has(id)) return paths.get(id);
-    const p = byId.get(id), m = measurements.get(id);
-    const parents = p.needs.filter(n => byId.has(n)).map(pathTo);
-    const known = m.seconds !== null && parents.every(p => p.seconds !== null);
-    const longest = parents.reduce((best, p) => (p.seconds ?? 0) > (best.seconds ?? 0) ? p : best, { seconds: 0, path: [] });
+    const p = byRef.get(id), m = measurements.get(id);
+    if (!p || visiting.has(id)) return { seconds: null, path: [id] };
+    visiting.add(id);
+    const parents = [...new Set(p.needs.map(n => byRef.get(n)?.id).filter(depId => depId && depId !== id))].map(pathTo);
+    visiting.delete(id);
+    const known = m.seconds !== null && parents.every(parent => parent.seconds !== null);
+    const longest = parents.reduce((best, parent) => (parent.seconds ?? 0) > (best.seconds ?? 0) ? parent : best, { seconds: 0, path: [] });
     const result = { seconds: known ? longest.seconds + m.seconds : null, path: [...longest.path, id] };
     paths.set(id, result);
     return result;
@@ -85,8 +89,9 @@ export function measurePlan(state, plan, { published = path => firstPublication(
   const idle = plan.packages.map(p => {
     const m = measurements.get(p.id), prerequisites = [publication];
     for (const need of p.needs) {
-      if (byId.has(need)) {
-        const h = measurements.get(need).handoff;
+      const dep = byRef.get(need);
+      if (dep) {
+        const h = measurements.get(dep.id).handoff;
         prerequisites.push(h ? published(h.record) : null);
       } else if (/^B-/.test(need)) prerequisites.push(stamp(owners.find(b => b.batch === need)?.to));
     }

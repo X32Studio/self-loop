@@ -32,7 +32,7 @@ const run = command(process.env);
 const setter = run => (records, status, ...args) => run(records, "set", "--feature", "F-0001", "--status", status, "--by", "lead", "--note", "记录状态", ...args);
 const set = setter(run);
 const judge = "--round";
-// A done citing a judge round takes its commit and CI from that round's CONVERGED trajectory row (D-0015 item 1).
+// D-0015
 const done = [judge, "R-0001-judge"];
 const converged = (round, more = {}) => JSON.stringify({ round, phase: "A1", role: "judge", verdict: "CONVERGED", commit: sha, ci: "success", ciReceipt: receiptPath, ...more });
 
@@ -100,19 +100,17 @@ test("a done citing a round takes commit and CI from that round's CONVERGED row;
   const closed = set(records, "done", judge, "R-0002-judge");
   assert.equal(closed.status, 0, closed.stderr);
   assert.deepEqual(JSON.parse(closed.stdout).evidence, { round: "R-0002-judge", commit: sha, tip, ci: tipReceipt }, "the receipt is the tip's, as the row says");
-  // A status other than done may still cite a round with its own commit and receipt; nothing is derived or read for it.
   assert.equal(set(records, "building", judge, "R-0003-judge", "--commit", sha, "--ci", receiptPath).status, 0);
 });
 
 test("baseline done accepts a lead's product anchor pinned to an existing heading", () => {
   const product = repo({ "docs/PRODUCT.md": "# 产品\n\n## 顶层需求\n\n要求。\n\n## 实际验收\n\n已验收。\n" });
-  git(product, "remote", "add", "origin", "https://github.com/example/product.git"); // where the receipt read CI
+  git(product, "remote", "add", "origin", "https://github.com/example/product.git");
   const ref = git(product, "rev-parse", "--short", "HEAD");
   const head = git(product, "rev-parse", "HEAD");
   const requirement = `docs/PRODUCT.md#顶层需求@${ref}`;
   const loop = JSON.stringify({ product, gates: { require: ["github-actions/verify"] } });
   const records = setup({ "blueprint/F-0001.md": feature(1).replace("P-0001", requirement), [receiptPath]: JSON.stringify({ ...receipt, sha: head }) });
-  // A baseline done is confirmed by one reading of the cited commit now, where these records' loop pushes.
   const gh = fakeGh();
   const lead = command(gh.env), setNow = setter(lead);
   const args = ["--commit", head, "--ci", receiptPath];
@@ -216,4 +214,59 @@ test("B5: the event's phase anchors the alarm when the feature header is moved",
   assert.equal(gate.status, 0);
   assert.match(gate.stderr, /F-0001.*A1.*later/);
   assert.match(run(records, "view").stdout.split("## 待处理")[1], /F-0001.*A1.*later/);
+});
+
+test("D-0064 T10: blueprint set --status done --round accepts independent no-dispute critic convergence and refuses disputed or same-model critics", () => {
+  const product = repo({ "src/a.mjs": "export const a = 1;\n" });
+  const baseSha = git(product, "rev-parse", "HEAD");
+  writeFileSync(join(product, "src/a.mjs"), "export const a = 2;\n");
+  git(product, "add", "src/a.mjs");
+  git(product, "commit", "-qm", "actor edit");
+  const actorSha = git(product, "rev-parse", "HEAD");
+  writeFileSync(join(product, "src/a.test.mjs"), "export const t = 1;\n");
+  git(product, "add", "src/a.test.mjs");
+  git(product, "commit", "-qm", "critic test");
+  const criticSha = git(product, "rev-parse", "HEAD");
+
+  const ciPath = "evidence/0002/ci.json";
+  const criticRec = "rounds/0002-critic-a.md";
+  const criticReport = hdr => `# R-0002-critic-a\n\n## Report (verbatim)\n\n${hdr}\n`;
+  const actorH = {
+    id: "R-0002-actor-a", time: "2026-11-27T00:00:00Z", phase: "A1", round: 2, step: "actor-a", role: "actor", attempt: 1,
+    agent: { runner: "t3:antigravity", model: "gemini-2.5-flash", observedModel: "gemini-2.5-flash", observedModels: ["gemini-2.5-flash"] },
+    view: baseSha, product: { base: baseSha, commit: actorSha }, audit: { violations: 0 },
+    record: "rounds/0002-actor-a.md", files: ["rounds/0002-actor-a.md"], features: ["F-0001"],
+  };
+  const criticH = (model, violations = 0) => ({
+    id: "R-0002-critic-a", time: "2026-11-27T01:00:00Z", phase: "A1", round: 2, step: "critic-a", role: "critic", attempt: 1,
+    agent: { runner: "t3:antigravity", model, observedModel: model, observedModels: [model] },
+    view: baseSha, product: { base: actorSha, commit: criticSha }, audit: { violations },
+    record: criticRec, files: [criticRec], features: ["F-0001"],
+  });
+  const records = repo({
+    "blueprint/F-0001.md": feature(1),
+    "purpose/P-0001.md": purpose,
+    "loop.json": JSON.stringify({ product, phase: "A1", judgeIndependence: "model", gates: { require: ["github-actions/verify"] } }),
+    [ciPath]: JSON.stringify({ ...receipt, sha: criticSha }),
+    "rounds/0002-actor-a.md": "# R-0002-actor-a\n",
+    [criticRec]: criticReport("VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: -\nOPENED: -"),
+    "metrics/handoffs.jsonl": `${JSON.stringify(actorH)}\n${JSON.stringify(criticH("gemini-2.5-pro"))}\n`,
+    "metrics/trajectory.jsonl": `${JSON.stringify({ round: 2, phase: "A1", role: "critic", verdict: "PASS", commit: criticSha, suite: "5/0", ci: "success", ciReceipt: ciPath })}\n`,
+  });
+
+  writeFileSync(join(records, criticRec), criticReport("VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: D1\nOPENED: -"));
+  assert.equal(set(records, "done", "--round", "R-0002-critic-a").status, 2);
+
+  writeFileSync(join(records, criticRec), criticReport("VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: -\nOPENED: -"));
+  writeFileSync(join(records, "metrics/handoffs.jsonl"), `${JSON.stringify(actorH)}\n${JSON.stringify(criticH("gemini-2.5-flash"))}\n`);
+  assert.equal(set(records, "done", "--round", "R-0002-critic-a").status, 2);
+
+  writeFileSync(join(records, "metrics/handoffs.jsonl"), `${JSON.stringify(actorH)}\n${JSON.stringify(criticH("gemini-2.5-pro", 1))}\n`);
+  assert.equal(set(records, "done", "--round", "R-0002-critic-a").status, 2);
+
+  writeFileSync(join(records, "metrics/handoffs.jsonl"), `${JSON.stringify(actorH)}\n${JSON.stringify(criticH("gemini-2.5-pro", 0))}\n`);
+  const ok = set(records, "done", "--round", "R-0002-critic-a");
+  assert.equal(ok.status, 0, ok.stderr + ok.stdout);
+  assert.deepEqual(JSON.parse(ok.stdout).evidence, { round: "R-0002-critic-a", commit: criticSha, ci: ciPath });
+  assert.equal(run(records, "status", "--phase", "A1").status, 0);
 });

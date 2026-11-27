@@ -1,9 +1,9 @@
-// F-0012, design/time-model.md
+// F-0012, design/dispatch.md#measurements
 import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { git, gitOk } from './git-plumbing.mjs';
-import { snapshot, parsePlan, plansFrom, validatePlan, releaseOf } from './plan.mjs';
+import { snapshot, parsePlan, plansFrom, validatePlan, releaseOf, planPackageMap } from './plan.mjs';
 import { parseHandoffs } from './handoff.mjs';
 import { evaluateTimeEvidence } from './plan-time-evidence.mjs';
 import { batchesFrom } from '../decisions.mjs';
@@ -227,12 +227,13 @@ function arithmetic(o, cut, verifiedDone = []) {
     completed.errors.push(`${id}: historical completion timing-unverified`);
   }
   unknowns.push(...completed.errors);
-  const byId = new Map(plan.packages.map(p => [p.id, p])), ends = new Map(), visiting = new Set();
+  const byRef = planPackageMap(plan), ends = new Map(), visiting = new Set();
   const max = values => values.includes(null) ? null : Math.max(0, ...values);
   const add = (a, b) => a === null || b === null || !Number.isSafeInteger(a + b) ? null : a + b;
-  function end(id) {
+  function end(rawId) {
+    const p = byRef.get(rawId), id = p?.id ?? rawId;
     if (ends.has(id)) return ends.get(id);
-    const p = byId.get(id), e = o.estimates?.[id];
+    const e = o.estimates?.[id];
     if (!p || visiting.has(id)) { unknowns.push(`${id}: missing package or dependency cycle`); return [null, null]; }
     visiting.add(id);
     let value;
@@ -240,8 +241,8 @@ function arithmetic(o, cut, verifiedDone = []) {
     else if (completed.uncertain.has(id) || !interval(e?.remaining) || !interval(e?.availableAfter)) { unknowns.push(`${id}: missing historical estimate/operand`); value = [null, null]; }
     else {
       unknowns.push(...(strings(e.unknowns) ? e.unknowns : ['malformed estimate unknowns'])); conditionalOn.push(...(strings(e.assumptions) ? e.assumptions : []));
-      const parents = p.needs.filter(n => byId.has(n)).map(end);
-      const foreign = p.needs.filter(n => !byId.has(n));
+      const parents = [...new Set(p.needs.map(n => byRef.get(n)?.id).filter(Boolean))].map(end);
+      const foreign = p.needs.filter(n => !byRef.has(n));
       if (foreign.length || p.hold || p.release) conditionalOn.push(`${id}: readiness and external release assumptions apply`);
       let unresolvedHold = false;
       if (p.release) {

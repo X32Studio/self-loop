@@ -13,8 +13,8 @@ export function sourceRuling(path, source, language, proseComments = []) {
     evidence:'Fixed acceptance scenario: whole frozen source reviewed under its stated language/tool facts; literals and consuming directives are data, listed explanatory comments are prose.'};
 }
 
-export function commentRuling(path, source, line, text) {
-  return {...sourceRuling(path, source, 'js'), line, scope:'comment', text, verdict:'prose'};
+export function commentRuling(path, source, line, text, lang = language(path, source)) {
+  return {...sourceRuling(path, source, lang), line, scope:'comment', text, verdict:'prose'};
 }
 
 export function publish(w,p,rows) {
@@ -28,27 +28,56 @@ export function publish(w,p,rows) {
 }
 
 function language(path,source) {
-  if (/\.[mc]?tsx?$|\.[mc]?jsx?$/.test(path) || /^#!.*\bnode\b/.test(source)) return 'js';
-  if (/\.pyi?$/.test(path)) return 'python';
-  if (/\.ya?ml$/.test(path)) return 'yaml';
-  if (/\.swift$/.test(path)) return 'swift';
-  if (/\.sql$/.test(path)) return 'sql';
-  if (/\.css$/.test(path)) return 'css';
-  if (/\.html?$/.test(path)) return 'html';
-  if (/\.(sh|bash|zsh)$/.test(path) || /^#!/.test(source) || path.startsWith('.githooks/')) return 'shell';
+  if (/\.[mc]?[tj]sx?$/i.test(path) || /^#!.*\b(?:node|nodejs|deno|bun)\b/.test(source)) return 'js';
+  if (/\.pyi?$/i.test(path) || /^#!.*\bpython[\d.]*/.test(source)) return 'python';
+  if (/\.ya?ml$/i.test(path)) return 'yaml';
+  if (/\.swift$/i.test(path)) return 'swift';
+  if (/\.sql$/i.test(path)) return 'sql';
+  if (/\.css$/i.test(path)) return 'css';
+  if (/\.html?$/i.test(path)) return 'html';
+  if (/\.(?:sh|bash|zsh|ksh)$/i.test(path) || /^#!.*\b(?:sh|bash|zsh|dash|ksh)\b/.test(source) || /(?:^|\/)\.githooks\/[^/]+$/.test(path)) return 'shell';
+  if (/\.go$/i.test(path)) return 'go';
+  if (/\.rs$/i.test(path)) return 'rust';
+  if (/\.(?:c|h)$/i.test(path)) return 'c';
+  if (/\.(?:cc|cpp|cxx|hpp)$/i.test(path)) return 'cpp';
+  if (/\.java$/i.test(path)) return 'java';
+  if (/\.kts?$/i.test(path)) return 'kotlin';
+  if (/\.toml$/i.test(path)) return 'toml';
   return null;
 }
 
-export function rulings(files,diagnostics = []) {
+const stripMarker = raw => raw.trim()
+  .replace(/^(?:.*\/\/+\s*|\/\*+(?:\s*\*)*\s*|\*\s*(?!\/)|#+\s*|--+\s*|<!--\s*)/, '')
+  .replace(/\s*(?:\*+\/|-->)$/, '')
+  .trim();
+
+const pendingCommentsOf = text => {
+  const map = new Map();
+  for (const line of text.split('\n')) {
+    const m = /^  (.+?):(\d+): pending independent resolution \(comment\); source sha256 [0-9a-f]{64}; rule D-0016; (.*)$/.exec(line);
+    if (m) map.set(`${m[1]}:${m[2]}`, m[3]);
+  }
+  return map;
+};
+
+export function rulings(files,diagnostics = [],pendingText = '') {
+  const pending = pendingText ? pendingCommentsOf(pendingText) : new Map();
   return Object.entries(files).flatMap(([path,source]) => {
     if (source === null) return [];
     const lang = language(path,source);
     if (!lang) return [];
     const comments = diagnostics.filter(d=>d[0]===path);
-    const rows = [sourceRuling(path,source,lang,comments.map(d=>d[2]))];
+    const rows = lang === 'sql' || source.includes('\0') ? [sourceRuling(path,source,lang,comments.map(d=>d[2]))] : [];
+    const seenLines = new Set();
     for (const [,line,phrase] of comments) {
-      const text = source.split('\n')[line-1].trim().replace(/^.*\/\/+\s*/, '').replace(/^\s*\*\s*/, '').replace(/\s*\*\/$/,'').trim();
-      rows.push(commentRuling(path,source,line,text.includes(phrase) ? text : phrase));
+      seenLines.add(line);
+      const candidate = pending.get(`${path}:${line}`);
+      const stripped = stripMarker(source.split('\n')[line-1] ?? '');
+      rows.push(commentRuling(path,source,line,candidate ?? (stripped.includes(phrase) ? stripped : phrase),lang));
+    }
+    for (const [key, candidate] of pending) {
+      const [pPath, pLine] = [key.slice(0, key.lastIndexOf(':')), Number(key.slice(key.lastIndexOf(':') + 1))];
+      if (pPath === path && !seenLines.has(pLine)) rows.push(commentRuling(path,source,pLine,candidate,lang));
     }
     return rows;
   });
@@ -60,21 +89,24 @@ export function resolvedRecord(w,p,prepared,files,diagnostics=[],legacy={},refus
     assert.equal(refusal,false,'Prohibited prose passed before independent review');
     return first;
   }
+  if (!refusal && !Object.keys(legacy).length) {
+    const needsReview = Object.entries(files).some(([path,source]) => source !== null && (language(path,source) === 'sql' || source.includes('\0')));
+    assert.equal(needsReview,true,`Supported deterministic language must pass on first record(): ${output(first)}`);
+  }
   status(first,7);
   assert.match(output(first),/pending independent resolution/);
-  if (!refusal) for (const [path,source] of Object.entries(files)) {
-    if (source !== null && language(path,source) === 'js' && !/\.[mc]?tsx?$/.test(path) && !legacy[path])
-      assert.ok(!output(first).includes(`${path}:`), `Established valid ECMAScript must remain automatic: ${output(first)}`);
-  }
-  const rows = rulings(files,diagnostics);
+  const out = output(first);
+  const rows = rulings(files,diagnostics,out);
+  const pending = pendingCommentsOf(out);
   for (const [path,comments] of Object.entries(legacy)) {
     const before = w.runGit(p.product,'show',`${prepared.base ?? p.initial}:${path}`).stdout;
     rows.push(...rulings({[path]:before},comments.map(([line,text])=>[path,line,text])));
     const after = files[path];
-    if (after && language(path,after) === 'js') {
+    const lang = after ? language(path,after) : null;
+    if (after && lang) {
       for (const [,text] of comments) for (const [i,line] of after.split('\n').entries())
-        if (line.trim().endsWith('// ' + text) || line.trim() === '// ' + text)
-          rows.push(commentRuling(path,after,i+1,text));
+        if (stripMarker(line) === text || pending.get(`${path}:${i+1}`) === text)
+          rows.push(commentRuling(path,after,i+1,text,lang));
     }
   }
   publish(w,p,rows);
@@ -100,10 +132,6 @@ export function refusedPatch(w,p,prepared,files,diagnostic,legacy={}) {
   const result = resolvedRecord(w,p,prepared,files,diagnostics,legacy,true);
   status(result,7);
   assert.doesNotMatch(output(result),/pending independent resolution/);
-  const expected = diagnostics.map(([path,line,phrase])=> {
-    const lang = language(path,files[path]);
-    return lang !== 'js' || /\.[mc]?tsx?$/.test(path) ? [path,1,`Full-source lexical coverage is not established for ${lang}.`] : [path,line,phrase];
-  });
-  assertRefused(w,p,prepared,result,expected);
+  assertRefused(w,p,prepared,result,diagnostics);
   assert.equal(head(w,p),before);
 }

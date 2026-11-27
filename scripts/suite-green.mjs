@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// D-0020, D-0061, design/version-tip.md#one-tree-one-suite-run, design/suite-once.md#1
+// D-0020, D-0061, D-0064, design/version-tip.md#one-tree-one-suite-run, design/suite-once.md#1
 import "./lib/unbind-git.mjs";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
 import { fullSha, ORIGINAL_OBJECTS } from "./lib/ci.mjs";
+import { tipProblem } from "./lib/tip.mjs";
 import { FORMS, parseVersion } from "./lib/version.mjs";
 
 export const STORE = "self-loop-suite";
@@ -72,6 +73,39 @@ function holdLease(repo, sha) {
   return () => rmSync(file, { force: true });
 }
 
+export function codeTreeOf(repo, treeish) {
+  const root = git(repo, ["ls-tree", "-z", `${treeish}^{tree}`]).split("\0").filter(Boolean);
+  const filtered = root.filter(entry => entry.slice(entry.indexOf("\t") + 1) !== "VERSION");
+  return sha256(filtered.join("\0"));
+}
+
+function versionOfTree(repo, treeish) {
+  const r = spawnSync("git", ["-C", repo, ORIGINAL_OBJECTS, "show", `${treeish}:VERSION`], { encoding: "utf8", maxBuffer: 1 << 26 });
+  return r.status === 0 ? r.stdout.trim() : null;
+}
+
+function isVersionOnlyTreeDiff(repo, fromTree, toTree) {
+  const r = spawnSync("git", ["-C", repo, ORIGINAL_OBJECTS, "diff-tree", "--no-renames", "--name-only", "-r", "-z", fromTree, toTree], { encoding: "utf8", maxBuffer: 1 << 26 });
+  if (r.status !== 0) return false;
+  const changed = r.stdout.split("\0").filter(Boolean);
+  return changed.length === 1 && changed[0] === "VERSION";
+}
+
+function isVersionOnlyReuseValid(repo, run, full, targetTree, targetCodeTree) {
+  if (!run?.tree || run.tree === targetTree) return null;
+  const targetVersion = versionOfTree(repo, targetTree);
+  if (!parseVersion(targetVersion)) return null;
+  let storedCodeTree;
+  try { storedCodeTree = codeTreeOf(repo, run.tree); } catch { return null; }
+  if (storedCodeTree !== targetCodeTree) return null;
+  if (!isVersionOnlyTreeDiff(repo, run.tree, targetTree)) return null;
+  if (typeof run.sha === "string" && /^[0-9a-f]{40}$/.test(run.sha) && run.sha !== full) {
+    const isAnc = spawnSync("git", ["-C", repo, ORIGINAL_OBJECTS, "merge-base", "--is-ancestor", run.sha, full], { stdio: "ignore" }).status === 0;
+    if (isAnc && tipProblem(repo, run.sha, full) !== null) return null;
+  }
+  return targetVersion;
+}
+
 export function withVersion(repo, commit, version) {
   const root = git(repo, ["ls-tree", "-z", `${commit}^{tree}`]).split("\0").filter(Boolean);
   const current = root.find(entry => entry.slice(entry.indexOf("\t") + 1) === "VERSION");
@@ -105,9 +139,12 @@ function executionOf(command, install) {
   } catch { return null; }
 }
 
+const CODE_TREE_DIR = ".code-tree";
 const normInstall = value => (value ? String(value) : null);
 const keyText = key => JSON.stringify([key.repository, key.tree, key.command, key.install ?? null, key.execution ?? null, [key.runtime?.node ?? null, key.runtime?.platform ?? null, key.runtime?.arch ?? null]]);
+const codeKeyText = key => JSON.stringify([key.repository, key.codeTree, key.command, key.install ?? null, key.execution ?? null, [key.runtime?.node ?? null, key.runtime?.platform ?? null, key.runtime?.arch ?? null]]);
 const keyHashOf = key => sha256(keyText(key));
+const codeKeyHashOf = key => sha256(codeKeyText(key));
 
 function storedGreen(dir, key, format) {
   if (!existsSync(dir)) return null;
@@ -125,14 +162,47 @@ function storedGreen(dir, key, format) {
   return null;
 }
 
-function store(dir, run, text) {
+function storedGreenByCodeTree(storeDir, codeKey, repo, full, targetTree, format) {
+  const refDir = join(storeDir, CODE_TREE_DIR, codeKeyHashOf(codeKey));
+  if (!existsSync(refDir)) return null;
+  for (const name of readdirSync(refDir).filter(n => /^[\w.-]+\.json$/.test(n)).sort().reverse()) {
+    try {
+      const ref = JSON.parse(readFileSync(join(refDir, name), "utf8"));
+      const path = ref?.receiptPath;
+      if (!path || !existsSync(path)) continue;
+      const run = JSON.parse(readFileSync(path, "utf8"));
+      if (run.green !== true || !run.key || run.codeTree !== codeKey.codeTree) continue;
+      const storedCodeKey = { ...run.key, codeTree: run.codeTree };
+      if (codeKeyText(storedCodeKey) !== codeKeyText(codeKey) || codeKeyText({ ...codeKey, runtime: run.runtime }) !== codeKeyText(codeKey)) continue;
+      const targetVersion = isVersionOnlyReuseValid(repo, run, full, targetTree, codeKey.codeTree);
+      if (!targetVersion) continue;
+      const text = gunzipSync(readFileSync(path.replace(/\.json$/, ".log.gz"))).toString();
+      if (sha256(text) !== run.log?.sha256) continue;
+      const judged = verdict({ exit: run.exit, output: text, format, installExit: run.installExit });
+      if (judged.green) return { path, run, text, judged, targetVersion };
+    } catch { continue; }
+  }
+  return null;
+}
+
+function store(dir, run, text, storeDir = null, codeKey = null) {
   mkdirSync(dir, { recursive: true });
   const id = `${Date.now()}-${process.pid}-${randomUUID()}`;
   writeFileSync(join(dir, `${id}.log.gz`), gzipSync(text));
   const temp = join(dir, `.${id}.tmp`);
+  const receiptPath = join(dir, `${id}.json`);
   writeFileSync(temp, `${JSON.stringify(run, null, 1)}\n`);
-  renameSync(temp, join(dir, `${id}.json`));
-  return join(dir, `${id}.json`);
+  renameSync(temp, receiptPath);
+  if (storeDir && codeKey && run.codeTree) {
+    try {
+      const refDir = join(storeDir, CODE_TREE_DIR, codeKeyHashOf(codeKey));
+      mkdirSync(refDir, { recursive: true });
+      const refTmp = join(refDir, `.${id}.tmp`);
+      writeFileSync(refTmp, `${JSON.stringify({ receiptPath, tree: run.tree, codeTree: run.codeTree, sha: run.sha })}\n`);
+      renameSync(refTmp, join(refDir, `${id}.json`));
+    } catch {}
+  }
+  return receiptPath;
 }
 
 function runIn(repo, commit, { command, install, timeoutMin, execution }) {
@@ -283,13 +353,21 @@ export function suiteGreen({ repo, sha, command, install = null, format = "auto"
     varyVersion = parsed.text;
   }
   const tested = testedCommit(repo, full, varyVersion);
+  const codeTree = codeTreeOf(repo, tested.tree);
   const storeDir = suiteStore(repo), execution = executionOf(command, install), runtime = execution?.runtime ?? null;
   const key = { repository: dirname(storeDir), tree: tested.tree, command, install, runtime, execution: execution?.digest ?? null };
+  const codeKey = { repository: dirname(storeDir), codeTree, command, install, runtime, execution: execution?.digest ?? null };
   const keyHash = keyHashOf(key), dir = join(storeDir, keyHash), varied = varyVersion === null ? {} : { versionVaried: varyVersion };
-  const base = { repository: repo, sha: full, tree: tested.tree, ...varied, command, install, runtime };
-  const reuseHit = h => ({ ...base, exit: h.run.exit, summary: h.judged.summary, durationMs: h.run.durationMs, green: true, reasons: [], log: h.run.log, reusedFrom: h.path, text: h.text });
+  const base = { repository: repo, sha: full, tree: tested.tree, codeTree, ...varied, command, install, runtime };
+  const reuseHit = h => ({ ...base, ...(h.targetVersion ? { versionVaried: h.targetVersion } : {}), exit: h.run.exit, summary: h.judged.summary, durationMs: h.run.durationMs, green: true, reasons: [], log: h.run.log, reusedFrom: h.path, text: h.text });
   const fromDone = d => ({ ...base, exit: d.receipt.exit, summary: d.v.summary, durationMs: d.receipt.durationMs, green: d.v.green, reasons: d.v.reasons, log: d.receipt.log, ...(d.v.green ? {} : { reused: true }), reusedFrom: d.v.green ? (d.receiptPath || d.path) : d.path, text: d.text });
-  const lookupGreen = () => (execution ? storedGreen(dir, key, format) : null);
+  const lookupGreen = () => {
+    if (!execution) return null;
+    const exact = storedGreen(dir, key, format);
+    if (exact) return exact;
+    if (varyVersion !== null) return null;
+    return storedGreenByCodeTree(storeDir, codeKey, repo, full, tested.tree, format);
+  };
   const hit = lookupGreen();
   if (hit) return reuseHit(hit);
   const slot = execution ? acquireOrJoin(storeDir, tested.tree, keyHash, timeoutMin * 60_000, format, lookupGreen) : { mode: "leader", gen: 0, token: null, isCurrent: () => true, assertCurrent: () => {}, finish: null };
@@ -311,23 +389,32 @@ export function suiteGreen({ repo, sha, command, install = null, format = "auto"
     const receipt = { ...base, exit: ran.exit, summary: v.summary, durationMs: Date.now() - started, green: v.green, reasons: v.reasons, log: { sha256: sha256(ran.log), bytes: Buffer.byteLength(ran.log) } };
     slot.assertCurrent("publication");
     let receiptPath = null;
-    if (v.green) try { receiptPath = store(dir, { ...receipt, key, format, installExit: ran.installExit }, ran.log); } catch (e) { console.error(`suite-green: the receipt of ${full.slice(0, 7)} was not stored for reuse (${e.message})`); }
+    if (v.green) try { receiptPath = store(dir, { ...receipt, key, format, installExit: ran.installExit }, ran.log, storeDir, execution ? codeKey : null); } catch (e) { console.error(`suite-green: the receipt of ${full.slice(0, 7)} was not stored for reuse (${e.message})`); }
     if (slot.finish) try { slot.finish({ green: v.green, receipt, receiptPath, text: ran.log, format, installExit: ran.installExit }); } catch (e) { console.error(`suite-green: generation g${slot.gen} of ${full.slice(0, 7)} was not recorded (${e.message})`); }
     finished = true;
     return { ...receipt, text: ran.log };
   } finally { if (!finished && slot.finish && slot.isCurrent()) try { slot.finish({ aborted: true }); } catch {} }
 }
 
-// D-0061, design/suite-once.md#1
+// D-0061, D-0064, design/suite-once.md#1
 export function lookupSuiteReceipt({ repo, sha, command, install = "", runtime = null, format = "auto" }) {
   repo = resolve(repo);
   const norm = normInstall(install), full = fullSha(repo, sha), tree = git(repo, ["rev-parse", `${full}^{tree}`]), execution = executionOf(command, norm);
   if (!execution) return null;
+  const codeTree = codeTreeOf(repo, tree);
   const effectiveRuntime = runtime ?? execution.runtime, storeDir = suiteStore(repo);
   const key = { repository: dirname(storeDir), tree, command, install: norm, runtime: effectiveRuntime, execution: execution.digest };
-  const hit = storedGreen(join(storeDir, keyHashOf(key)), key, format);
+  const exact = storedGreen(join(storeDir, keyHashOf(key)), key, format);
+  const codeKey = { repository: dirname(storeDir), codeTree, command, install: norm, runtime: effectiveRuntime, execution: execution.digest };
+  const hit = exact ?? storedGreenByCodeTree(storeDir, codeKey, repo, full, tree, format);
   if (!hit) return null;
-  const receipt = { repository: repo, sha: full, tree, command, install: norm, runtime: effectiveRuntime, exit: hit.run.exit, summary: hit.judged.summary, durationMs: hit.run.durationMs, green: true, reasons: [], log: hit.run.log, reusedFrom: hit.path };
+  const receipt = {
+    repository: repo, sha: full, tree, codeTree,
+    ...(hit.targetVersion ? { versionVaried: hit.targetVersion } : {}),
+    command, install: norm, runtime: effectiveRuntime,
+    exit: hit.run.exit, summary: hit.judged.summary, durationMs: hit.run.durationMs,
+    green: true, reasons: [], log: hit.run.log, reusedFrom: hit.path,
+  };
   return { receipt, receiptPath: hit.path, logPath: hit.path.replace(/\.json$/, ".log.gz") };
 }
 
@@ -339,6 +426,18 @@ export function purgeTreeReceipts(repo, tree) {
     if (!sub.isDirectory()) continue;
     const subDir = join(storeDir, sub.name);
     if (sub.name === ".gen") { for (const e of readdirSync(subDir)) if (e.startsWith(`${tree}-`)) rmSync(join(subDir, e), { recursive: true, force: true }); continue; }
+    if (sub.name === CODE_TREE_DIR) {
+      for (const bucket of readdirSync(subDir, { withFileTypes: true })) {
+        if (!bucket.isDirectory()) continue;
+        const bucketDir = join(subDir, bucket.name);
+        for (const entry of readdirSync(bucketDir).filter(n => n.endsWith(".json"))) {
+          const refPath = join(bucketDir, entry), ref = tryJson(readFileSync(refPath, "utf8"));
+          if (!ref || ref.tree === tree) rmSync(refPath, { force: true });
+        }
+        if (readdirSync(bucketDir).length === 0) rmSync(bucketDir, { recursive: true, force: true });
+      }
+      continue;
+    }
     for (const entry of readdirSync(subDir).filter(n => n.endsWith(".json"))) {
       const jsonPath = join(subDir, entry), run = tryJson(readFileSync(jsonPath, "utf8"));
       if (!run || (run.tree !== tree && run.key?.tree !== tree)) continue;

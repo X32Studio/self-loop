@@ -1,7 +1,8 @@
-// Structured blueprint records and their generated owner view (RECORDS.md).
+// F-0001, D-0009, D-0015, D-0016, D-0064, D-0067
 import { resolve } from "node:path";
 import { HANDOFFS, parseHandoffs } from "./handoff.mjs";
 import { git, run } from "./git-plumbing.mjs";
+import { isNoDisputeCriticHandoff } from "./window-state.mjs";
 
 export const BLUEPRINT = "BLUEPRINT.md";
 export const FEATURE_EVENTS = "metrics/blueprint.jsonl";
@@ -12,7 +13,8 @@ export const STATUSES = ["planned", "designing", "building", "done", "retired"];
 const PURPOSE = /^P-\d{4}$/;
 const PURPOSE_FILE = /^purpose\/(P-\d{4})\.md$/;
 const DECISION = /^D-\d{4}$/;
-const ROUND = /^R-(\d{4})-judge$/;
+const JUDGE_ROUND = /^R-(\d{4})-(judge(?:-[a-z0-9-]+)*)$/;
+const CRITIC_ROUND = /^R-(\d{4})-(critic(?:-[a-z0-9-]+)*)$/;
 const TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const HEADER_FIELDS = new Set(["id", "phase", "requirements", "depends", "decisions"]);
@@ -24,13 +26,21 @@ const unquote = text => text.trim().replace(/^`([^`]+)`$/, "$1");
 const splitList = value => !value ? [] : value.split(/\s*,\s*/).map(unquote);
 const linesOf = text => text.replace(/^\uFEFF/, "").split(/\r?\n/);
 
+export function parseRoundRef(value) {
+  if (typeof value !== "string") return null;
+  const jm = JUDGE_ROUND.exec(value);
+  if (jm) return { role: "judge", round: Number(jm[1]), pad: jm[1], step: jm[2], record: `rounds/${jm[1]}-${jm[2]}.md` };
+  const cm = CRITIC_ROUND.exec(value);
+  if (cm) return { role: "critic", round: Number(cm[1]), pad: cm[1], step: cm[2], record: `rounds/${cm[1]}-${cm[2]}.md` };
+  return null;
+}
+
 export function parsePointer(value) {
   if (typeof value !== "string") return null;
   const match = /^([^#]+)#([^\r\n]+)@([0-9a-f]{7,64})$/.exec(value);
   return match && relativePath(match[1]) && nonempty(match[2]) ? { path: match[1], heading: match[2], commit: match[3] } : null;
 }
 
-/** The blueprint's machine-readable header ends at the first body heading. */
 export function parseFeature(path, text) {
   const id = FEATURE_FILE.exec(path)?.[1];
   const lines = linesOf(text);
@@ -91,7 +101,6 @@ function headings(lines) {
   return result;
 }
 
-/** Resolves a literal heading or a Markdown slug, and returns its section through the next peer or parent. */
 export function markdownSection(text, heading) {
   const lines = linesOf(text);
   const all = headings(lines);
@@ -110,10 +119,9 @@ export function markdownSection(text, heading) {
   return { title: h.title, body: lines.slice(h.body, end).join("\n").trimEnd(), text: lines.slice(h.start, end).join("\n").trimEnd() };
 }
 
-/** Read product documents from Git, using loop.json (whose product path is relative to that config). */
 export function productDocuments(repo, has, read, override) {
   let config = {};
-  try { if (has("loop.json")) config = JSON.parse(read("loop.json")) ?? {}; } catch { /* there is no usable locator */ }
+  try { if (has("loop.json")) config = JSON.parse(read("loop.json")) ?? {}; } catch {}
   const product = override?.product ?? (nonempty(config.product) ? resolve(repo, config.product) : null);
   const tip = override?.tip ?? config.branch ?? "HEAD";
   const commits = new Map(), files = new Map();
@@ -121,7 +129,7 @@ export function productDocuments(repo, has, read, override) {
     if (!commits.has(ref)) {
       let commit = null;
       if (product) try { commit = git(product, "rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`); }
-      catch { /* checkout or commit cannot be read */ }
+      catch {}
       commits.set(ref, commit);
     }
     return commits.get(ref);
@@ -153,7 +161,7 @@ export function productDocuments(repo, has, read, override) {
   };
 }
 
-// The receipt is for the pushed SHA: the commit, or the VERSION-only tip the trajectory row named after it (D-0009 item 2).
+// D-0009
 function problemWithReceipt(evidence, has, read) {
   if (typeof evidence.commit !== "string" || !SHA.test(evidence.commit)) return "evidence.commit must be a full SHA";
   if ("tip" in evidence && (typeof evidence.tip !== "string" || !SHA.test(evidence.tip))) return "evidence.tip must be a full SHA";
@@ -183,9 +191,9 @@ export function addEvent(state, event, { writing = false, line = null } = {}) {
       || !object(evidence)) throw new Error("expected status, timestamp, by, note and an evidence object");
   if ("phase" in event && (!nonempty(event.phase) || /[\r\n\t]/.test(event.phase))) throw new Error("phase must be a one-line name");
   if (latest.get(feature)?.status === status) throw new Error(`${feature} already has status ${status}`);
-  const round = typeof evidence.round === "string" ? ROUND.exec(evidence.round) : null;
-  if ("round" in evidence && (!round || !has(`rounds/${round[1]}-judge.md`)))
-    throw new Error(`evidence.round must name an existing judge round, got ${evidence.round}`);
+  const round = parseRoundRef(evidence.round);
+  if ("round" in evidence && (!round || !has(round.record)))
+    throw new Error(`evidence.round must name an existing judge or critic round, got ${evidence.round}`);
   if ("decision" in evidence && (typeof evidence.decision !== "string" || !DECISION.test(evidence.decision)
       || !has(`decisions/${evidence.decision}.md`))) throw new Error(`unknown decision ${evidence.decision}`);
   if (status === "done" || "commit" in evidence || "ci" in evidence || "tip" in evidence) {
@@ -195,15 +203,21 @@ export function addEvent(state, event, { writing = false, line = null } = {}) {
   const lastDone = completed.get(feature);
   const reopening = status === "building" && lastDone && !lastDone.reopened;
   const used = referencedRounds.get(feature) ?? new Set();
-  if (reopening && (!round || evidence.round === lastDone.round)) throw new Error("reopening a done feature needs a different judge round");
-  if (status === "done" && lastDone && round && used.has(evidence.round)) throw new Error("completing a reopened feature needs a judge round it has not previously cited");
+  if (reopening && (!round || evidence.round === lastDone.round)) throw new Error("reopening a done feature needs a different judge or critic round");
+  if (status === "done" && lastDone && round && used.has(evidence.round)) throw new Error("completing a reopened feature needs a judge or critic round it has not previously cited");
   const findings = [];
   if (round && (status === "done" || reopening)) {
-    const handoff = judgeHandoffs.get(evidence.round);
-    if (!handoff) findings.push(["legacy-round", `${feature} 引用 ${evidence.round}，该裁判轮没有交接记录。`]);
-    else {
-      if (status === "done" && handoff.product?.base !== evidence.commit)
-        throw new Error(`${evidence.round} ruled on ${handoff.product?.base ?? "an unrecorded SHA"}, not ${evidence.commit}`);
+    const handoff = (state.rulingHandoffs ?? judgeHandoffs).get(evidence.round);
+    if (!handoff) {
+      if (round.role === "critic" && status === "done")
+        throw new Error(`${evidence.round} requires a committed critic hand-off in ${HANDOFFS}`);
+      findings.push(["legacy-round", `${feature} 引用 ${evidence.round}，该裁判轮没有交接记录。`]);
+    } else {
+      if (round.role === "critic" && status === "done" && !isNoDisputeCriticHandoff(handoff, { has, read }))
+        throw new Error(`${evidence.round} is not an independent no-dispute critic PASS/CONVERGED hand-off`);
+      const ruledCommit = round.role === "critic" ? (handoff.product?.commit ?? handoff.product?.base) : handoff.product?.base;
+      if (status === "done" && ruledCommit !== evidence.commit)
+        throw new Error(`${evidence.round} ruled on ${ruledCommit ?? "an unrecorded SHA"}, not ${evidence.commit}`);
       if (handoff.features && !handoff.features.includes(feature))
         throw new Error(`${evidence.round} did not name ${feature}`);
     }
@@ -238,8 +252,9 @@ export function inspectBlueprint(repo, { files, read, product, has, handoffs }) 
   if (!handoffs) try { handoffs = has(HANDOFFS) ? parseHandoffs(read(HANDOFFS)) : []; }
   catch (error) { failures.push({ rule: "handoff", path: HANDOFFS, detail: error.message }); handoffs = []; }
   const judgeHandoffs = new Map(handoffs.filter(h => h.role === "judge").map(h => [h.id, h]));
+  const rulingHandoffs = new Map(handoffs.filter(h => h.role === "judge" || h.role === "critic").map(h => [h.id, h]));
   const state = { features, purposes, documents, failures, screening, latest: new Map(), completed: new Map(),
-    referencedRounds: new Map(), judgeHandoffs, has, read };
+    referencedRounds: new Map(), judgeHandoffs, rulingHandoffs, has, read };
   const fail = (path, detail, line) => failures.push({ rule: path === FEATURE_EVENTS ? "feature-event" : "blueprint-feature", path, detail, ...(line ? { line } : {}) });
   for (const path of files) {
     const feature = FEATURE_FILE.exec(path);

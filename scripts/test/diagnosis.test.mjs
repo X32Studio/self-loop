@@ -259,10 +259,10 @@ test("record is never refused by an alarm: a child prepared before the row is re
 test("alarm-deadlock regression: ci-absent blocks judge --prepare with reviewer --prepare guidance, and t3:antigravity reviewer-diagnosis unblocks it", async () => {
   const s = await setup({}, {
     agents: {
-      reviewer: { runner: "t3", provider: "antigravity", model: "gemini-4-neon" },
+      reviewer: { runner: "t3", provider: "antigravity", model: "gemini-2.5-flash" },
       judge: { runner: "t3", provider: "codex", model: "gpt-5.4" },
       critic: { runner: "t3", provider: "codex", model: "gpt-5.4" },
-      actor: { runner: "t3", provider: "antigravity", model: "gemini-4-neon" },
+      actor: { runner: "t3", provider: "antigravity", model: "gemini-2.5-flash" },
     },
   });
   append(s.records, row(30, { ci: "absent" }));
@@ -287,11 +287,11 @@ test("alarm-deadlock regression: ci-absent blocks judge --prepare with reviewer 
     const transcript = join(agHome, "brain", convId, ".system_generated", "logs", "transcript_full.jsonl");
     put(dirname(transcript), "transcript_full.jsonl", [
       { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: ts, content: prompt },
-      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: ts, model: "gemini-4-neon",
+      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: ts, model: "gemini-2.5-flash",
         tool_calls: [{ name: "read_file", args: { Path: join(ws, "records/INDEX.md") } }, { name: "write_file", args: { Path: join(ws, "out/report.md"), Content: "VERDICT: CONTINUE\n" } }] },
       { step_index: 2, source: "MODEL", type: "GENERIC", status: "DONE", created_at: ts },
       { step_index: 3, source: "MODEL", type: "GENERIC", status: "DONE", created_at: ts },
-      { step_index: 4, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: ts, model: "gemini-4-neon" },
+      { step_index: 4, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: ts, model: "gemini-2.5-flash" },
     ].map(r => JSON.stringify(r)).join("\n") + "\n");
     const rec = recordCall(s.cfg, ws, { session: convId });
     assert.equal(rec.code, EXIT.done, rec.message);

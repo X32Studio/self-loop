@@ -9,6 +9,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import { lookupSuiteReceipt, stageSuiteWorkspace, suiteStore } from "../scripts/suite-green.mjs";
+import { verifyProvenance } from "../scripts/lib/provenance.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPTS = join(REPO_ROOT, "scripts");
@@ -20,6 +21,8 @@ const PLAN_CLI = join(SCRIPTS, "plan.mjs");
 const SUITE_CLI = join(SCRIPTS, "suite-green.mjs");
 const LOOP_CLI = join(SCRIPTS, "loop.mjs");
 const RECORDS_CHECK_CLI = join(SCRIPTS, "records-check.mjs");
+const SELF_LOOP_CLI = join(SCRIPTS, "self-loop.mjs");
+const WINDOW_CLI = join(SCRIPTS, "window.mjs");
 
 const BRIEFS = {
   shared: "engines/shared.md",
@@ -159,7 +162,7 @@ function setupWorld(t, opts = {}) {
   git(product, env, "branch", "-f", "loop/v1", baseline);
   git(product, env, "checkout", "-q", "loop/v1");
 
-  const t3Codex = { runner: "t3", provider: "codex", model: "gpt-6" };
+  const t3Codex = { runner: "t3", provider: "codex", model: "gpt-5.4" };
   const t3Claude = { runner: "t3", provider: "claude", model: "claude-haiku-5-5" };
   const t3Reviewer = { runner: "t3", provider: "claude", model: "claude-sonnet-4-6" };
   const agents = opts.agents ?? { critic: t3Codex, actor: t3Codex, judge: t3Claude, reviewer: t3Reviewer };
@@ -226,7 +229,7 @@ function writeCodexTranscript(codexHome, ws, sid, prompt, cwd, commands = []) {
   const file = join(dir, `rollout-${sid}-${Math.random().toString(16).slice(2)}.jsonl`);
   writeFileSync(file, [
     { timestamp: ts, type: "session_meta", payload: { cwd, id: sid } },
-    { timestamp: ts, type: "turn_context", payload: { cwd, model: "gpt-6" } },
+    { timestamp: ts, type: "turn_context", payload: { cwd, model: "gpt-5.4" } },
     { timestamp: ts, type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: prompt }] } },
     ...commands.map(c => ({ timestamp: ts, type: "event_msg", payload: { type: "item_completed", item: { type: "CommandExecution", command: ["/bin/sh", "-c", c], cwd: `file://${cwd}`, exit_code: 0 } } })),
     { timestamp: ts, type: "event_msg", payload: { type: "task_complete" } },
@@ -779,8 +782,8 @@ test("MCP-07 (D-0060): delta-scoped T3 blocks only hotspot packages when arch re
   const w = setupWorld(t, {
     cadence: { deliveries: 10, outerGrace: 1 },
     agents: {
-      critic: { runner: "t3", provider: "codex", model: "gpt-6" },
-      actor: { runner: "t3", provider: "codex", model: "gpt-6" },
+      critic: { runner: "t3", provider: "codex", model: "gpt-5.4" },
+      actor: { runner: "t3", provider: "codex", model: "gpt-5.4" },
       judge: { runner: "t3", provider: "claude", model: "claude-haiku-5-5" },
       reviewer: { runner: "t3", provider: "claude", model: "claude-sonnet-4-6" },
     },
@@ -1475,4 +1478,139 @@ test("MCP-14 (D-0061/R26-2): normal-entry call.mjs --prepare does not mistake a 
   assert.equal(retryRec.green, true);
   assert.equal(retryRec.tree, expectedTree);
   assert.equal(lookupSuiteReceipt({ repo: w.product, sha: w.baseline, command: "node --test acceptance/smoke.test.mjs" })?.receipt?.tree, expectedTree);
+});
+
+test("MCP-15 (D-0064/T5): self-loop.mjs patch commits bounded LP-NNNN fixes, updates records index, resets streak after actor handoff, keeps window.mjs open working, and blocks protected push until convergence; loss: false-verdict/stuck", async t => {
+  const w = setupWorld(t);
+  runNode(RECORDS_CHECK_CLI, ["--repo", w.records, "--write"], w.env);
+  if (git(w.records, w.env, "status", "--porcelain=v1")) commitAll(w.records, w.env, "ensure clean index baseline");
+  put(w.product, "src/a.mjs", "export const a = 10;\n");
+
+  const dry = runNode(SELF_LOOP_CLI, [
+    "patch", "--records", w.records, "--reason", "Dry run fix", "--verify", "node --test acceptance/smoke.test.mjs", "--dry-run", "--json",
+  ], w.env);
+  assert.equal(dry.status, 0, dry.stderr + dry.stdout);
+  const dryJson = JSON.parse(dry.stdout);
+  assert.deepEqual([dryJson.ok, dryJson.dryRun, dryJson.files, dryJson.lines.total], [true, true, ["src/a.mjs"], 2]);
+  assert.notEqual(git(w.product, w.env, "status", "--porcelain=v1"), "");
+
+  const lp1 = runNode(SELF_LOOP_CLI, [
+    "patch", "--records", w.records, "--reason", "Update exported constant a", "--verify", "node --test acceptance/smoke.test.mjs", "--json",
+  ], w.env);
+  assert.equal(lp1.status, 0, lp1.stderr + lp1.stdout);
+  const p1 = JSON.parse(lp1.stdout);
+  assert.deepEqual([p1.ok, p1.handoff.id, p1.handoff.role, p1.handoff.product.base, p1.handoff.verify.exit, p1.handoff.audit.violations], [
+    true, "LP-0001", "lead-patch", w.baseline, 0, 0,
+  ]);
+  assert.equal(git(w.product, w.env, "status", "--porcelain=v1"), "");
+  assert.equal(git(w.product, w.env, "rev-parse", "HEAD"), p1.handoff.product.commit);
+
+  await t.test("records-check passes without index-drift after lead-patch", () => {
+    const recChk = runNode(RECORDS_CHECK_CLI, ["--repo", w.records, "--json"], w.env);
+    assert.deepEqual([recChk.status, JSON.parse(recChk.stdout).failures], [0, []]);
+  });
+
+  const prov = verifyProvenance({ repo: w.product, records: w.records, sha: p1.handoff.product.commit, branch: "loop/v1", mode: "base" });
+  assert.deepEqual([prov.unattested, prov.waveGate.missing.includes("provenance")], [[], false], prov.reasons?.join("; "));
+  assert.equal(runNode(SUITE_CLI, ["--repo", w.product, "--sha", p1.handoff.product.commit, "--command", "node --test acceptance/smoke.test.mjs", "--format", "node-test"], w.env).status, 0);
+  assert.equal(runNode(PUSH_CLI, ["--verify-only", "--repo", w.product, "--branch", "main", "--sha", p1.handoff.product.commit, "--owner-store", w.storeDir], w.env).status, 2);
+
+  await t.test("window.mjs open omitting --start-round succeeds with round-less lead-patch entries", () => {
+    const winOpen = runNode(WINDOW_CLI, ["open", "--records", w.records, "--phase", "v1", "--horizon", "2", "--goal", "Default startRound after LP", "--invariant", "Smoke tests stay green", "--json"], w.env);
+    assert.equal(winOpen.status, 0, winOpen.stderr + winOpen.stdout);
+  });
+
+  put(w.product, "src/a.mjs", "export const a = 20;\n");
+  put(w.product, "src/b.mjs", Array.from({ length: 25 }, (_, i) => `export const b${i} = ${i};`).join("\n") + "\n");
+  const lp2 = runNode(SELF_LOOP_CLI, [
+    "patch", "--records", w.records, "--files", "src/a.mjs", "--reason", "Selective a.mjs patch", "--verify", "node --test acceptance/smoke.test.mjs", "--json",
+  ], w.env);
+  assert.equal(lp2.status, 0, lp2.stderr + lp2.stdout);
+  assert.equal(JSON.parse(lp2.stdout).handoff.id, "LP-0002");
+  assert.match(git(w.product, w.env, "status", "--porcelain=v1"), /src\/b\.mjs/);
+  git(w.product, w.env, "checkout", "--", "src/b.mjs");
+
+  put(w.product, "src/a.mjs", "export const a = 30;\n");
+  const lp3Denied = runNode(SELF_LOOP_CLI, [
+    "patch", "--records", w.records, "--reason", "Third consecutive patch", "--verify", "node --test acceptance/smoke.test.mjs", "--json",
+  ], w.env);
+  assert.equal(lp3Denied.status, 2);
+  assert.match(lp3Denied.stdout + lp3Denied.stderr, /consecutive lead-patch limit reached \(2\/2\)/);
+  git(w.product, w.env, "checkout", "--", "src/a.mjs");
+
+  put(w.records, "plans/PL-0001.md", planText("PL-0001", [
+    { id: "actor-a", role: "actor", handoff: "R-0002-actor-a", files: ["src/a.mjs"] },
+    { id: "critic-a", role: "critic", handoff: "R-0002-critic-a", files: ["acceptance/**"], needs: ["actor-a"], reviews: ["actor-a"] },
+  ]));
+  const actorTask = writeTask(w, "R-0002-actor-a");
+  const criticTask = writeTask(w, "R-0002-critic-a");
+  assert.ok(actorTask && criticTask);
+  commitAll(w.records, w.env, "add PL-0001 for streak reset");
+  const prepA = JSON.parse(runNode(DISPATCH_CLI, ["prepare", "--config", w.configPath, "--plan", "PL-0001", "--json"], w.env).stdout).prepared[0];
+  put(prepA.wt, "src/a.mjs", "export const a = 31;\n");
+  put(prepA.ws, "out/report.md", "# R-0002-actor-a\n\nReset.\n");
+  writeCodexTranscript(w.codexHome, prepA.ws, `sess-${prepA.nonce}`, prepA.prompt, prepA.wt);
+  assert.equal(runNode(DISPATCH_CLI, ["record", "--config", w.configPath, "--plan", "PL-0001", "--json"], w.env).status, 0);
+  const shaA = git(w.product, w.env, "rev-parse", "loop/v1");
+  git(w.product, w.env, "checkout", "-q", "loop/v1");
+  assert.notEqual(shaA, p1.handoff.product.commit);
+
+  put(w.product, "src/a.mjs", "export const a = 32;\n");
+  const lp3AfterReset = runNode(SELF_LOOP_CLI, [
+    "patch", "--records", w.records, "--reason", "Patch allowed after actor reset", "--verify", "node --test acceptance/smoke.test.mjs", "--json",
+  ], w.env);
+  assert.equal(lp3AfterReset.status, 0, lp3AfterReset.stderr + lp3AfterReset.stdout);
+  assert.equal(JSON.parse(lp3AfterReset.stdout).handoff.id, "LP-0003");
+});
+
+test("MCP-16 (D-0064/T5): self-loop.mjs patch enforces line/file caps, D-0016 prose ban, verify gate, branch guard, binary file refusal, and detached HEAD refusal; loss: false-verdict", t => {
+  const w = setupWorld(t);
+  const runPatch = (extra = []) => runNode(SELF_LOOP_CLI, [
+    "patch", "--records", w.records, "--reason", "Check guard", "--verify", "node --test acceptance/smoke.test.mjs", ...extra, "--json",
+  ], w.env);
+  const resetDirty = () => { git(w.product, w.env, "checkout", "--", "."); git(w.product, w.env, "clean", "-fdq"); };
+
+  put(w.product, "src/a.mjs", Array.from({ length: 22 }, (_, i) => `export const a${i} = ${i};`).join("\n") + "\n");
+  const overLines = runPatch();
+  assert.equal(overLines.status, 2);
+  assert.match(overLines.stdout + overLines.stderr, /exceeds hard cap \(20\)/);
+  resetDirty();
+
+  for (const name of ["a", "b", "c", "d"]) put(w.product, `src/${name}.mjs`, `export const ${name} = 99;\n`);
+  const overFiles = runPatch();
+  assert.equal(overFiles.status, 2);
+  assert.match(overFiles.stdout + overFiles.stderr, /exceeds hard cap \(3\)/);
+  resetDirty();
+
+  put(w.product, "src/a.mjs", "// Explain why constant changed.\nexport const a = 2;\n");
+  const proseErr = runPatch();
+  assert.equal(proseErr.status, 2);
+  assert.match(proseErr.stdout + proseErr.stderr, /added prose.*D-0016/);
+  resetDirty();
+
+  put(w.product, "src/a.mjs", "export const a = 2;\n");
+  const badVerify = runNode(SELF_LOOP_CLI, [
+    "patch", "--records", w.records, "--reason", "Failing verify", "--verify", "node -e 'process.exit(4)'", "--json",
+  ], w.env);
+  assert.equal(badVerify.status, 2);
+  assert.match(badVerify.stdout + badVerify.stderr, /--verify command exited 4/);
+
+  put(w.product, "src/blob.bin", Buffer.from([0, 1, 2, 3]));
+  const binErr = runPatch(["--files", "src/blob.bin"]);
+  assert.equal(binErr.status, 2);
+  assert.match(binErr.stdout + binErr.stderr, /binary file/);
+  resetDirty();
+
+  git(w.product, w.env, "checkout", "-q", "main");
+  put(w.product, "src/a.mjs", "export const a = 2;\n");
+  const protErr = runPatch();
+  assert.equal(protErr.status, 2);
+  assert.match(protErr.stdout + protErr.stderr, /protected/);
+  resetDirty();
+
+  git(w.product, w.env, "checkout", "-q", "--detach", w.baseline);
+  put(w.product, "src/a.mjs", "export const a = 2;\n");
+  const detErr = runPatch();
+  assert.equal(detErr.status, 2);
+  assert.match(detErr.stdout + detErr.stderr, /HEAD is detached/);
 });

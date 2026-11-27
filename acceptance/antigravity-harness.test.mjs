@@ -17,7 +17,7 @@ import { git, green, isolatedEnv, loopProduct, ownerStore, repo, scripts, selfLo
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
 process.env.SELF_LOOP_LOAD_DIR = temp("self-loop-load-ag-");
 
-const t3Ag = (model = "gemini-4-neon-high") => ({ runner: "t3", provider: "antigravity", model, effort: "high" });
+const t3Ag = (model = "gemini-2.5-flash-high") => ({ runner: "t3", provider: "antigravity", model, effort: "high" });
 const handoffs = records => parseHandoffs(git(records, "show", "HEAD:metrics/handoffs.jsonl")).filter(h => h.step !== "reviewer-frame");
 
 function wrapPrompt(body) {
@@ -53,12 +53,12 @@ function writeTranscript(appDir, id, rows, { filename = "transcript_full.jsonl" 
   return file;
 }
 
-async function prepAg(role = "actor", model = "gemini-4-neon-high") {
+async function prepAg(role = "actor", model = "gemini-2.5-flash-high") {
   const s = await setup({}, {
     agents: {
       critic: t3Ag(model),
       actor: t3Ag(model),
-      judge: t3Ag("claude-opus-5-5-high"),
+      judge: t3Ag("claude-opus-4-6-high"),
       reviewer: { runner: "cmd", cmd: ["true"] },
     },
   });
@@ -81,7 +81,7 @@ test("AG-T3-01 (R9 synthetic unobserved fixtures): failure states, in-flight pen
     writeSummaryDb(appDir, [{ id: "conv-cancel", workspaces: [wt], status: "CASCADE_RUN_STATUS_IDLE", notFullyIdle: 0 }]);
     writeTranscript(appDir, "conv-cancel", [
       { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-23T01:00:00Z", content: wrapPrompt(prompt) },
-      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:05Z", model: "gemini-4-neon-high", tool_calls: [{ name: "read_file", args: { Path: join(wt, "src/a.js") } }] },
+      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:05Z", model: "gemini-2.5-flash-high", tool_calls: [{ name: "read_file", args: { Path: join(wt, "src/a.js") } }] },
     ]);
     const rec = recordCall(s.cfg, ws, { session: "conv-cancel" });
     assert.equal(rec.code, EXIT.failure);
@@ -97,7 +97,7 @@ test("AG-T3-01 (R9 synthetic unobserved fixtures): failure states, in-flight pen
     writeSummaryDb(appDir, [{ id: "conv-err", workspaces: [wt], status: "CASCADE_RUN_STATUS_IDLE", notFullyIdle: 0 }]);
     writeTranscript(appDir, "conv-err", [
       { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-23T01:00:00Z", content: wrapPrompt(prompt) },
-      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "ERROR", error: "model failed", created_at: "2026-11-23T01:00:05Z", model: "gemini-4-neon-high" },
+      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "ERROR", error: "model failed", created_at: "2026-11-23T01:00:05Z", model: "gemini-2.5-flash-high" },
     ]);
     const rec = recordCall(s.cfg, ws, { session: "conv-err" });
     assert.equal(rec.code, EXIT.failure);
@@ -112,7 +112,7 @@ test("AG-T3-01 (R9 synthetic unobserved fixtures): failure states, in-flight pen
     writeSummaryDb(appDir, [{ id: "conv-max", workspaces: [wt], status: "CASCADE_RUN_STATUS_IDLE", notFullyIdle: 0 }]);
     writeTranscript(appDir, "conv-max", [
       { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-23T01:00:00Z", content: wrapPrompt(prompt) },
-      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:05Z", model: "gemini-4-neon-high", tool_calls: [{ name: "run_command", args: { CommandLine: "echo hi" } }] },
+      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:05Z", model: "gemini-2.5-flash-high", tool_calls: [{ name: "run_command", args: { CommandLine: "echo hi" } }] },
       { step_index: 2, source: "MODEL", type: "GENERIC", status: "DONE", created_at: "2026-11-23T01:00:06Z" },
     ]);
     const rec = recordCall(s.cfg, ws, { session: "conv-max" });
@@ -128,7 +128,7 @@ test("AG-T3-01 (R9 synthetic unobserved fixtures): failure states, in-flight pen
     writeSummaryDb(appDir, [{ id: "conv-live", workspaces: [wt], status: "CASCADE_RUN_STATUS_RUNNING", notFullyIdle: 1 }]);
     writeTranscript(appDir, "conv-live", [
       { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-23T01:00:00Z", content: wrapPrompt(prompt) },
-      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:05Z", model: "gemini-4-neon-high", tool_calls: [{ name: "read_file", args: { Path: join(wt, "src/a.js") } }] },
+      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:05Z", model: "gemini-2.5-flash-high", tool_calls: [{ name: "read_file", args: { Path: join(wt, "src/a.js") } }] },
     ]);
     const rec = recordCall(s.cfg, ws, { session: "conv-live" });
     assert.equal(rec.code, EXIT.failure);
@@ -145,15 +145,15 @@ test("AG-T3-01 (R9 synthetic unobserved fixtures): failure states, in-flight pen
     writeSummaryDb(appDir, [{ id: "conv-ok", workspaces: [wt], status: "CASCADE_RUN_STATUS_IDLE", notFullyIdle: 0 }]);
     writeTranscript(appDir, "conv-ok", [
       { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-23T01:00:00Z", content: wrapPrompt(prompt) },
-      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:02Z", model: "gemini-4-neon-high", tool_calls: [{ name: "run_command", args: { CommandLine: "echo ok" } }] },
+      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:02Z", model: "gemini-2.5-flash-high", tool_calls: [{ name: "run_command", args: { CommandLine: "echo ok" } }] },
       { step_index: 2, source: "MODEL", type: "GENERIC", status: "RUNNING", created_at: "2026-11-23T01:00:03Z" },
-      { step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:10Z", model: "gemini-4-neon-high", content: "done" },
+      { step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:10Z", model: "gemini-2.5-flash-high", content: "done" },
     ]);
     const rec = recordCall(s.cfg, ws, { session: "conv-ok" });
     assert.equal(rec.code, EXIT.done, rec.message);
     const [h] = handoffs(s.records);
     assert.equal(h.agent.runner, "t3:antigravity");
-    assert.deepEqual(h.agent.observedModels, ["gemini-4-neon-high"]);
+    assert.deepEqual(h.agent.observedModels, ["gemini-2.5-flash-high"]);
     assert.equal(h.agent.seconds, 10);
   }
 });
@@ -167,14 +167,14 @@ test("AG-T3-02 & AG-T3-03: observedModels switch fails closed; convergence matri
   writeSummaryDb(appDir, [{ id: "conv-switch", workspaces: [wt], status: "CASCADE_RUN_STATUS_IDLE", notFullyIdle: 0 }]);
   writeTranscript(appDir, "conv-switch", [
     { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-23T01:00:00Z", content: wrapPrompt(prompt) },
-    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:02Z", model: "gemini-4-neon-high", tool_calls: [{ name: "read_file", args: { Path: join(wt, "src/a.js") } }] },
+    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:02Z", model: "gemini-2.5-flash-high", tool_calls: [{ name: "read_file", args: { Path: join(wt, "src/a.js") } }] },
     { step_index: 2, source: "MODEL", type: "GENERIC", status: "DONE", created_at: "2026-11-23T01:00:03Z" },
-    { step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:08Z", model: "claude-opus-5-5-high", content: "finished" },
+    { step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:08Z", model: "claude-opus-4-6-high", content: "finished" },
   ]);
   const rec = recordCall(s.cfg, ws, { session: "conv-switch" });
   assert.equal(rec.code, EXIT.done, rec.message);
   const [h] = handoffs(s.records);
-  assert.deepEqual(h.agent.observedModels, ["gemini-4-neon-high", "claude-opus-5-5-high"]);
+  assert.deepEqual(h.agent.observedModels, ["gemini-2.5-flash-high", "claude-opus-4-6-high"]);
   assert.equal(modelVendor(h.agent), null);
 
   // Full loop.mjs convergence() matrix:
@@ -205,42 +205,42 @@ test("AG-T3-02 & AG-T3-03: observedModels switch fails closed; convergence matri
   };
 
   const switchedOut = checkConvergence(
-    { runner: "t3:antigravity", observedModel: "gemini-4-neon-high", observedModels: ["gemini-4-neon-high", "claude-opus-5-5-high"] },
-    { runner: "t3:codex", observedModel: "gpt-6.2-astra" },
+    { runner: "t3:antigravity", observedModel: "gemini-2.5-flash-high", observedModels: ["gemini-2.5-flash-high", "claude-opus-4-6-high"] },
+    { runner: "t3:codex", observedModel: "gpt-5.4-pro" },
   );
   assert.match(switchedOut, /judge\/actor independence needs confirmation/);
 
   const sameGoogle = checkConvergence(
-    { runner: "t3:antigravity", observedModel: "gemini-4-neon-high", observedModels: ["gemini-4-neon-high"] },
-    { runner: "t3:antigravity", observedModel: "gemini-4-hydrogen-high", observedModels: ["gemini-4-hydrogen-high"] },
+    { runner: "t3:antigravity", observedModel: "gemini-2.5-flash-high", observedModels: ["gemini-2.5-flash-high"] },
+    { runner: "t3:antigravity", observedModel: "gemini-2.5-pro-high", observedModels: ["gemini-2.5-pro-high"] },
   );
   assert.match(sameGoogle, /judge\/actor independence needs confirmation/);
 
   const crossVendor = checkConvergence(
-    { runner: "t3:antigravity", observedModel: "gemini-4-neon-high", observedModels: ["gemini-4-neon-high"] },
-    { runner: "t3:antigravity", observedModel: "claude-opus-5-5-high", observedModels: ["claude-opus-5-5-high"] },
+    { runner: "t3:antigravity", observedModel: "gemini-2.5-flash-high", observedModels: ["gemini-2.5-flash-high"] },
+    { runner: "t3:antigravity", observedModel: "claude-opus-4-6-high", observedModels: ["claude-opus-4-6-high"] },
   );
   assert.doesNotMatch(crossVendor, /judge\/actor independence needs confirmation/);
 
   const sameAnthropic = checkConvergence(
-    { runner: "t3:claude", observedModel: "claude-opus-5-5" },
-    { runner: "t3:antigravity", observedModel: "claude-opus-5-5-high", observedModels: ["claude-opus-5-5-high"] },
+    { runner: "t3:claude", observedModel: "claude-opus-4-6" },
+    { runner: "t3:antigravity", observedModel: "claude-opus-4-6-high", observedModels: ["claude-opus-4-6-high"] },
   );
   assert.match(sameAnthropic, /judge\/actor independence needs confirmation/);
 
   const unknownModel = checkConvergence(
     { runner: "t3:antigravity", observedModel: "auto", observedModels: ["auto"] },
-    { runner: "t3:codex", observedModel: "gpt-6.2-astra" },
+    { runner: "t3:codex", observedModel: "gpt-5.4-pro" },
   );
   assert.match(unknownModel, /judge\/actor independence needs confirmation/);
 
   // J3: empty observedModels on Antigravity must NOT fall back to configured model for independence.
   const emptyObserved = checkConvergence(
-    { runner: "t3:antigravity", model: "gemini-4-neon-high", observedModel: null, observedModels: [] },
-    { runner: "t3:codex", observedModel: "gpt-6.2-astra" },
+    { runner: "t3:antigravity", model: "gemini-2.5-flash-high", observedModel: null, observedModels: [] },
+    { runner: "t3:codex", observedModel: "gpt-5.4-pro" },
   );
   assert.match(emptyObserved, /judge\/actor independence needs confirmation/);
-  const pNoModel = await prepAg("actor", "gemini-4-neon-high");
+  const pNoModel = await prepAg("actor", "gemini-2.5-flash-high");
   writeFileSync(join(pNoModel.r.prepared.ws, "out/report.md"), "done\n");
   const noModelFile = writeTranscript(pNoModel.appDir, "conv-no-model", [
     { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", content: wrapPrompt(pNoModel.r.prepared.prompt) },
@@ -269,10 +269,10 @@ test("AG-T3-04 + record refusals: confined reviewer on t3:antigravity (t3:codex 
   process.env.T3CODE_HOME = "";
   const revOkFile = writeTranscript(revAppDir, "conv-rev-ok", [
     { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-23T01:00:00Z", content: wrapPrompt(rev.prepared.prompt) },
-    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:01Z", model: "gemini-4-neon-high",
+    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:01Z", model: "gemini-2.5-flash-high",
       tool_calls: [{ name: "read_file", args: { Path: join(rev.prepared.ws, "brief.md") } }] },
     { step_index: 2, source: "MODEL", type: "GENERIC", status: "DONE", created_at: "2026-11-23T01:00:02Z" },
-    { step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:03Z", model: "gemini-4-neon-high" },
+    { step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:03Z", model: "gemini-2.5-flash-high" },
   ]);
   assert.equal(recordCall(sRev.cfg, rev.prepared.ws, { session: "conv-rev-ok", transcript: revOkFile }).code, EXIT.done);
 
@@ -286,21 +286,21 @@ test("AG-T3-04 + record refusals: confined reviewer on t3:antigravity (t3:codex 
   ]);
   const tamperFile = writeTranscript(appDir, "conv-tamper", [
     { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-23T01:00:00Z", content: wrapPrompt(`self-loop call R-0001-actor · nonce ${nonce}\n\ntampered`) },
-    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:02Z", model: "gemini-4-neon-high" },
+    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:02Z", model: "gemini-2.5-flash-high" },
   ]);
   assert.equal(recordCall(s.cfg, ws, { session: "conv-tamper", transcript: tamperFile }).code, EXIT.records);
   assert.ok(existsSync(wt));
 
   const handoffFile = writeTranscript(appDir, "conv-handoff", [
     { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-23T01:00:00Z", content: wrapPrompt(`Context handoff (full_thread_summary):\nsummary\n\nUser message:\n${prompt}`) },
-    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:02Z", model: "gemini-4-neon-high" },
+    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:02Z", model: "gemini-2.5-flash-high" },
   ]);
   assert.equal(recordCall(s.cfg, ws, { session: "conv-handoff", transcript: handoffFile }).code, EXIT.records);
   assert.ok(existsSync(wt));
 
   const validFile = writeTranscript(appDir, "conv-real", [
     { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-23T01:00:00Z", content: wrapPrompt(prompt) },
-    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:02Z", model: "gemini-4-neon-high" },
+    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:02Z", model: "gemini-2.5-flash-high" },
   ]);
   assert.equal(recordCall(s.cfg, ws, { session: "wrong-session", transcript: validFile }).code, EXIT.records);
   assert.ok(existsSync(wt));
@@ -308,9 +308,9 @@ test("AG-T3-04 + record refusals: confined reviewer on t3:antigravity (t3:codex 
   // Compact transcript refused with EXIT.records (AG-AUDIT-01).
   const compactFile = writeTranscript(appDir, "conv-compact", [
     { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-23T01:00:00Z", content: wrapPrompt(prompt) },
-    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", truncated_fields: ["tool_calls"], created_at: "2026-11-23T01:00:02Z", model: "gemini-4-neon-high", tool_calls: [{ name: "read_file", args: { Path: JSON.stringify(join(s.sealed, "case-07.mjs")) } }] },
+    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", truncated_fields: ["tool_calls"], created_at: "2026-11-23T01:00:02Z", model: "gemini-2.5-flash-high", tool_calls: [{ name: "read_file", args: { Path: JSON.stringify(join(s.sealed, "case-07.mjs")) } }] },
     { step_index: 2, source: "MODEL", type: "GENERIC", status: "DONE", created_at: "2026-11-23T01:00:03Z" },
-    { step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:04Z", model: "gemini-4-neon-high" },
+    { step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:04Z", model: "gemini-2.5-flash-high" },
   ], { filename: "transcript.jsonl" });
   assert.equal(recordCall(s.cfg, ws, { session: "conv-compact", transcript: compactFile }).code, EXIT.records);
   assert.deepEqual(handoffs(s.records), []);
@@ -329,9 +329,9 @@ test("AG-T3-04 + record refusals: confined reviewer on t3:antigravity (t3:codex 
     writeSummaryDb(p2.appDir, [{ id: "conv-viol", workspaces: [p2.r.prepared.wt], status: "CASCADE_RUN_STATUS_IDLE" }]);
     const violFile = writeTranscript(p2.appDir, "conv-viol", [
       { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-23T01:00:00Z", content: wrapPrompt(p2.r.prepared.prompt) },
-      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:02Z", model: "gemini-4-neon-high", tool_calls: [tc] },
+      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:02Z", model: "gemini-2.5-flash-high", tool_calls: [tc] },
       { step_index: 2, source: "MODEL", type: "GENERIC", status: "DONE", created_at: "2026-11-23T01:00:03Z" },
-      { step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:04Z", model: "gemini-4-neon-high" },
+      { step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:04Z", model: "gemini-2.5-flash-high" },
     ]);
     const vRes = recordCall(p2.s.cfg, p2.r.prepared.ws, { session: "conv-viol", transcript: violFile });
     assert.equal(vRes.code, EXIT.violation, JSON.stringify(tc));
@@ -345,7 +345,7 @@ test("AG-T3-04 + record refusals: confined reviewer on t3:antigravity (t3:codex 
     const parenSealed = repo({ "case.mjs": "export default 1;\n" }, parenDir);
     const sParen = await setup({}, {
       sealed: [parenSealed],
-      agents: { critic: t3Ag(), actor: t3Ag(), judge: t3Ag("claude-opus-5-5-high"), reviewer: { runner: "cmd", cmd: ["true"] } },
+      agents: { critic: t3Ag(), actor: t3Ag(), judge: t3Ag("claude-opus-4-6-high"), reviewer: { runner: "cmd", cmd: ["true"] } },
     });
     const appDir2 = temp("ag-app-paren-");
     process.env.ANTIGRAVITY_APP_DATA_DIR = appDir2;
@@ -356,9 +356,9 @@ test("AG-T3-04 + record refusals: confined reviewer on t3:antigravity (t3:codex 
     writeSummaryDb(appDir2, [{ id: "conv-paren-viol", workspaces: [pViol.prepared.wt], status: "CASCADE_RUN_STATUS_IDLE" }]);
     const violFile = writeTranscript(appDir2, "conv-paren-viol", [
       { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-23T01:00:00Z", content: wrapPrompt(pViol.prepared.prompt) },
-      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:02Z", model: "gemini-4-neon-high", tool_calls: [{ name: "mcp_t3-code_html_preview", args: { html: `<iframe src="${pathToFileURL(join(parenSealed, "case.mjs")).href}"></iframe>` } }] },
+      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:02Z", model: "gemini-2.5-flash-high", tool_calls: [{ name: "mcp_t3-code_html_preview", args: { html: `<iframe src="${pathToFileURL(join(parenSealed, "case.mjs")).href}"></iframe>` } }] },
       { step_index: 2, source: "MODEL", type: "GENERIC", status: "DONE", created_at: "2026-11-23T01:00:03Z" },
-      { step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:04Z", model: "gemini-4-neon-high" },
+      { step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:04Z", model: "gemini-2.5-flash-high" },
     ]);
     assert.equal(recordCall(sParen.cfg, pViol.prepared.ws, { session: "conv-paren-viol", transcript: violFile }).code, EXIT.violation);
     assert.deepEqual(handoffs(sParen.records), []);
@@ -368,9 +368,9 @@ test("AG-T3-04 + record refusals: confined reviewer on t3:antigravity (t3:codex 
     writeSummaryDb(appDir2, [{ id: "conv-html-ok", workspaces: [pOk.prepared.wt], status: "CASCADE_RUN_STATUS_IDLE" }]);
     const okFile = writeTranscript(appDir2, "conv-html-ok", [
       { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-23T01:00:00Z", content: wrapPrompt(pOk.prepared.prompt) },
-      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:02Z", model: "gemini-4-neon-high", tool_calls: [{ name: "mcp_t3-code_html_preview", args: { html: '<div class="chart">safe preview</div>' } }] },
+      { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:02Z", model: "gemini-2.5-flash-high", tool_calls: [{ name: "mcp_t3-code_html_preview", args: { html: '<div class="chart">safe preview</div>' } }] },
       { step_index: 2, source: "MODEL", type: "GENERIC", status: "DONE", created_at: "2026-11-23T01:00:03Z" },
-      { step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:04Z", model: "gemini-4-neon-high" },
+      { step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-23T01:00:04Z", model: "gemini-2.5-flash-high" },
     ]);
     const okRes = recordCall(sParen.cfg, pOk.prepared.ws, { session: "conv-html-ok", transcript: okFile });
     assert.equal(okRes.code, EXIT.done, okRes.message);

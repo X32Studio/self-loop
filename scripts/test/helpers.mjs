@@ -1,7 +1,7 @@
 // F-0008, D-0060
 import "../lib/unbind-git.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +11,7 @@ export const fixtures = join(here, "fixtures");
 export const scripts = join(here, "..");
 export const skill = join(scripts, "..");
 process.env.SELF_LOOP_TEST = "1";
-export const temp = (name = "self-loop-test-") => mkdtempSync(join(tmpdir(), name));
+export const temp = (name = "self-loop-test-") => realpathSync(mkdtempSync(join(tmpdir(), name)));
 const ENV = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.invalid" };
 process.env.GIT_AUTHOR_NAME ??= "t"; process.env.GIT_AUTHOR_EMAIL ??= "t@example.invalid";
 process.env.GIT_COMMITTER_NAME ??= "t"; process.env.GIT_COMMITTER_EMAIL ??= "t@example.invalid";

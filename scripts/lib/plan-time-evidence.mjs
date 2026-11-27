@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, normalize, dirname, basename } from 'node:path';
-import { parsePlan, validatePlan } from './plan.mjs';
+import { parsePlan, validatePlan, planPackageMap, recordPath } from './plan.mjs';
 import { gunzipSync } from 'node:zlib';
 import { ciWord } from './check-runs.mjs';
 import { AWS_ACCOUNT_RE, isCodeCommitHost } from './ci-destination.mjs';
@@ -198,16 +198,18 @@ function requiredRefs(list, r, kind = 'public', at = null) {
   return list.map(ref => r.ref(ref, kind, at));
 }
 function packageClosure(plan, ids) {
-  const packages = new Map((plan.packages ?? []).map(p => [p.id, p]));
-  need(Array.isArray(ids) && ids.length && ids.every(text) && new Set(ids).size === ids.length, 'invalid package list');
-  const done = new Set(), active = new Set();
-  function walk(id) {
+  const byRef = planPackageMap(plan), done = new Set(), active = new Set();
+  const roots = Array.isArray(ids) && ids.length && ids.every(text) ? ids.map(ref => byRef.get(ref)?.id ?? ref) : null;
+  need(roots && new Set(roots).size === ids.length, 'invalid package list');
+  function walk(ref) {
+    const p = byRef.get(ref), id = p?.id ?? ref;
     if (done.has(id)) return;
-    need(!active.has(id) && packages.has(id), 'missing dependency or cycle'); active.add(id);
-    const p = packages.get(id); need(Array.isArray(p.needs), 'missing package dependencies');
-    p.needs.forEach(walk); active.delete(id); done.add(id);
+    need(!active.has(id) && p, 'missing dependency or cycle'); active.add(id);
+    need(Array.isArray(p.needs), 'missing package dependencies');
+    for (const dep of p.needs) if (byRef.has(dep) || !recordPath(dep)) walk(dep);
+    active.delete(id); done.add(id);
   }
-  ids.forEach(walk); return done;
+  roots.forEach(walk); return done;
 }
 function scopeClaim(row, r, observations) {
   const b = row.value, c = b.claim, cut = r.cut(r.q.records, b.basedOn);
@@ -219,7 +221,7 @@ function scopeClaim(row, r, observations) {
   need(!git(r.q.records,'log','--format=%H','--diff-filter=MDT',r.q.revision,'--',b.rootRef.path).toString().trim(), 'immutable baseline modified or deleted');
   const baseline = root.time?.baseline;
   need(object(baseline?.minimum) && Array.isArray(baseline.minimum.criteriaRefs) && baseline.minimum.criteriaRefs.length, 'minimum criteria unavailable');
-  const close = ids => packageClosure(plan, ids);
+  const byRef = planPackageMap(plan), close = ids => packageClosure(plan, ids);
   const closure = close(c.releasePackages), required = new Set(), criteriaKeys = new Set();
   const promises = [...(baseline.promises ?? []), ...observations.filter(o => identity(o.rootRef) === identity(b.rootRef)).flatMap(o => o.promisesAdded ?? [])];
   for (const criterion of c.criteria) {
@@ -235,21 +237,23 @@ function scopeClaim(row, r, observations) {
   for (const ref of baseline.minimum.criteriaRefs) need(c.criteria.some(x => x.purpose === 'minimum' && identity(x.ref) === identity(ref)), 'minimum criterion missing');
   const deferred = new Set();
   for (const d of c.deferred) {
-    need(text(d.package) && text(d.reason) && plan.packages.some(p => p.id === d.package) && !deferred.has(d.package) && !required.has(d.package) && !closure.has(d.package), 'required or invalid deferral');
+    const pkg = text(d?.package) ? byRef.get(d.package) : null;
+    need(pkg && text(d.reason) && !deferred.has(pkg.id) && !required.has(pkg.id) && !closure.has(pkg.id), 'required or invalid deferral');
     const fragment = selectFragment(r.ref(d.authorityRef, 'authority', b.basedOn), d.selector);
-    need(wholeToken(fragment, d.package) && /\boptional\b/i.test(fragment), 'optional package authority absent'); deferred.add(d.package);
+    need((wholeToken(fragment, pkg.id) || wholeToken(fragment, d.package)) && /\boptional\b/i.test(fragment), 'optional package authority absent'); deferred.add(pkg.id);
   }
   requiredRefs(c.gatePolicyRefs, r, 'policy', b.basedOn);
-  return { criteria: c.criteria, releasePackages: c.releasePackages, closure: [...closure], deferred: [...deferred], policies: c.gatePolicyRefs, plan, cut };
+  return { criteria: c.criteria, releasePackages: c.releasePackages.map(id => byRef.get(id).id), closure: [...closure], deferred: [...deferred], policies: c.gatePolicyRefs, plan, cut };
 }
 function forecastScopeProblems(o, scope) {
-  const findings = [];
+  const findings = [], byRef = planPackageMap(scope.plan);
   try {
     const actual = packageClosure(scope.plan, o.outlook?.releasePackages);
     for (const id of scope.closure) if (!actual.has(id)) findings.push(`forecast omits approved release closure package: ${id}`);
     for (const id of actual) if (!scope.closure.includes(id)) findings.push(`forecast includes unapproved release closure package: ${id}`);
-    const deferred = o.outlook?.change?.deferredPackages;
-    need(Array.isArray(deferred) && deferred.every(text) && new Set(deferred).size === deferred.length, 'invalid forecast deferred packages');
+    const raw = o.outlook?.change?.deferredPackages;
+    const deferred = Array.isArray(raw) && raw.every(text) ? raw.map(ref => byRef.get(ref)?.id ?? ref) : null;
+    need(deferred && new Set(deferred).size === raw.length, 'invalid forecast deferred packages');
     for (const id of deferred) {
       if (actual.has(id) || scope.closure.includes(id)) findings.push(`forecast defers release closure package: ${id}`);
       if (!scope.deferred.includes(id)) findings.push(`forecast deferral lacks scope authorization: ${id}`);
@@ -286,9 +290,7 @@ function gateClaims(c, scope, r) {
     const ci = data.filter(item => item.kind === 'ci'); need(ci.length === 1, 'unique CI receipt required');
     const v = ci[0].value;
     need(v.sha === c.candidate.sha && v.host === c.candidate.destination.host && v.repository === c.candidate.destination.repository && Array.isArray(v.missing) && object(v.conclusions), 'CI receipt candidate/destination/verdict mismatch');
-    if (Object.hasOwn(c.candidate.destination, 'account')) {
-      need(typeof v.account === 'string' && AWS_ACCOUNT_RE.test(v.account) && v.account === c.candidate.destination.account, 'CI receipt candidate/destination account mismatch');
-    }
+    if (Object.hasOwn(c.candidate.destination, 'account')) need(typeof v.account === 'string' && AWS_ACCOUNT_RE.test(v.account) && v.account === c.candidate.destination.account, 'CI receipt candidate/destination account mismatch');
     const passed=v.ok===true && v.ci==='success' && !v.missing.length && Object.keys(v.conclusions).length && Object.entries(v.conclusions).every(([key, verdict]) => /^[^/]+\/.+$/.test(key) && verdict === 'success') && required.every(key => v.conclusions[key] === 'success');
     const failed=v.ok===false && v.ci==='failure' && required.every(key=>text(v.conclusions[key])) && ciWord({ok:false,conclusions:Object.fromEntries(required.map(key=>[key,v.conclusions[key]]))})==='failure';
     need(passed || failed,'required CI check status unknown or inconsistent');
@@ -323,9 +325,7 @@ function releaseClaim(row, scope, r) {
   need(object(c) && object(c.candidate), 'invalid release claim');
   const v = c.candidate;
   need(isAbsolute(v.repository ?? '') && normalize(v.repository) === v.repository && SHA.test(v.sha ?? '') && SHA.test(v.tree ?? '') && text(v.destination?.host) && text(v.destination?.repository), 'invalid candidate identity');
-  if (isCodeCommitHost(v.destination.host) || Object.hasOwn(v.destination, 'account')) {
-    need(typeof v.destination.account === 'string' && AWS_ACCOUNT_RE.test(v.destination.account), 'invalid candidate destination account');
-  }
+  if (isCodeCommitHost(v.destination.host) || Object.hasOwn(v.destination, 'account')) need(typeof v.destination.account === 'string' && AWS_ACCOUNT_RE.test(v.destination.account), 'invalid candidate destination account');
   need(git(v.repository, 'rev-parse', `${v.sha}^{tree}`).toString().trim() === v.tree, 'candidate tree mismatch');
   need(text(c.recipient) && !/^(actor|lead|implementer)(?:-only)?$/i.test(c.recipient) && text(c.channel), 'intended recipient/channel unavailable');
   need(Array.isArray(c.criteriaResults), 'criteria results missing');

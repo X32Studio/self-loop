@@ -1,7 +1,7 @@
 // F-0012
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -12,7 +12,7 @@ import { loadForecastHistory, projectPlanTime, validatePlanTime } from '../lib/p
 const hash = b => createHash('sha256').update(b).digest('hex');
 const at = s => new Date(Date.parse('2026-11-22T00:00:00Z') + s * 1000).toISOString();
 function fixture(t) {
-  const repo = mkdtempSync(join(tmpdir(), 'time-model-')); t.after(() => rmSync(repo, { recursive: true, force: true }));
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), 'time-model-'))); t.after(() => rmSync(repo, { recursive: true, force: true }));
   git(repo, 'init', '-q'); git(repo, 'config', 'user.name', 'Test'); git(repo, 'config', 'user.email', 'test@example.invalid');
   const write = (path, value) => { mkdirSync(dirname(join(repo, path)), { recursive: true }); writeFileSync(join(repo, path), typeof value === 'string' ? value : JSON.stringify(value)); };
   const commit = () => { git(repo, 'add', '.'); git(repo, '-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'fixture'); return git(repo, 'rev-parse', 'HEAD'); };
@@ -181,4 +181,29 @@ test('branch resolution retains per-parent progress instead of flattening histor
   const r = projectPlanTime(state, f.plan, { now: at(3), forecastHistory: history });
   assert.deepEqual(r.history[2].progressComparison.map(c => c.status), ['changed', 'changed']);
   assert.equal(r.forecast.progressComparison[0].status, 'unchanged');
+});
+test('R49-1 forecast arithmetic resolves same-plan handoff-ID needs equivalently without false foreign classification', t => {
+  const fPkg = fixture(t), obsPkg = fPkg.observation();
+  obsPkg.estimates.b.assumptions = [];
+  fPkg.publish(obsPkg);
+  const rPkg = projectPlanTime(snapshot(fPkg.repo), fPkg.plan, { now: at(1) });
+  const f = fixture(t), alt = structuredClone(f.plan);
+  alt.id = 'PL-0002'; alt.supersedes = f.plan.id; alt.time = { schema: 'plan-time/v2', rootPlan: f.plan.id };
+  for (const p of alt.packages) p.handoff = p.handoff.replace('R-0001-', 'R-0002-');
+  alt.packages[1].needs = ['R-0002-actor-a'];
+  alt.packages[3].needs = ['R-0002-actor-a', 'R-0002-actor-b', 'R-0002-actor-c'];
+  alt.packages[4].needs = ['R-0002-critic-cr'];
+  f.write('plans/PL-0002.md', alt); const basedOn = f.commit();
+  const obsHandoff = f.observation();
+  obsHandoff.outlook.basedOn = basedOn; obsHandoff.planRef = f.ref('plans/PL-0002.md', basedOn);
+  obsHandoff.estimates.b.assumptions = [];
+  obsHandoff.outlook.releasePackages = ['R-0002-actor-b', 'c'];
+  f.publish(obsHandoff);
+  const rHandoff = projectPlanTime(snapshot(f.repo), alt, { now: at(1) });
+  assert.equal(rPkg.forecast.earliestAt, at(8)); assert.equal(rPkg.forecast.latestAt, at(11));
+  assert.equal(rHandoff.forecast.earliestAt, rPkg.forecast.earliestAt);
+  assert.equal(rHandoff.forecast.latestAt, rPkg.forecast.latestAt);
+  assert.deepEqual(rHandoff.forecast.unknowns, []);
+  assert.deepEqual(rHandoff.forecast.conditionalOn, rPkg.forecast.conditionalOn);
+  assert.ok(!rHandoff.forecast.conditionalOn.some(c => /b: readiness and external release/.test(c)));
 });

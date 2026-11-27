@@ -1,8 +1,5 @@
 #!/usr/bin/env node
-// D-0004: every pushed branch tip has a higher VERSION and the destination has its tag v<VERSION>. A VERSION is X.Y.Z or
-// X.Y.Z-<prerelease> and versions order by SemVer precedence (lib/version.mjs, D-0015 item 4): a round's candidate can
-// carry a prerelease such as 0.4.4-v1.5 and reach real CI without a release. Every new v* tag and branch tip must pass
-// the suite on the commit it names.
+// D-0004, D-0015, D-0064
 import "./lib/unbind-git.mjs";
 import { spawnSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
@@ -17,13 +14,11 @@ import { suiteGreen, withVersion } from "./suite-green.mjs";
 const ZERO = /^0+$/;
 
 // design/version-tip.md#the-tree-git-publishes
-const local = (repo, ...argv) => spawnSync("git", ["-C", repo, ...argv], { encoding: "utf8", maxBuffer: 1 << 26 });
+const gitEnv = () => ({ GIT_TERMINAL_PROMPT: "0", ...process.env });
+const local = (repo, ...argv) => spawnSync("git", ["-C", repo, ...argv], { encoding: "utf8", maxBuffer: 1 << 26, env: gitEnv() });
 const git = (repo, ...argv) => local(repo, ORIGINAL_OBJECTS, ...argv);
-// The full suite of one commit: its unit tests and, once the critic's acceptance cases exist, those too (brief-shared:
-// both), every *.test.mjs directly in scripts/test and acceptance. Each file is named, so the command is a direct literal
-// node --test that suite-green reuses for the same tree, and no Node version decides the set (Node 24 runs a named
-// directory as its index.js; later Node expands it, nested files included).
 const SUITE_DIRS = ["scripts/test", "acceptance"];
+const isFastPassPath = p => p === "VERSION" || /\.md$/i.test(p) || p.startsWith("docs/");
 function suiteCommand(repo, sha) {
   const files = SUITE_DIRS.flatMap(dir => output(repo, "ls-tree", "-z", sha, "--", `${dir}/`).split("\0")
     .map(entry => entry.split("\t")).filter(([meta, path]) => path?.endsWith(".test.mjs") && meta.split(" ")[1] === "blob")
@@ -44,7 +39,7 @@ const branchRef = branch => `refs/heads/${branch}`;
 
 export function readRemoteRefs(repo, url, refs) {
   const r = spawnSync("git", ["-C", repo, "ls-remote", "--", url, ...refs],
-    { encoding: "utf8", maxBuffer: 1 << 26, timeout: 30_000 });
+    { encoding: "utf8", maxBuffer: 1 << 26, timeout: 30_000, env: gitEnv() });
   if (r.status !== 0) throw new Error("could not read refs from the push destination");
   return new Map(r.stdout.trim().split("\n").filter(Boolean).map(line => {
     const [sha, ref] = line.split("\t");
@@ -61,7 +56,6 @@ const runSuite = (repo, sha) => {
   return result;
 };
 
-/** Every reason to refuse the update set. A single suite run covers each distinct commit in the set. */
 export function pushReasons(repo, updates, remoteRefs, { suite = runSuite } = {}) {
   const reasons = [], candidates = new Map(), pendingTags = new Map();
   for (const { ref, sha, before } of updates.filter(u => isReleaseTag(u.ref))) {
@@ -142,7 +136,6 @@ function release(repo, remote, branch) {
     throw new Error(`could not create ${tag}`);
   if (!updates.length) return 0;
 
-  // Pin both sources to objects. Leases guard the remote facts already validated, even without an installed hook.
   const tagObject = output(repo, "rev-parse", "--verify", "--quiet", tag);
   if (commitOf(repo, tagObject) !== sha) throw new Error(`${tag} changed while preparing the release`);
   const leases = [`--force-with-lease=${ref}:${old ?? ""}`];
@@ -152,7 +145,7 @@ function release(repo, remote, branch) {
     sources.push(`${tagObject}:${tag}`);
   }
   rememberBranchTipsBeforePush(repo, url, updates);
-  const push = spawnSync("git", ["-C", repo, "push", "--atomic", ...leases, "--", remote, ...sources], { stdio: "inherit" });
+  const push = spawnSync("git", ["-C", repo, "push", "--atomic", ...leases, "--", remote, ...sources], { stdio: "inherit", env: gitEnv() });
   if (push.status === 0) rememberGatedPush(repo, url, updates.map(u => u.ref === tag ? { ...u, sha: tagObject } : u));
   return push.status ?? 1;
 }
@@ -215,6 +208,17 @@ function prePush(repo, rest) {
 }
 
 function preCommit(repo, tree) {
+  const headTree = output(repo, "rev-parse", "--verify", "--quiet", "HEAD^{tree}");
+  if (headTree) {
+    const diff = git(repo, "diff-tree", "--no-renames", "--name-only", "-r", "-z", headTree, tree);
+    if (diff.status === 0) {
+      const changed = diff.stdout.split("\0").filter(Boolean);
+      if (changed.length > 0 && changed.every(isFastPassPath)) {
+        console.log("pre-commit: fast-pass (VERSION/docs-only)");
+        return 0;
+      }
+    }
+  }
   const snapshot = git(repo, "commit-tree", tree, "-m", "Test the staged tree");
   if (snapshot.status !== 0) throw new Error(snapshot.stderr.trim());
   const result = runSuite(repo, snapshot.stdout.trim());

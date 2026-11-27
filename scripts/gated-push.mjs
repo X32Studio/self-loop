@@ -9,6 +9,7 @@ import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
 import { fullSha, pushCommit, shownUrl } from "./lib/ci.mjs";
 import { verifyProvenance } from "./lib/provenance.mjs";
 import { discoverLocalLoop, LOOP, loadRegistry, productState, REGISTRY, resolveOwnerStore } from "./lib/registry.mjs";
+import { validateJudgeIndependence, validateModelVendors } from "./lib/vendor.mjs";
 import { lookupSuiteReceipt } from "./suite-green.mjs";
 
 const REMOVED = ["protected", "require", "remote", "records"];
@@ -40,6 +41,8 @@ function provenanceFields(raw) {
     phase: raw?.phase ?? null,
     ...(Object.hasOwn(raw ?? {}, "provenanceBaseline") ? { provenanceBaseline: raw.provenanceBaseline } : {}),
     ...(Object.hasOwn(raw ?? {}, "leadPaths") ? { leadPaths: raw.leadPaths } : {}),
+    ...(Object.hasOwn(raw ?? {}, "judgeIndependence") ? { judgeIndependence: raw.judgeIndependence } : {}),
+    ...(Object.hasOwn(raw ?? {}, "modelVendors") ? { modelVendors: raw.modelVendors } : {}),
   };
 }
 
@@ -70,6 +73,10 @@ function loopForVerify(repo, store) {
   if (!local) return { notRegistered: true };
   try {
     const raw = JSON.parse(readFileSync(local, "utf8"));
+    const pol = validateJudgeIndependence(raw?.judgeIndependence);
+    if (!pol.ok) return { refused: `${local}: ${pol.error}` };
+    const mv = validateModelVendors(raw?.modelVendors);
+    if (!mv.ok) return { refused: `${local}: ${mv.error}` };
     return { loop: { name: "in-repo", records: dirname(local), protected: Array.isArray(raw.protected) ? raw.protected : [], ...provenanceFields(raw) } };
   } catch (e) {
     return { refused: `${local}: ${e.message}` };
@@ -129,6 +136,10 @@ export function policyOf(raw) {
     return { refused: `"gates.require" must be a list of app/name checks, got ${JSON.stringify(gates.require)}. ${MIGRATION}` };
   const remote = gates.remote ?? "origin";
   if (typeof remote !== "string" || !remote) return { refused: `"gates.remote" must name a Git remote, got ${JSON.stringify(gates.remote)}` };
+  const pol = validateJudgeIndependence(raw?.judgeIndependence);
+  if (!pol.ok) return { refused: pol.error };
+  const mv = validateModelVendors(raw?.modelVendors);
+  if (!mv.ok) return { refused: mv.error };
   return {
     remote,
     require: listed.map(spec => spec.trim()).filter(Boolean),
@@ -178,7 +189,7 @@ if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToP
     cfg: { protected: loop.protected, ...provenanceFields(loop) },
     ...(Object.hasOwn(loop, "ssot") ? { ssot: loop.ssot, configFile: loop.configFile } : {}) });
   if (result.refused) {
-    console.error(`Refused: ${result.refused}\nRun suite-green.mjs on the commit; for a protected branch of ${loop.name}, record the judge convergence, push the candidate to a working branch and wait for its checks to pass.`);
+    console.error(`Refused: ${result.refused}\nRun suite-green.mjs on the commit; for a protected branch of ${loop.name}, record a judge convergence or independent no-dispute critic PASS/CONVERGED ruling, push the candidate to a working branch and wait for its checks to pass.`);
     return 2;
   }
   for (const warning of result.warnings ?? []) console.error(warning);

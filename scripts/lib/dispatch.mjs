@@ -1,21 +1,27 @@
-// P-0012, D-0059, D-0060, design/parallel-dispatch.md#1, design/mandatory-control-plane.md#4
+// P-0012, D-0059, D-0060, D-0063, D-0064, D-0066, design/parallel-dispatch.md#1, design/mandatory-control-plane.md#4, design/dispatch.md#file-ownership
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { call, preparedIn, recordCall } from "../call.mjs";
 import { batchesFrom } from "../decisions.mjs";
-import { parseRows, TRAJECTORY } from "../trajectory.mjs";
 import { buildImportGraph } from "./arch-facts.mjs";
 import { node as nodeCommand } from "./commands.mjs";
 import { git, gitOk, regularFiles } from "./git-plumbing.mjs";
 import { HANDOFFS, idOf, parseHandoffs } from "./handoff.mjs";
-import { HANDOFF_ID, loadPlan, PLAN_ID, planContext, plansFrom, readyPlan, recordPath, snapshot } from "./plan.mjs";
+import { isPreparedRunner } from "./paseo.mjs";
+import {
+  criticCausalBase, HANDOFF_ID, isCodeJudge, judgeCoverageProblems, judgeJoinProblems,
+  loadPlan, packageOrder, PLAN_ID, planCallCommand, planContext, planPackageMap, plansFrom,
+  readPlanWindow, readyPlan, recordPath, reviewCoverage, snapshot,
+} from "./plan.mjs";
 import { fileOverlap, globMatch } from "./plan-globs.mjs";
 import { hostLoad, resolveOwnerStore } from "./registry.mjs";
 import { findTranscripts, transcriptEvents } from "./t3-child.mjs";
-import { parseWindows, WINDOWS, windowState } from "./window.mjs";
+
+export { judgeCoverageProblems, judgeJoinProblems, readPlanWindow, reviewCoverage };
 
 const CONTRACT_PTR_RE = /(?:D|F|P)-\d{4}|R-\d{4}-judge(?:-[a-z]+)*|design\/[a-z0-9._-]+\.md(?:#\S+)?/gi;
+const isWriterPkg = p => Boolean(p && (p.role === "actor" || (p.role === "critic" && (p.files ?? []).length > 0)));
 
 const extractContractPointers = text =>
   typeof text === "string" && text.trim() ? [...new Set([...text.matchAll(CONTRACT_PTR_RE)].map(m => m[0]))] : [];
@@ -34,12 +40,12 @@ const matchPackageFiles = (allFiles, patterns) =>
   Array.isArray(patterns) && patterns.length ? allFiles.filter(fp => patterns.some(pat => globMatch(pat, fp))).sort() : [];
 
 export function computeWaves(plan) {
-  const byId = new Map(plan.packages.map(p => [p.id, p])), memo = new Map(), visiting = new Set();
+  const byRef = planPackageMap(plan), memo = new Map(), visiting = new Set();
   const depth = id => {
     if (memo.has(id)) return memo.get(id);
     if (visiting.has(id)) return 0;
     visiting.add(id);
-    const deps = (byId.get(id)?.needs ?? []).filter(d => byId.has(d));
+    const deps = [...new Set((byRef.get(id)?.needs ?? []).map(d => byRef.get(d)?.id).filter(Boolean))];
     const wave = deps.length ? 1 + Math.max(...deps.map(depth)) : 0;
     visiting.delete(id);
     memo.set(id, wave);
@@ -68,15 +74,6 @@ function pairLookup(pairs) {
   const map = new Map();
   for (const pair of pairs) { map.set(`${pair.left}\0${pair.right}`, pair); map.set(`${pair.right}\0${pair.left}`, pair); }
   return (a, b) => map.get(`${a}\0${b}`) ?? null;
-}
-
-function dispatchCommand(cfg, planId, pkg, { base = null } = {}) {
-  const [, round, role, suffix] = HANDOFF_ID.exec(pkg.handoff);
-  const prepare = cfg.agents[pkg.role]?.runner === "t3" ? ["--prepare"] : [];
-  const baseArgs = base ? ["--base", base] : [];
-  const task = resolve(cfg.workDir, pkg.task ?? `tasks/${pkg.handoff}.md`);
-  return nodeCommand("call.mjs", cfg.configFile, role, "--round", String(Number(round)), "--step", role + suffix,
-    ...baseArgs, "--plan", planId, "--package", pkg.id, "--task", task, ...prepare);
 }
 
 // P-0012, D-0059, design/parallel-dispatch.md#2
@@ -110,77 +107,33 @@ export function analyzeDecoupling({ plan, product, base, state = null }) {
 }
 
 // P-0012, D-0059, design/parallel-dispatch.md#3
-export function reviewCoverage(plan, { window = null } = {}) {
-  const actors = plan.packages.filter(p => p.role === "actor");
-  const critics = plan.packages.filter(p => p.role === "critic");
-  const actorIds = new Set(actors.map(p => p.id));
-  const byId = new Map(plan.packages.map(p => [p.id, p]));
-  const reachable = startId => {
-    const found = new Set(), seen = new Set(), stack = [...(byId.get(startId)?.needs ?? [])];
-    while (stack.length) {
-      const id = stack.pop();
-      if (seen.has(id) || !byId.has(id)) continue;
-      seen.add(id);
-      if (actorIds.has(id)) found.add(id);
-      for (const dep of byId.get(id).needs ?? []) stack.push(dep);
-    }
-    return actors.map(a => a.id).filter(id => found.has(id));
-  };
-  const criticRows = critics.map(c => {
-    const explicit = Array.isArray(c.reviews) && c.reviews.length ? [...new Set(c.reviews.filter(id => actorIds.has(id)))] : null;
-    const preActors = actors.filter(a => (a.needs ?? []).includes(c.id)).map(a => a.id);
-    return { id: c.id, handoff: c.handoff, files: c.files ?? [], targets: explicit ?? [...new Set([...reachable(c.id), ...preActors])] };
-  });
-  const criticPairsOverlap = [];
-  for (let i = 0; i < critics.length; i++) {
-    for (let j = i + 1; j < critics.length; j++) {
-      const overlap = fileOverlap(critics[i].files ?? [], critics[j].files ?? []);
-      if (overlap) criticPairsOverlap.push({ left: critics[i].id, right: critics[j].id, overlap });
-    }
-  }
-  const coveredSet = new Set(criticRows.flatMap(c => c.targets));
-  const actorList = actors.map(a => a.id);
-  const coveredActors = actorList.filter(id => coveredSet.has(id));
-  const uncoveredActors = actorList.filter(id => !coveredSet.has(id));
-  const topology = !critics.length || !actors.length ? "none"
-    : uncoveredActors.length || criticPairsOverlap.length ? "partial"
-    : critics.length === 1 ? "unified" : "parallel";
-  return { topology, required: window?.mode !== "slack", actors: actorList, critics: criticRows, coveredActors, uncoveredActors, criticPairsOverlap };
-}
-
-// P-0012, D-0059, design/parallel-dispatch.md#3
-export function readPlanWindow(state, phase, nextRound = 1) {
-  if (!state.files.has(WINDOWS)) return { mode: "normal", active: null, actorBlocked: false };
-  const windows = parseWindows(state.read(WINDOWS), WINDOWS);
-  const rows = state.files.has(TRAJECTORY) ? parseRows(state.read(TRAJECTORY)).filter(r => r.phase === phase) : [];
-  return windowState({ windows, handoffs: handoffsOf(state, phase), rows, phase, nextRound });
-}
-
-// P-0012, D-0059, design/parallel-dispatch.md#3
 export function computeDispatchPlan({ state, plan, context, ready = null, product, base, host, window = null, now = Date.now() }) {
   const ctx = context ?? planContext(state, plan);
   const repo = product ?? ctx.cfg.product;
   const resolvedHost = host ?? hostLoad({ cfg: ctx.cfg, store: resolveOwnerStore() });
-  const win = window ?? readPlanWindow(state, plan.phase);
+  const phaseHandoffs = handoffsOf(state, plan.phase);
+  const win = window ?? readPlanWindow(state, plan.phase, 1, { handoffs: phaseHandoffs, rows: ctx.trajectory });
   const analysisBase = base ?? (gitOk(repo, "rev-parse", "--verify", "--quiet", `${ctx.cfg.branch ?? "HEAD"}^{commit}`)
     ? git(repo, "rev-parse", `${ctx.cfg.branch ?? "HEAD"}^{commit}`)
     : git(repo, "rev-parse", "HEAD"));
-  const resolvedReady = ready ?? readyPlan(state, plan, { context: ctx, host: resolvedHost, base, now });
+  const resolvedReady = ready ?? readyPlan(state, plan, { context: ctx, host: resolvedHost, base, window: win, now });
   const decoupling = analyzeDecoupling({ plan, product: repo, base: analysisBase, state });
   const coverage = reviewCoverage(plan, { window: win });
   const waveMap = computeWaves(plan);
   const pkgById = new Map(plan.packages.map(p => [p.id, p]));
   const pairOf = pairLookup(decoupling.pairs);
-  const handoffById = new Map(handoffsOf(state, plan.phase).map(h => [h.id, h]));
+  const handoffById = new Map(phaseHandoffs.map(h => [h.id, h]));
 
-  const landedActors = plan.packages.filter(p => p.role === "actor").flatMap(p => {
+  const landedWriters = plan.packages.filter(p => p.role === "actor" || p.role === "critic").flatMap(p => {
     const h = handoffById.get(p.handoff);
-    return h?.product?.commit ? [{ id: p.id, handoff: h.id, wave: waveMap.get(p.id), base: h.product.base, commit: h.product.commit, changed: h.product.commit !== h.product.base }] : [];
+    return h?.product?.commit && (p.role === "actor" || h.product.commit !== h.product.base)
+      ? [{ id: p.id, role: p.role, handoff: h.id, wave: waveMap.get(p.id), base: h.product.base, commit: h.product.commit, changed: h.product.commit !== h.product.base }] : [];
   });
+  const landedActors = landedWriters.filter(w => w.role === "actor");
   const isMergedInto = (sha, target) => Boolean(target && gitOk(repo, "merge-base", "--is-ancestor", sha, target));
-  const unmergedActors = landedActors.filter(a => a.changed && !isMergedInto(a.commit, base));
-  const needsIntegration = unmergedActors.length > 0;
-  const landedById = new Map(landedActors.map(a => [a.id, a]));
+  const unmergedWriters = landedWriters.filter(w => (w.role === "actor" || w.changed) && !isMergedInto(w.commit, base));
+  const unmergedActors = unmergedWriters.filter(w => w.role === "actor");
+  const needsIntegration = unmergedWriters.length > 0;
   const criticTargetsById = new Map(coverage.critics.map(c => [c.id, c.targets]));
 
   const liveActors = resolvedReady.packages.filter(r => r.role === "actor" && r.status === "running").map(r => r.id);
@@ -197,31 +150,34 @@ export function computeDispatchPlan({ state, plan, context, ready = null, produc
       continue;
     }
     const pkg = pkgById.get(row.id);
-    batchActors.push({ id: row.id, handoff: row.handoff, role: "actor", wave: waveMap.get(row.id), files: pkg.files ?? [], command: dispatchCommand(ctx.cfg, plan.id, pkg) });
+    batchActors.push({ id: row.id, handoff: row.handoff, role: "actor", wave: waveMap.get(row.id), files: pkg.files ?? [], command: planCallCommand(ctx.cfg, plan.id, pkg) });
   }
 
   for (const row of sortedReady("critic")) {
-    const pkg = pkgById.get(row.id);
-    const targets = criticTargetsById.get(row.id) ?? [];
-    const coveredChanged = targets.map(id => landedById.get(id)).filter(a => a?.changed);
-    if (coveredChanged.length >= 2 && coveredChanged.some(a => !isMergedInto(a.commit, base))) continue;
+    const pkg = pkgById.get(row.id), targets = criticTargetsById.get(row.id) ?? [];
+    const cb = criticCausalBase(plan, pkg, { repo, handoffs: phaseHandoffs, base });
+    if (!cb.ok) continue;
     const peers = [...liveCritics, ...batchCritics.map(c => c.id)];
     if (peers.some(peerId => fileOverlap(pkg.files ?? [], pkgById.get(peerId)?.files ?? []) !== null)) continue;
-    const pinnedBase = coveredChanged.length === 1 && !isMergedInto(coveredChanged[0].commit, base) ? coveredChanged[0].commit : null;
-    batchCritics.push({ id: row.id, handoff: row.handoff, role: "critic", wave: waveMap.get(row.id), targets, files: pkg.files ?? [], command: dispatchCommand(ctx.cfg, plan.id, pkg, { base: pinnedBase }) });
+    batchCritics.push({ id: row.id, handoff: row.handoff, role: "critic", wave: waveMap.get(row.id), targets, files: pkg.files ?? [], command: planCallCommand(ctx.cfg, plan.id, pkg, { base: cb.pinned ? cb.base : null }) });
   }
 
   const judgeBlockedReasons = [];
-  if (plan.packages.some(p => p.role === "judge")) {
-    for (const a of unmergedActors) judgeBlockedReasons.push(`landed actor ${a.id} (${a.handoff} @ ${a.commit.slice(0, 12)}) is not merged into integration base`);
-    for (const c of coverage.critics) if (c.targets.length > 0 && !handoffById.has(c.handoff)) judgeBlockedReasons.push(`critic ${c.id} (${c.handoff}, covering ${c.targets.join(", ")}) has not recorded its handoff`);
-    if (coverage.required && coverage.uncoveredActors.length > 0) judgeBlockedReasons.push(`uncovered actor package(s): ${coverage.uncoveredActors.join(", ")}`);
+  if (plan.packages.some(isCodeJudge)) {
+    for (const jp of judgeJoinProblems(plan, { repo, handoffs: phaseHandoffs, base, window: win, coverage })) {
+      judgeBlockedReasons.push(jp.detail);
+    }
+    if (!base) {
+      for (const w of unmergedWriters) judgeBlockedReasons.push(`landed ${w.role} ${w.id} (${w.handoff} @ ${w.commit.slice(0, 12)}) is not merged into integration base`);
+    }
   }
 
   const waveBuckets = new Map();
   const packages = resolvedReady.packages.map(row => {
     const wave = waveMap.get(row.id), pkg = pkgById.get(row.id);
-    const entry = { ...row, wave, files: pkg.files ?? [], ...(row.status === "ready" ? { dispatchCommand: dispatchCommand(ctx.cfg, plan.id, pkg, { base: row.role === "judge" ? base : null }) } : {}) };
+    const cb = row.status === "ready" && row.role === "critic" ? criticCausalBase(plan, pkg, { repo, handoffs: phaseHandoffs, base }) : null;
+    const rowBase = row.role === "judge" ? base : cb?.ok && cb.pinned ? cb.base : null;
+    const entry = { ...row, wave, files: pkg.files ?? [], ...(row.status === "ready" ? { dispatchCommand: planCallCommand(ctx.cfg, plan.id, pkg, { base: rowBase }) } : {}) };
     if (!waveBuckets.has(wave)) waveBuckets.set(wave, []);
     waveBuckets.get(wave).push(entry);
     return entry;
@@ -232,7 +188,7 @@ export function computeDispatchPlan({ state, plan, context, ready = null, produc
     plan: plan.id, scope: plan.scope, phase: plan.phase, revision: state.revision, base, analysisBase,
     decoupling, coverage, waves, packages,
     parallelBatch: { actors: batchActors, critics: batchCritics, blockedCoupling },
-    landedActors, unmergedActors, needsIntegration,
+    landedActors, unmergedActors, unmergedWriters, needsIntegration,
     integrateCommand: needsIntegration ? nodeCommand("dispatch.mjs", "integrate", "--records", state.records, "--plan", plan.id, "--apply") : null,
     judgeBlockedReasons, host: resolvedHost,
   };
@@ -255,12 +211,12 @@ export function validateDispatchCall({ cfg, state, planId, packageId, role, step
 
   const phaseHandoffs = handoffsOf(state, cfg.phase);
   const completed = new Set(phaseHandoffs.map(h => h.id));
-  const byId = new Map(plan.packages.map(p => [p.id, p]));
+  const byRef = planPackageMap(plan);
   const batches = batchesFrom([...state.files], state.read);
   for (const need of pkg.needs ?? []) {
-    if (byId.has(need)) {
-      const dep = byId.get(need);
-      if (!completed.has(dep.handoff)) errors.push(`G2 unmet dependency ${need} (${dep.handoff}) has no recorded handoff`);
+    const dep = byRef.get(need);
+    if (dep) {
+      if (!completed.has(dep.handoff)) errors.push(`G2 unmet dependency ${dep.id} (${dep.handoff}) has no recorded handoff`);
     } else if (/^B-\d{4}$/.test(need) && !batches.find(b => b.id === need)?.answered) {
       errors.push(`G2 unmet owner batch ${need} is not answered`);
     }
@@ -286,7 +242,7 @@ export function validateDispatchCall({ cfg, state, planId, packageId, role, step
       const allRepoFiles = regularFiles(cfg.product, base).map(f => f.path);
       const ownSet = new Set(decoupling.matchedFiles[pkg.id] ?? []);
       for (const w of peerActors) {
-        const peerPkg = (w.dispatch?.plan === plan.id && byId.get(w.dispatch.package)) || plan.packages.find(q => q.handoff === w.id) || null;
+        const peerPkg = (w.dispatch?.plan === plan.id && byRef.get(w.dispatch.package)) || byRef.get(w.id) || null;
         if (peerPkg && peerPkg.id !== pkg.id) {
           const pair = pairOf(pkg.id, peerPkg.id);
           if (pair?.kind === "undeclared-coupled") {
@@ -303,45 +259,60 @@ export function validateDispatchCall({ cfg, state, planId, packageId, role, step
     }
   }
 
-  if (role === "judge") {
-    const handoffById = new Map(phaseHandoffs.map(h => [h.id, h]));
-    for (const p of plan.packages) {
-      if (p.role !== "actor") continue;
-      const h = handoffById.get(p.handoff);
-      if (h?.product?.commit && !gitOk(cfg.product, "merge-base", "--is-ancestor", h.product.commit, base)) {
-        errors.push(`G7 judge join barrier: landed actor ${p.id} (${h.id} @ ${h.product.commit.slice(0, 12)}) is not an ancestor of --base ${base.slice(0, 12)}`);
-      }
-    }
-    const cov = reviewCoverage(plan, { window: window ?? readPlanWindow(state, cfg.phase, round) });
-    for (const c of cov.critics) if (c.targets.length > 0 && !completed.has(c.handoff)) errors.push(`G7 judge join barrier: scheduled critic ${c.id} (${c.handoff}) has no recorded handoff`);
-    if (cov.required && cov.uncoveredActors.length > 0) errors.push(`G7 judge join barrier: actor package(s) lack critic coverage: ${cov.uncoveredActors.join(", ")}`);
+  if (role === "critic" && base) {
+    const cb = criticCausalBase(plan, pkg, { repo: cfg.product, handoffs: phaseHandoffs, base });
+    if (cb.missing.length > 0) errors.push(`G2 critic causal base: ${cb.detail}`);
   }
 
-  const peerFiles = plan.packages.filter(p => p.id !== pkg.id).flatMap(p => p.files ?? []);
+  if (isCodeJudge(pkg)) {
+    const win = window ?? readPlanWindow(state, cfg.phase, round, { handoffs: phaseHandoffs });
+    for (const jp of judgeJoinProblems(plan, { repo: cfg.product, handoffs: phaseHandoffs, base, window: win })) {
+      errors.push(`G7 judge join barrier: ${jp.detail}`);
+    }
+  }
+
+  const peerFiles = [...new Set(plan.packages.filter(p => p.id !== pkg.id).flatMap(p => p.files ?? []))];
   return { ok: errors.length === 0, errors, plan, pkg, peerFiles, scopeFiles };
 }
+
+function writerBranch(cfg) {
+  const hasBranch = Boolean(cfg.branch && gitOk(cfg.product, "show-ref", "--verify", "--quiet", `refs/heads/${cfg.branch}`));
+  const branchRef = hasBranch && !(cfg.protected ?? []).includes(cfg.branch) ? cfg.branch : null;
+  const branchHead = branchRef ? git(cfg.product, "rev-parse", `refs/heads/${branchRef}`) : null;
+  const refHead = branchHead ?? (hasBranch ? git(cfg.product, "rev-parse", `refs/heads/${cfg.branch}`)
+    : gitOk(cfg.product, "rev-parse", "--verify", "--quiet", "HEAD^{commit}") ? git(cfg.product, "rev-parse", "HEAD^{commit}") : null);
+  return { branchRef, branchHead, refHead };
+}
+const integratesHandoff = (repo, pkg, h, refHead) => Boolean(h?.product?.commit
+  && (h.product.commit !== h.product.base || (pkg.role === "actor" && refHead && !gitOk(repo, "merge-base", "--is-ancestor", h.product.commit, refHead))));
 
 // P-0012, D-0059, design/parallel-dispatch.md#4
 export function integrateWave({ cfg, state, plan, wave = null, apply = false }) {
   const waveMap = computeWaves(plan);
-  const planActors = plan.packages.filter(p => p.role === "actor" && (wave === null || waveMap.get(p.id) === wave));
-  if (!planActors.length) return { ok: false, conflicts: [], message: `no actor packages in ${plan.id}${wave !== null ? ` wave ${wave}` : ""}` };
+  const planWriters = plan.packages.filter(p => isWriterPkg(p) && (wave === null || waveMap.get(p.id) === wave));
+  if (!planWriters.length) return { ok: false, conflicts: [], message: `no writer packages in ${plan.id}${wave !== null ? ` wave ${wave}` : ""}` };
   const handoffById = new Map(handoffsOf(state, plan.phase).map(h => [h.id, h]));
   if (wave !== null) {
-    const missing = planActors.filter(p => !handoffById.has(p.handoff)).map(p => `${p.id} (${p.handoff})`);
+    const missing = planWriters.filter(p => !handoffById.has(p.handoff)).map(p => `${p.id} (${p.handoff})`);
     if (missing.length) return { ok: false, conflicts: [], message: `wave ${wave} is incomplete; missing handoff(s): ${missing.join(", ")}` };
   }
-  const landed = planActors.flatMap(p => {
+  const { branchRef, branchHead, refHead } = writerBranch(cfg);
+  const landed = planWriters.flatMap(p => {
     const h = handoffById.get(p.handoff);
-    if (!h?.product?.commit || h.product.commit === h.product.base) return [];
-    const files = git(cfg.product, "diff", "--name-only", `${h.product.base}..${h.product.commit}`).split("\n").filter(Boolean);
-    return [{ id: p.id, handoff: h.id, wave: waveMap.get(p.id), base: h.product.base, commit: h.product.commit, files }];
+    if (!integratesHandoff(cfg.product, p, h, refHead)) return [];
+    const files = h.product.commit === h.product.base ? [] : git(cfg.product, "diff", "--name-only", `${h.product.base}..${h.product.commit}`).split("\n").filter(Boolean);
+    return [{ id: p.id, role: p.role, handoff: h.id, wave: waveMap.get(p.id), base: h.product.base, commit: h.product.commit, files }];
   });
-  if (!landed.length) return { ok: false, conflicts: [], message: `no landed actor commits to integrate for ${plan.id}${wave !== null ? ` wave ${wave}` : ""}` };
+  if (!landed.length) return { ok: false, conflicts: [], message: `no landed writer commits to integrate for ${plan.id}${wave !== null ? ` wave ${wave}` : ""}` };
+  const { ordered } = packageOrder(plan);
   const conflicts = [];
   for (let i = 0; i < landed.length; i++) {
     const aSet = new Set(landed[i].files);
     for (let j = i + 1; j < landed.length; j++) {
+      if (ordered(landed[i].id, landed[j].id) && (
+        gitOk(cfg.product, "merge-base", "--is-ancestor", landed[i].commit, landed[j].commit)
+        || gitOk(cfg.product, "merge-base", "--is-ancestor", landed[j].commit, landed[i].commit)
+      )) continue;
       const shared = landed[j].files.filter(f => aSet.has(f));
       if (shared.length) conflicts.push({ left: landed[i].id, right: landed[j].id, files: shared });
     }
@@ -349,11 +320,8 @@ export function integrateWave({ cfg, state, plan, wave = null, apply = false }) 
   if (conflicts.length) {
     return { ok: false, disjoint: false, conflicts, commits: landed, message: `overlapping modified files across wave actors: ${conflicts.map(c => `${c.left}/${c.right}: ${c.files.join(", ")}`).join("; ")}` };
   }
-
-  const branchRef = cfg.branch && !(cfg.protected ?? []).includes(cfg.branch)
-    && gitOk(cfg.product, "show-ref", "--verify", "--quiet", `refs/heads/${cfg.branch}`) ? cfg.branch : null;
-  const branchHead = branchRef ? git(cfg.product, "rev-parse", `refs/heads/${branchRef}`) : null;
-  const candidates = [...new Set([...(branchHead ? [branchHead] : []), ...landed.map(a => a.commit)])];
+  const actorCommits = branchHead ? [] : planWriters.filter(p => p.role === "actor").map(p => handoffById.get(p.handoff)?.product?.commit).filter(Boolean);
+  const candidates = [...new Set([...(branchHead ? [branchHead] : []), ...landed.map(a => a.commit), ...actorCommits])];
   const independent = candidates.length > 1 ? git(cfg.product, "merge-base", "--independent", ...candidates).split("\n").filter(Boolean) : candidates;
   const parents = branchHead && independent.includes(branchHead) ? [branchHead, ...independent.filter(sha => sha !== branchHead)] : independent;
 
@@ -386,7 +354,7 @@ export function renderDispatchLines(dp) {
     lines.push(`Parallel actor batch (${dp.parallelBatch.actors.length}): ${dp.parallelBatch.actors.map(a => `${a.id}[w${a.wave}]`).join(", ")}`, ...dp.parallelBatch.actors.map(a => `  ${a.command}`));
   }
   for (const b of dp.parallelBatch.blockedCoupling) lines.push(`Coupling guard blocked ${b.id} against ${b.peer}: ${b.edges.map(e => `${e.from} -> ${e.to}`).join(", ")}`);
-  if (dp.needsIntegration && dp.integrateCommand) lines.push(`Wave integration needed (${dp.unmergedActors.map(a => `${a.id}@${a.commit.slice(0, 12)}`).join(", ")}):`, `  ${dp.integrateCommand}`);
+  if (dp.needsIntegration && dp.integrateCommand) lines.push(`Wave integration needed (${(dp.unmergedWriters ?? dp.unmergedActors).map(a => `${a.id}@${a.commit.slice(0, 12)}`).join(", ")}):`, `  ${dp.integrateCommand}`);
   if (dp.parallelBatch.critics.length) {
     lines.push(`Parallel critic batch (${dp.parallelBatch.critics.length}, topology ${dp.coverage.topology}): ${dp.parallelBatch.critics.map(c => `${c.id}[w${c.wave}]`).join(", ")}`, ...dp.parallelBatch.critics.map(c => `  ${c.command}`));
   }
@@ -414,10 +382,12 @@ function materializeTask(cfg, state, plan, pkg) {
 }
 
 // D-0060, design/mandatory-control-plane.md#4
-export function prepareWave({ cfg, state, plan, context = null, wave = null, base = null, readyBase = undefined, host = null, now = Date.now(), log = () => {} }) {
+export function prepareWave({ cfg, state, plan, context = null, wave = null, base = null, readyBase = undefined, host = null, window = null, now = Date.now(), log = () => {} }) {
   const ctx = context ?? { ...planContext(state, plan), cfg };
   const resolvedBase = readyBase !== undefined ? readyBase : base;
-  const ready = readyPlan(state, plan, { context: ctx, host: host ?? hostLoad({ cfg, store: resolveOwnerStore() }), base: resolvedBase, now });
+  const phaseHandoffs = handoffsOf(state, plan.phase);
+  const win = window ?? readPlanWindow(state, plan.phase, 1, { handoffs: phaseHandoffs, rows: ctx.trajectory });
+  const ready = readyPlan(state, plan, { context: ctx, host: host ?? hostLoad({ cfg, store: resolveOwnerStore() }), base: resolvedBase, window: win, now });
   const waveMap = computeWaves(plan), pkgById = new Map(plan.packages.map(p => [p.id, p]));
   const eligible = ready.packages
     .filter(r => r.status === "ready" || (r.status === "waiting" && r.holds.length > 0 && r.holds.every(h => h.kind === "task")))
@@ -425,12 +395,17 @@ export function prepareWave({ cfg, state, plan, context = null, wave = null, bas
     .sort((a, b) => waveMap.get(a.id) - waveMap.get(b.id));
   const prepared = [], errors = [];
   for (const row of eligible) {
-    const pkg = pkgById.get(row.id), taskFile = materializeTask(cfg, state, plan, pkg);
-    const [, round, role, suffix] = HANDOFF_ID.exec(pkg.handoff);
-    const callBase = base ?? (role === "judge" ? resolvedBase : null) ?? undefined;
+    const pkg = pkgById.get(row.id), [, round, role, suffix] = HANDOFF_ID.exec(pkg.handoff);
+    let callBase = base ?? (role === "judge" ? resolvedBase : null) ?? undefined;
+    if (role === "critic") {
+      const cb = criticCausalBase(plan, pkg, { repo: cfg.product, handoffs: phaseHandoffs, base: base ?? resolvedBase });
+      if (!base && !cb.ok) { errors.push({ id: pkg.id, handoff: pkg.handoff, role, code: 1, message: cb.detail }); continue; }
+      callBase = base ?? (cb.pinned ? cb.base : null) ?? undefined;
+    }
+    const taskFile = materializeTask(cfg, state, plan, pkg);
     const res = call(cfg, role, {
       round: Number(round), step: role + suffix, task: readFileSync(taskFile, "utf8"),
-      base: callBase, prepare: cfg.agents[role]?.runner === "t3", plan: plan.id, package: pkg.id,
+      base: callBase, prepare: isPreparedRunner(cfg.agents[role]?.runner), plan: plan.id, package: pkg.id,
     }, { log });
     if (res.code !== 0) errors.push({ id: pkg.id, handoff: pkg.handoff, role, code: res.code, message: res.message });
     else if (res.prepared) prepared.push({ ...res.prepared, id: pkg.id, handoff: pkg.handoff, role, wave: waveMap.get(pkg.id), taskFile });
@@ -441,18 +416,18 @@ export function prepareWave({ cfg, state, plan, context = null, wave = null, bas
 
 // D-0060, R-0019-reviewer-architecture, design/mandatory-control-plane.md#4
 export function recordWave({ cfg, state, plan, wave = null, integrate = false, log = () => {} }) {
-  const waveMap = computeWaves(plan), pkgById = new Map(plan.packages.map(p => [p.id, p])), pkgByHandoff = new Map(plan.packages.map(p => [p.handoff, p]));
+  const waveMap = computeWaves(plan), byRef = planPackageMap(plan);
   const done = new Set(handoffsOf(state, plan.phase).map(h => h.id));
   const candidates = preparedIn(cfg).filter(w => {
     if (!w.liveWorkspace || done.has(w.id)) return false;
-    const pkg = (w.dispatch?.plan === plan.id && pkgById.get(w.dispatch.package)) || (!w.dispatch && pkgByHandoff.get(w.id)) || null;
+    const pkg = (w.dispatch?.plan === plan.id && byRef.get(w.dispatch.package)) || (!w.dispatch && byRef.get(w.id)) || null;
     return Boolean(pkg && (wave === null || waveMap.get(pkg.id) === wave));
   });
   const recorded = [], pending = [], errors = [];
   for (const w of candidates) {
-    const pkg = pkgById.get(w.dispatch?.package) ?? pkgByHandoff.get(w.id), provider = w.agent?.provider;
-    if (!provider) { errors.push({ id: pkg.id, handoff: w.id, ws: w.ws, code: 1, message: "prepared call has no t3 provider" }); continue; }
-    const matches = findTranscripts(provider, w.nonce, w.preparedAt);
+    const pkg = byRef.get(w.dispatch?.package) ?? byRef.get(w.id), provider = w.agent?.provider;
+    if (!provider) { errors.push({ id: pkg.id, handoff: w.id, ws: w.ws, code: 1, message: "prepared call has no t3/paseo provider" }); continue; }
+    const matches = findTranscripts(w.agent, w.nonce, w.preparedAt);
     if (!matches.length) { pending.push({ id: pkg.id, handoff: w.id, ws: w.ws, reason: "no matching transcript" }); continue; }
     if (matches.length > 1) { errors.push({ id: pkg.id, handoff: w.id, ws: w.ws, code: 1, message: `ambiguous: ${matches.length} transcripts match nonce ${w.nonce}` }); continue; }
     if (transcriptEvents(w.id, matches[0]).status === "pending") { pending.push({ id: pkg.id, handoff: w.id, ws: w.ws, session: matches[0].session, reason: "transcript pending" }); continue; }
@@ -462,11 +437,13 @@ export function recordWave({ cfg, state, plan, wave = null, integrate = false, l
   }
   let integration = null;
   if (integrate && !errors.length) {
-    const fresh = snapshot(cfg.records), doneAfter = new Set(handoffsOf(fresh, plan.phase).map(h => h.id));
-    const actorWaves = [...new Set(recorded.filter(r => r.role === "actor").map(r => r.wave))];
-    const targetWave = wave ?? (actorWaves.length === 1 ? actorWaves[0] : null);
-    const actors = plan.packages.filter(p => p.role === "actor" && (targetWave === null || waveMap.get(p.id) === targetWave));
-    if (actors.length && actors.every(p => doneAfter.has(p.handoff))) {
+    const fresh = snapshot(cfg.records), freshHandoffs = handoffsOf(fresh, plan.phase);
+    const doneAfter = new Map(freshHandoffs.map(h => [h.id, h]));
+    const writerWaves = [...new Set(recorded.filter(r => isWriterPkg(byRef.get(r.id))).map(r => r.wave))];
+    const targetWave = wave ?? (writerWaves.length === 1 ? writerWaves[0] : null);
+    const writers = plan.packages.filter(p => isWriterPkg(p) && (targetWave === null || waveMap.get(p.id) === targetWave));
+    const { refHead } = writerBranch(cfg);
+    if (writers.length && writers.every(p => doneAfter.has(p.handoff)) && writers.some(p => integratesHandoff(cfg.product, p, doneAfter.get(p.handoff), refHead))) {
       integration = integrateWave({ cfg, state: fresh, plan, wave: targetWave, apply: true });
       if (!integration.ok) errors.push({ id: "integrate", handoff: null, code: 1, message: integration.message });
     }

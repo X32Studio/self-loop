@@ -1,5 +1,4 @@
-// F-0009, F-0010, D-0052, D-0060, R-0032-reviewer-architecture, design/antigravity-harness.md#hooks-cli
-import { spawnSync } from "node:child_process";
+// F-0009, F-0010, D-0052, D-0060, D-0066, D-0067, R-0032-reviewer-architecture, design/antigravity-harness.md#hooks-cli
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -8,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, UsageError } from "./args.mjs";
 import { command } from "./commands.mjs";
 import { ensureExcludeEntry, gitIgnoreTarget, removeExcludeEntry } from "./git-exclude.mjs";
+import { gitOk, run } from "./git-plumbing.mjs";
 import { geminiHome, t3AntigravityInstances, VERIFIED_ANTIGRAVITY_LS_VERSION } from "./antigravity.mjs";
 import { canonical, commonGitDir } from "./path-canonical.mjs";
 import { loadHookStore } from "./registry.mjs";
@@ -16,6 +16,17 @@ export const HOOK_KEY = "self-loop";
 export const EXCLUDE_MARKER = "# self-loop managed: antigravity hooks";
 export const ANTIGRAVITY_TEMPLATE = fileURLToPath(new URL("../../assets/antigravity/hooks.json", import.meta.url));
 const WORKSPACE_SKILL_DIRS = [".agents", ".agent", "_agents", "_agent"];
+
+function antigravityHome(env = process.env) {
+  return typeof env?.ANTIGRAVITY_HOME === "string" && env.ANTIGRAVITY_HOME.trim()
+    ? resolve(env.ANTIGRAVITY_HOME)
+    : null;
+}
+
+function antigravityHomeHooksFile(env = process.env) {
+  const agHome = antigravityHome(env);
+  return agHome ? join(agHome, "config", "hooks.json") : null;
+}
 
 export class HooksError extends Error {
   constructor(message, code = 2) { super(message); this.code = code; }
@@ -171,16 +182,16 @@ function writeAtomic(file, content) {
 
 function otherWorktreesNeedExclude(info) {
   if (!info) return false;
-  const listed = spawnSync("git", ["-C", info.repo.top, "worktree", "list", "--porcelain", "-z"], { encoding: "utf8" });
-  if (listed.status !== 0) return false;
+  let stdout;
+  try { stdout = run("git", ["-C", info.repo.top, "worktree", "list", "--porcelain", "-z"], { encoding: "utf8" }); }
+  catch { return false; }
   const currentTop = canonical(info.repo.top);
-  for (const entry of listed.stdout.split("\0")) {
+  for (const entry of stdout.split("\0")) {
     if (!entry.startsWith("worktree ")) continue;
     const wtTop = entry.slice("worktree ".length);
     if (!wtTop || canonical(wtTop) === currentTop) continue;
     if (!existsSync(join(wtTop, info.rel))) continue;
-    const tracked = spawnSync("git", ["-C", wtTop, "ls-files", "--error-unmatch", "--", info.rel], { encoding: "utf8" }).status === 0;
-    if (!tracked) return true;
+    if (!gitOk(wtTop, "ls-files", "--error-unmatch", "--", info.rel)) return true;
   }
   return false;
 }
@@ -265,6 +276,15 @@ function validateSelfLoopEntry(entry, file, { checkDisk = true } = {}) {
   return findings;
 }
 
+function globalHookTargets({ harness, adapter, scope, target, cfg, env, cwd }) {
+  const primary = adapter.resolveTarget({ scope, target, cfg, env, cwd });
+  if (harness === "antigravity" && scope === "global" && !target) {
+    const agFile = antigravityHomeHooksFile(env);
+    if (agFile && canonical(agFile) !== canonical(primary)) return [primary, agFile];
+  }
+  return [primary];
+}
+
 export function discoverSkill({ cwd = null, product = null, env = process.env } = {}) {
   const checked = [];
   const start = product || cwd;
@@ -280,11 +300,17 @@ export function discoverSkill({ cwd = null, product = null, env = process.env } 
       if (canonical(dir) === stop || dirname(dir) === dir) break;
     }
   }
-  const globals = [
+  const agHome = antigravityHome(env);
+  const rawGlobals = [
+    ...(agHome ? [join(agHome, "config", "skills", "self-loop", "SKILL.md")] : []),
     join(geminiHome(env), "config", "skills", "self-loop", "SKILL.md"),
     join(env?.HOME || homedir(), ".agents", "skills", "self-loop", "SKILL.md"),
   ];
-  for (const candidate of globals) {
+  const seenGlobals = new Set();
+  for (const candidate of rawGlobals) {
+    const key = canonical(candidate);
+    if (seenGlobals.has(key)) continue;
+    seenGlobals.add(key);
     checked.push(candidate);
     if (existsSync(candidate)) return { discovered: true, path: candidate, checked };
   }
@@ -293,29 +319,46 @@ export function discoverSkill({ cwd = null, product = null, env = process.env } 
 
 export function installHooks({ harness, scope = "workspace", target = null, cfg = null, settings = null, ownerStore = null, scriptsDir, env = process.env, cwd = process.cwd(), dryRun = false }) {
   const adapter = getHarness(harness);
-  const file = adapter.resolveTarget({ scope, target, cfg, env, cwd });
-  const ignoreInfo = gitIgnoreTarget(file);
-  if (ignoreInfo && isGitTracked(ignoreInfo)) {
-    throw new HooksError(`${file}: tracked by Git; refusing to modify tracked user hooks (use --scope global or merge the "${HOOK_KEY}" entry manually)`, 2);
-  }
-  const { data } = readJsonObject(file);
+  const files = globalHookTargets({ harness, adapter, scope, target, cfg, env, cwd });
   const rendered = adapter.render({ cfg, settings, ownerStore, scriptsDir });
-  const next = { ...data, [HOOK_KEY]: rendered[HOOK_KEY] };
-  const content = `${JSON.stringify(next, null, 2)}\n`;
+  const plans = files.map(file => {
+    const ignoreInfo = gitIgnoreTarget(file);
+    if (ignoreInfo && isGitTracked(ignoreInfo)) {
+      throw new HooksError(`${file}: tracked by Git; refusing to modify tracked user hooks (use --scope global or merge the "${HOOK_KEY}" entry manually)`, 2);
+    }
+    const { data } = readJsonObject(file);
+    const next = { ...data, [HOOK_KEY]: rendered[HOOK_KEY] };
+    return { file, ignoreInfo, content: `${JSON.stringify(next, null, 2)}\n` };
+  });
+  const primary = plans[0];
+  const extra = files.length > 1 ? { targets: files } : {};
+  const scopeOut = target ? "target" : scope;
   if (dryRun) {
-    return {
-      action: "install",
-      harness,
-      scope: target ? "target" : scope,
-      target: file,
-      dryRun: true,
-      content,
-      exclude: ignoreInfo ? { excludeFile: ignoreInfo.excludeFile, pattern: ignoreInfo.pattern, needed: !ignoreInfo.ignored } : null,
-    };
+    const exclude = primary.ignoreInfo ? { excludeFile: primary.ignoreInfo.excludeFile, pattern: primary.ignoreInfo.pattern, needed: !primary.ignoreInfo.ignored } : null;
+    return { action: "install", harness, scope: scopeOut, target: primary.file, ...extra, dryRun: true, content: primary.content, exclude };
   }
-  writeAtomic(file, content);
-  const exclude = ensureExcludeEntry(ignoreInfo, { marker: EXCLUDE_MARKER });
-  return { action: "install", harness, scope: target ? "target" : scope, target: file, dryRun: false, exclude };
+  let primaryExclude = null;
+  for (let i = 0; i < plans.length; i++) {
+    writeAtomic(plans[i].file, plans[i].content);
+    const exclude = ensureExcludeEntry(plans[i].ignoreInfo, { marker: EXCLUDE_MARKER });
+    if (i === 0) primaryExclude = exclude;
+  }
+  return { action: "install", harness, scope: scopeOut, target: primary.file, ...extra, dryRun: false, exclude: primaryExclude };
+}
+
+function checkSecondaryHooksFile(file, label, findings) {
+  if (!existsSync(file)) { findings.push(`${label} is missing ${HOOK_KEY} hooks (${file})`); return; }
+  try {
+    const { data } = readJsonObject(file);
+    const errs = validateSelfLoopEntry(data[HOOK_KEY], file);
+    if (errs.length) findings.push(`${label} has unhealthy ${HOOK_KEY} hooks: ${errs[0]}`);
+  } catch (error) {
+    findings.push(`${label}: ${error.message}`);
+  }
+  const ignoreInfo = gitIgnoreTarget(file);
+  if (ignoreInfo && !ignoreInfo.ignored && !isGitTracked(ignoreInfo)) {
+    findings.push(`${file}: untracked and not git-ignored (${ignoreInfo.pattern} missing from ${ignoreInfo.excludeFile})`);
+  }
 }
 
 export function checkHooks({ harness, scope = "workspace", target = null, cfg = null, ownerStore = null, env = process.env, cwd = process.cwd() }) {
@@ -325,12 +368,8 @@ export function checkHooks({ harness, scope = "workspace", target = null, cfg = 
   if (!existsSync(file)) {
     findings.push(`${file}: hooks file does not exist`);
   } else {
-    try {
-      const { data } = readJsonObject(file);
-      findings.push(...validateSelfLoopEntry(data[HOOK_KEY], file));
-    } catch (error) {
-      findings.push(error.message);
-    }
+    try { findings.push(...validateSelfLoopEntry(readJsonObject(file).data[HOOK_KEY], file)); }
+    catch (error) { findings.push(error.message); }
   }
   if (ownerStore !== null && ownerStore !== undefined) {
     const loaded = loadHookStore(ownerStore);
@@ -343,23 +382,21 @@ export function checkHooks({ harness, scope = "workspace", target = null, cfg = 
   const workspaceCovered = Boolean(cfg?.product && existsSync(join(cfg.product, ".agents", "hooks.json")) && (() => {
     try {
       const wsFile = join(cfg.product, ".agents", "hooks.json");
-      const { data } = readJsonObject(wsFile);
-      return validateSelfLoopEntry(data[HOOK_KEY], wsFile).length === 0;
+      return validateSelfLoopEntry(readJsonObject(wsFile).data[HOOK_KEY], wsFile).length === 0;
     } catch { return false; }
   })());
   if (scope === "global" || !workspaceCovered) {
+    const checkedFiles = new Set([canonical(file)]);
+    const agFile = antigravityHomeHooksFile(env);
+    if (agFile && !checkedFiles.has(canonical(agFile))) {
+      checkedFiles.add(canonical(agFile));
+      checkSecondaryHooksFile(agFile, "ANTIGRAVITY_HOME", findings);
+    }
     for (const inst of t3AntigravityInstances({ env })) {
-      if (!existsSync(inst.hooksFile)) {
-        findings.push(`T3 Antigravity instance ${inst.id} is missing ${HOOK_KEY} hooks (${inst.hooksFile})`);
-        continue;
-      }
-      try {
-        const { data } = readJsonObject(inst.hooksFile);
-        const errs = validateSelfLoopEntry(data[HOOK_KEY], inst.hooksFile);
-        if (errs.length) findings.push(`T3 Antigravity instance ${inst.id} has unhealthy ${HOOK_KEY} hooks: ${errs[0]}`);
-      } catch (error) {
-        findings.push(`T3 Antigravity instance ${inst.id}: ${error.message}`);
-      }
+      const key = canonical(inst.hooksFile);
+      if (checkedFiles.has(key)) continue;
+      checkedFiles.add(key);
+      checkSecondaryHooksFile(inst.hooksFile, `T3 Antigravity instance ${inst.id}`, findings);
     }
   }
   if (env?.ANTIGRAVITY_LS_VERSION && env.ANTIGRAVITY_LS_VERSION !== VERIFIED_ANTIGRAVITY_LS_VERSION) {
@@ -373,50 +410,59 @@ export function checkHooks({ harness, scope = "workspace", target = null, cfg = 
 export function checkAntigravityHooks({ cfg = null, env = process.env, cwd = process.cwd() } = {}) {
   const wsHooks = cfg?.product ? join(cfg.product, ".agents", "hooks.json") : null;
   const globalHooks = join(geminiHome(env), "config", "hooks.json");
+  const agHooks = antigravityHomeHooksFile(env);
   const instances = t3AntigravityInstances({ env });
-  const detected = Boolean((wsHooks && existsSync(wsHooks)) || existsSync(globalHooks) || instances.length > 0);
+  const detected = Boolean((wsHooks && existsSync(wsHooks)) || existsSync(globalHooks) || (agHooks && existsSync(agHooks)) || instances.length > 0);
   if (!detected) return { detected: false, healthy: true, ok: true, harness: "antigravity", scope: null, findings: [] };
   const scope = wsHooks && existsSync(wsHooks) ? "workspace" : "global";
+  const target = scope === "global" && !existsSync(globalHooks) && agHooks && existsSync(agHooks) ? agHooks : null;
   try {
-    const res = checkHooks({ harness: "antigravity", scope, cfg, env, cwd });
+    const res = checkHooks({ harness: "antigravity", scope, target, cfg, env, cwd });
     return { detected: true, healthy: res.ok, ok: res.ok, harness: "antigravity", scope, target: res.target, findings: res.findings };
   } catch (error) {
     return { detected: true, healthy: false, ok: false, harness: "antigravity", scope, target: null, findings: [error.message] };
   }
 }
 
-function isGitTracked(info) {
-  if (!info) return false;
-  return spawnSync("git", ["-C", info.repo.top, "ls-files", "--error-unmatch", "--", info.rel], { encoding: "utf8" }).status === 0;
-}
+const isGitTracked = info => Boolean(info) && gitOk(info.repo.top, "ls-files", "--error-unmatch", "--", info.rel);
 
 export function uninstallHooks({ harness, scope = "workspace", target = null, cfg = null, env = process.env, cwd = process.cwd(), dryRun = false }) {
   const adapter = getHarness(harness);
-  const file = adapter.resolveTarget({ scope, target, cfg, env, cwd });
-  const { exists, data } = readJsonObject(file);
-  const hadKey = exists && Object.hasOwn(data, HOOK_KEY);
-  const ignoreInfo = gitIgnoreTarget(file);
-  const next = { ...data };
-  if (hadKey) delete next[HOOK_KEY];
-  const willDeleteFile = hadKey && Object.keys(next).length === 0 && !isGitTracked(ignoreInfo);
-  if (dryRun) {
-    return { action: "uninstall", harness, scope: target ? "target" : scope, target: file, dryRun: true, removed: hadKey, removedFile: willDeleteFile };
-  }
-  let removedFile = false;
-  if (hadKey) {
-    if (willDeleteFile) {
-      rmSync(file, { force: true });
-      removedFile = true;
-      const parent = dirname(file);
-      if (basename(parent) === ".agents") {
-        try { if (readdirSync(parent).length === 0) rmdirSync(parent); } catch {}
+  const files = globalHookTargets({ harness, adapter, scope, target, cfg, env, cwd });
+  const plans = files.map(file => {
+    const { exists, data } = readJsonObject(file);
+    const hadKey = exists && Object.hasOwn(data, HOOK_KEY);
+    const ignoreInfo = gitIgnoreTarget(file);
+    const next = { ...data };
+    if (hadKey) delete next[HOOK_KEY];
+    return { file, hadKey, ignoreInfo, next, willDeleteFile: hadKey && Object.keys(next).length === 0 && !isGitTracked(ignoreInfo) };
+  });
+  const primary = plans[0];
+  const extra = files.length > 1 ? { targets: files } : {};
+  const scopeOut = target ? "target" : scope;
+  const removed = plans.some(p => p.hadKey);
+  if (dryRun) return { action: "uninstall", harness, scope: scopeOut, target: primary.file, ...extra, dryRun: true, removed, removedFile: primary.willDeleteFile };
+  let primaryRemovedFile = false;
+  let primaryExclude = null;
+  for (let i = 0; i < plans.length; i++) {
+    const p = plans[i];
+    let removedFile = false;
+    if (p.hadKey) {
+      if (p.willDeleteFile) {
+        rmSync(p.file, { force: true });
+        removedFile = true;
+        const parent = dirname(p.file);
+        if (basename(parent) === ".agents") {
+          try { if (readdirSync(parent).length === 0) rmdirSync(parent); } catch {}
+        }
+      } else {
+        writeAtomic(p.file, `${JSON.stringify(p.next, null, 2)}\n`);
       }
-    } else {
-      writeAtomic(file, `${JSON.stringify(next, null, 2)}\n`);
     }
+    const exclude = otherWorktreesNeedExclude(p.ignoreInfo)
+      ? { changed: false, excludeFile: p.ignoreInfo?.excludeFile ?? null, retainedForSibling: true }
+      : removeExcludeEntry(p.ignoreInfo, { marker: EXCLUDE_MARKER });
+    if (i === 0) { primaryRemovedFile = removedFile; primaryExclude = exclude; }
   }
-  const exclude = otherWorktreesNeedExclude(ignoreInfo)
-    ? { changed: false, excludeFile: ignoreInfo?.excludeFile ?? null, retainedForSibling: true }
-    : removeExcludeEntry(ignoreInfo, { marker: EXCLUDE_MARKER });
-  return { action: "uninstall", harness, scope: target ? "target" : scope, target: file, dryRun: false, removed: hadKey, removedFile, exclude };
+  return { action: "uninstall", harness, scope: scopeOut, target: primary.file, ...extra, dryRun: false, removed, removedFile: primaryRemovedFile, exclude: primaryExclude };
 }

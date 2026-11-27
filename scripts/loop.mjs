@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// F-0003, D-0015, D-0058, D-0060, design/mandatory-control-plane.md#5
+// F-0003, D-0015, D-0058, D-0060, D-0064, D-0066, D-0067, design/mandatory-control-plane.md#5
 import { createHash } from "node:crypto";
 import { normalOpportunities } from "./lib/normal-entry.mjs";
 import { ALARM_DETECTOR_REVISION, buildAlarmContext, readNormalEntry } from "./lib/normal-entry-source.mjs";
@@ -13,7 +13,7 @@ import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
 import { collectArchFacts } from "./lib/arch-facts.mjs";
 import { FEATURE_EVENTS, inspectBlueprint } from "./lib/blueprint.mjs";
 import { advancingAction, ARCH_STEP, cadenceLines, cadenceOf, cadenceState, dueReason, JUDGE_FRAME_STEP, outerCadenceOf, outerLoopLines, outerLoopState } from "./lib/cadence.mjs";
-import { ciGreen, fullSha, judgeAccepted, receiptProblem } from "./lib/ci.mjs";
+import { ciGreen, criticContradictedByTrajectory, criticConvergedAccepted, fullSha, judgeAccepted, receiptProblem } from "./lib/ci.mjs";
 import { gatesOf } from "./lib/ci-receipt.mjs";
 import { command, env, evidencePrefix, gatherCommand, node, shell } from "./lib/commands.mjs";
 import { proseInTree } from "./lib/comments.mjs";
@@ -22,6 +22,7 @@ import { computeDispatchPlan, renderDispatchLines } from "./lib/dispatch.mjs";
 import { blobs, git, gitOk, regularFiles, run } from "./lib/git-plumbing.mjs";
 import { HANDOFFS, hasPhaseFrame, idOf, parseHandoffs } from "./lib/handoff.mjs";
 import { isSubstantiveOwnerWord, MARKS, WORDS } from "./lib/owner-words.mjs";
+import { isPreparedRunner } from "./lib/paseo.mjs";
 import { hostLine } from "./lib/host.mjs";
 import { phaseMetrics, waitingText } from "./lib/owner-metrics.mjs";
 import { admitAcrossPlans, isIdle, LEAD_STEPS, planContext, plansFrom, readyPlan, snapshot, validatePlan } from "./lib/plan.mjs";
@@ -30,7 +31,7 @@ import { hostLoad, REGISTRY, resolveOwnerStore } from "./lib/registry.mjs";
 import { ssotNextSummary } from "./lib/ssot.mjs";
 import { stallThreshold } from "./lib/thresholds.mjs";
 import { tipCovers } from "./lib/tip.mjs";
-import { independenceModel, modelVendor } from "./lib/vendor.mjs";
+import { evaluateCertifiedWaveCoverage } from "./lib/provenance.mjs";
 import { hasWindowDiagnosis, parseWindows, WINDOWS, windowState } from "./lib/window.mjs";
 import { check, openWords, RUNGS } from "./records-check.mjs";
 import { alarms, parseRows, TRAJECTORY } from "./trajectory.mjs";
@@ -38,7 +39,10 @@ import { reconcileReleases } from "./version-gate.mjs";
 
 const pad = n => String(n).padStart(4, "0");
 const evidenceJson = path => path.startsWith("evidence/") && path.endsWith(".json");
-const relevant = path => /^(blueprint|decisions|owner|purpose|rounds)\/.*\.md$/.test(path) || /^sealed\/judge\/\d+\/judge(?:-[a-z]+)*-\d+\.md$/.test(path) || evidenceJson(path)
+const relevant = path => /^(blueprint|decisions|owner|purpose|rounds)\/.*\.md$/.test(path)
+  || /^sealed\/judge\/\d+\/judge(?:-[a-z]+)*-\d+\.md$/.test(path)
+  || /^sealed\/critic\/\d+\/[^/]+-\d+\.md$/.test(path)
+  || evidenceJson(path)
   || [ALARMS, ANSWERS, FEATURE_EVENTS, HANDOFFS, TRAJECTORY, WINDOWS, "loop.json", "records.json"].includes(path);
 
 export function recordsOf(cfg, at = "HEAD") {
@@ -60,10 +64,11 @@ function nextRound(state, prepared) {
     const match = /^rounds\/(\d+)-/.exec(path);
     return match ? [Number(match[1])] : [];
   });
-  return Math.max(0, ...used, ...prepared.map(p => p.round), ...state.rows.map(r => r.round)) + 1;
+  const pos = n => Number.isInteger(n) && n > 0;
+  return Math.max(0, ...used.filter(pos), ...prepared.map(p => p.round).filter(pos), ...state.rows.map(r => r.round).filter(pos)) + 1;
 }
 
-const knownRuling = row => row.role === "judge" && row.verdict !== "-";
+const knownRuling = row => (row.role === "judge" || row.role === "critic") && row.verdict !== "-";
 // design/round9-b.md#the-transition
 import { blockerState as foldRulings, withStatus } from "./lib/blockers.mjs";
 export function blockerState(rows) {
@@ -118,7 +123,7 @@ export function integrationOf(cfg, state, handoffs, rows) {
   const exists = sha => found.has(sha);
   const branch = cfg.branch ?? null;
   const branchHead = fullSha(product, branch ?? "HEAD");
-  const row = rows.findLast(r => r.role === "judge" && r.commit !== "-") ?? null;
+  const row = rows.findLast(r => (r.role === "judge" || (r.role === "critic" && r.verdict !== "-")) && r.commit !== "-") ?? null;
   const problems = [];
   let judged = row?.commit ?? null;
   if (judged && !exists(judged)) {
@@ -159,7 +164,40 @@ export function integrationOf(cfg, state, handoffs, rows) {
   return { ...result, sha, source, tips, relation };
 }
 
-function convergence({ words, state, rows, cfg, target, integration, ci, suite, frame, ruling, judges, actors, pending, openAlarms, checkRecords, prose, cadence, ssot, win }) {
+// D-0064, D-0067
+function certifiedCriticOn({ cfg, state, rows, actors, judges, critics, target, integration, covers }) {
+  if (!target) return null;
+  const files = new Set(state.files);
+  const SHA = /^[0-9a-f]{40}$/;
+  const PLAN_ID = /^PL-\d{4}$/;
+  let committedBaseline = null;
+  const rawLoop = state.read("loop.json");
+  if (rawLoop) {
+    try { committedBaseline = JSON.parse(rawLoop)?.provenanceBaseline ?? null; } catch { return null; }
+  }
+  const hasBaseline = SHA.test(cfg?.provenanceBaseline ?? committedBaseline ?? "");
+  for (let i = critics.length - 1; i >= 0; i--) {
+    const ch = critics[i];
+    if (hasBaseline && !(ch.dispatch?.plan && PLAN_ID.test(ch.dispatch.plan) && files.has(`plans/${ch.dispatch.plan}.md`))) continue;
+    const certSha = ch.product?.commit || ch.product?.base || null;
+    if (!certSha || !SHA.test(certSha) || !covers(certSha)) continue;
+    if (ch.product?.base && ch.product?.commit && ch.product.base !== ch.product.commit
+      && !integration.ancestor(ch.product.base, ch.product.commit)) continue;
+    if (!criticConvergedAccepted(ch, { has: path => files.has(path), read: state.read })) continue;
+    if (criticContradictedByTrajectory(rows, ch, [certSha, target])) continue;
+    const cov = evaluateCertifiedWaveCoverage({
+      repo: cfg.product, records: cfg.records, revision: state.revision, files, read: state.read,
+      cfg, phase: cfg.phase, targetCommit: certSha, judge: ch, judges, critics, actors, rows,
+      allHandoffs: state.handoffs, allRows: state.rows, isAncestor: integration.ancestor, requireActor: false,
+    });
+    if (!cov.ok) continue;
+    if (cov.actors.some(a => !ch.product?.base || !integration.ancestor(a.product.commit, ch.product.base))) continue;
+    return { handoff: ch, sha: certSha, coverage: cov };
+  }
+  return null;
+}
+
+function convergence({ words, state, rows, cfg, target, integration, ci, suite, frame, ruling, judges, critics, criticCert, actors, pending, openAlarms, checkRecords, prose, cadence, ssot, win }) {
   const reasons = [];
   if (!frame) reasons.push(`phase frame (${HANDOFFS})`);
   if (win?.active) reasons.push(`open bounded window ${win.active.id} (${win.mode}) must be closed before phase convergence (${WINDOWS})`);
@@ -173,8 +211,10 @@ function convergence({ words, state, rows, cfg, target, integration, ci, suite, 
   if (!integration.sha) reasons.push(`one integration SHA: the phase's hand-off heads diverge (${HANDOFFS}); merge needed`);
   if (!suite) reasons.push("exact-SHA suite receipt (suite-green.mjs)");
   if (!ci?.ok) reasons.push("exact-SHA CI (next's own reading, ci-green.mjs)");
-  if (ruling?.verdict !== "CONVERGED" || !/^[1-9]\d*\/0$/.test(ruling.suite))
-    reasons.push(`judge convergence with a green suite count on ${target ?? "the integration SHA"} (${TRAJECTORY})`);
+  const hasJudgeConvergence = ruling?.role === "judge" && ruling.verdict === "CONVERGED" && /^[1-9]\d*\/0$/.test(ruling.suite);
+  const hasCriticConvergence = Boolean(criticCert);
+  if (!hasJudgeConvergence && !hasCriticConvergence)
+    reasons.push(`judge convergence or independent no-dispute critic PASS/CONVERGED ruling with a green suite count on ${target ?? "the integration SHA"} (${TRAJECTORY})`);
   const blockers = blockerState(rows).open;
   if (blockers.length) reasons.push(`open blockers: ${blockers.join(", ")} (${TRAJECTORY})`);
   if (!openAlarms || openAlarms.length) reasons.push(`alarms with no matching diagnosis (${HANDOFFS}, ${TRAJECTORY})`);
@@ -184,13 +224,11 @@ function convergence({ words, state, rows, cfg, target, integration, ci, suite, 
     reasons.push(`${prose.lines ? prose.lines.length : "unknown"} prose comment lines in the product tree at ${prose.sha ?? "the integration SHA"} (D-0016, since ${prose.subtraction.id})`);
   if (ssot?.convergenceReason) reasons.push(ssot.convergenceReason);
 
-  const judge = judges.findLast(h => h.round === ruling?.round && h.product?.base === ruling.commit);
-  if (ruling?.verdict === "CONVERGED") {
-    if (!judge || !judgeAccepted(judge, { has: path => state.files.includes(path), read: state.read }))
-      reasons.push(`ACCEPTANCE: pass needs confirmation (${judge?.record ?? TRAJECTORY})`);
-    const actor = actors.findLast(h => integration.ancestor(h.product.commit, target));
-    if (!modelVendor(judge?.agent) || !modelVendor(actor?.agent) || modelVendor(judge.agent) === modelVendor(actor.agent)
-        || !independenceModel(judge.agent) || !independenceModel(actor.agent) || independenceModel(judge.agent) === independenceModel(actor.agent))
+  const judge = ruling?.role === "judge" ? judges.findLast(h => h.round === ruling.round && h.product?.base === ruling.commit) : null;
+  if (ruling?.role === "judge" && ruling.verdict === "CONVERGED") {
+    const files = new Set(state.files);
+    if (!judge || !judgeAccepted(judge, { has: path => files.has(path), read: state.read })) reasons.push(`ACCEPTANCE: pass needs confirmation (${judge?.record ?? TRAJECTORY})`);
+    if (evaluateCertifiedWaveCoverage({ repo: cfg.product, records: cfg.records, revision: state.revision, files, read: state.read, cfg, phase: cfg.phase, targetCommit: target, targetRuling: ruling, judge: judge ?? null, judges, critics, actors, rows, allHandoffs: state.handoffs, allRows: state.rows, isAncestor: integration.ancestor }).problem)
       reasons.push(`judge/actor independence needs confirmation (${HANDOFFS})`);
   }
   return reasons;
@@ -489,6 +527,7 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
   const frame = hasPhaseFrame(handoffs, phase, path => managed.has(path));
   const workers = handoffs.filter(h => ["critic", "actor"].includes(h.role) && h.product);
   const actors = workers.filter(h => h.role === "actor");
+  const critics = workers.filter(h => h.role === "critic");
   // D-0032, design/generative-engine-b.md#the-advancing-round
   const judges = handoffs.filter(h => h.role === "judge" && !JUDGE_FRAME_STEP.test(h.step));
   const rulings = rows.filter(knownRuling);
@@ -502,6 +541,7 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
     return covered.get(sha);
   };
   const ruling = integration.sha ? rulings.findLast(r => covers(r.commit)) : null;
+  const criticCert = integration.sha ? certifiedCriticOn({ cfg, state, rows, actors, judges, critics, target, integration, covers }) : null;
   const tipOf = sha => sha === integration.sha ? integration.tips.find(t => t.name === branch) ?? integration.tips[0] ?? null : null;
   const recordedTip = integration.sha && integration.sha === integration.judged ? integration.recordedTip : null;
   const ciSha = recordedTip ?? integration.tips.find(t => t.name === branch)?.sha ?? target;
@@ -538,7 +578,7 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
     const task = join(cfg.workDir, "tasks", `${idOf(at, step)}.md`);
     const base = role === "judge" || (role === "reviewer" && ARCH_STEP.test(step) && target) ? ["--base", target] : [];
     const mode = step === role ? [] : ["--step", step];
-    const prepare = cfg.agents[role]?.runner === "t3" ? ["--prepare"] : [];
+    const prepare = isPreparedRunner(cfg.agents[role]?.runner) ? ["--prepare"] : [];
     return [`Write task ${task} before calling. Include features: (IDs or none for the reviewer).`,
       node("call.mjs", config, role, "--round", at, ...mode, ...base, "--task", task, ...prepare)];
   };
@@ -561,7 +601,7 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
     handoffs, rows, currentFacts, baselineFacts, prepared: pending.filter(p => !p.phase || p.phase === phase),
     deliveries: outerSetting.deliveries, outerGrace: outerSetting.outerGrace, phase, targetSha: target,
   });
-  const win = windowState({ windows: state.windows ?? parseWindows(state.read(WINDOWS), WINDOWS), handoffs, rows, phase, nextRound: round });
+  const win = windowState({ windows: state.windows ?? parseWindows(state.read(WINDOWS), WINDOWS), handoffs, rows, phase, nextRound: round, read: state.read, files: managed });
   const reconciled = state.files.some(path => /^plans\/PL-\d{4}\.md$/.test(path)) ? reconcilePlans(records, state.revision, phase, { host, base: target, now: clock.now }) : null;
   let metrics = null, metricsProblem = null;
   try { metrics = phaseMetrics(records, phase, { revision: state.revision, falseAlarms: false }); } catch (error) { metricsProblem = error.message; }
@@ -783,7 +823,7 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
   else if (win.mode !== "slack" && win.mode !== "converging") {
     if (!suite) action("no suite-green receipt for the integration head", "suite-green.mjs, evidence/", full ? waiting : gates.suite);
     if (!ci?.ok) action(`CI not green on the integration head: ${ciDetail}`, `next's own reading on ${ciSha} (${ciSource}), loop.json`, ciGather);
-    if (!ruling && !judges.some(h => covers(h.product?.base))) action("no judge ruling on the integration head", `${HANDOFFS}, ${TRAJECTORY}`, ...callFor("judge"));
+    if (!ruling && !judges.some(h => covers(h.product?.base)) && !criticCert) action("no judge ruling on the integration head", `${HANDOFFS}, ${TRAJECTORY}`, ...callFor("judge"));
   }
   if (win.mode === "gate-due") {
     action(
@@ -791,7 +831,7 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
       WINDOWS,
       `Goal: ${win.active.goal}`,
       `Invariants: ${win.active.invariants.join("; ")}`,
-      "Complete mandatory verification (suite-green, CI if configured, critic, different-vendor judge) and close the window:",
+      "Complete mandatory verification (suite-green, CI if configured, independent no-dispute critic or judge) and close the window:",
       node("window.mjs", "close", "--records", records, "--id", win.active.id, "--verdict", "verified", "--commit", target ?? "<integration-sha>", "--config", config));
   }
   if (win.alarm && !hasWindowDiagnosis({ records, revision: state.revision, handoffs, read: state.read, files: managed, phase, open: win.active })) {
@@ -805,7 +845,7 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
   }
   for (const h of judges) {
     const sha = h.product?.base;
-    if (!sha || rulings.some(row => row.round === h.round && row.commit === sha)) continue;
+    if (!sha || rulings.some(row => row.role === "judge" && row.round === h.round && row.commit === sha)) continue;
     // D-0015, D-0009
     const pushed = tipOf(sha);
     const tip = pushed ? ["--tip", pushed.sha] : [];
@@ -829,7 +869,7 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
   const ssot = Object.hasOwn(cfg, "ssot") && target ? ssotNextSummary(cfg, resolve(config), target) : null;
   if (ssot?.action) action(ssot.action.title, "loop.json (ssot), ssot-check.mjs", ...ssot.action.steps);
 
-  const reasons = convergence({ words, state, rows, cfg, target, integration, ci, suite, frame, ruling, judges, actors, pending, openAlarms, checkRecords: stateCheck, prose, cadence, ssot, win });
+  const reasons = convergence({ words, state, rows, cfg, target, integration, ci, suite, frame, ruling, judges, critics, criticCert, actors, pending, openAlarms, checkRecords: stateCheck, prose, cadence, ssot, win });
   if (stallError) lines.splice(header, 0, "", `- the alarm ledger cannot be read: ${stallError.message} [${ALARMS}]`, `  ${node("records-check.mjs", "--repo", records)}`);
   if (stalled)
     lines.splice(header, 0, "", `- stall alarm raised ${stalled.time}: no recorded phase activity since ${stalled.since} (${stalled.source}) [${ALARMS}]`,

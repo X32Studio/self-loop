@@ -1,21 +1,50 @@
-// The hand-off record `metrics/handoffs.jsonl`: one line per successful role call (`call.mjs`), committed in the same
-// commit as every file it names. It states facts about the call (who ran, on what, what it wrote, what the audit found);
-// it carries no verdict and decides nothing. A call that failed gets no line, only its numbered evidence.
+// D-0016, D-0064, D-0067
 import { FEATURE_ID } from "./blueprint.mjs";
 
 export const HANDOFFS = "metrics/handoffs.jsonl";
 export const ROLES = ["reviewer", "critic", "actor", "judge"];
+export const LEAD_PATCH_ROLE = "lead-patch";
 const SHA = /^[0-9a-f]{40}$/;
+const LP_ID = /^LP-\d{4,}$/;
 const STEP = /^(reviewer|critic|actor|judge)(-[a-z]+)*$/;
 const pad = n => String(n).padStart(4, "0");
 export const recordOf = (round, step) => `rounds/${pad(round)}-${step}.md`;
 export const idOf = (round, step) => `R-${pad(round)}-${step}`;
 const relPath = p => typeof p === "string" && p.length > 0 && !p.startsWith("/") && !p.split("/").includes("..");
 
-/** Validate one hand-off line; returns it or throws with the reason. */
-export function validateHandoff(h) {
+export function validateLeadPatchHandoff(h) {
   const fail = m => { throw new Error(m); };
-  if (!h || typeof h !== "object") fail("not an object");
+  if (!h || typeof h !== "object" || Array.isArray(h)) fail("not an object");
+  if (h.role !== LEAD_PATCH_ROLE) fail("role must be lead-patch");
+  if (typeof h.id !== "string" || !LP_ID.test(h.id)) fail("id must be LP-NNNN");
+  if (h.record !== undefined && h.record !== null) fail("lead-patch must not carry a round record");
+  if (typeof h.phase !== "string" || !h.phase.trim() || /[\n\t]/.test(h.phase)) fail("phase must be a one-line name");
+  if ("time" in h && (typeof h.time !== "string" || !Number.isFinite(Date.parse(h.time)))) fail("time must be a valid timestamp");
+  if (!h.product || typeof h.product !== "object" || Array.isArray(h.product)
+      || !SHA.test(h.product.base ?? "") || !SHA.test(h.product.commit ?? "") || h.product.commit === h.product.base)
+    fail("product must carry distinct base and commit full SHAs");
+  if (!Array.isArray(h.files) || !h.files.length || h.files.length > 3 || !h.files.every(relPath))
+    fail("files must be 1..3 relative paths");
+  if ("lines" in h) {
+    const l = h.lines;
+    if (!l || typeof l !== "object" || Array.isArray(l)
+        || !Number.isInteger(l.added) || l.added < 0 || !Number.isInteger(l.deleted) || l.deleted < 0
+        || !Number.isInteger(l.total) || l.total !== l.added + l.deleted || l.total < 1 || l.total > 20)
+      fail("lines must record 1..20 added+deleted lines");
+  }
+  if (typeof h.reason !== "string" || !h.reason.trim()) fail("reason is missing");
+  if (!h.verify || typeof h.verify !== "object" || Array.isArray(h.verify)
+      || typeof h.verify.command !== "string" || !h.verify.command.trim() || h.verify.exit !== 0)
+    fail("verify must record command and exit 0");
+  if (!h.audit || typeof h.audit !== "object" || Array.isArray(h.audit) || h.audit.violations !== 0)
+    fail("audit.violations must be 0");
+  return h;
+}
+
+export function validateHandoff(h) {
+  if (h && typeof h === "object" && !Array.isArray(h) && h.role === LEAD_PATCH_ROLE) return validateLeadPatchHandoff(h);
+  const fail = m => { throw new Error(m); };
+  if (!h || typeof h !== "object" || Array.isArray(h)) fail("not an object");
   if (!Number.isInteger(h.round) || h.round < 1) fail("round must be a whole number from 1");
   if (!STEP.test(h.step ?? "") || !h.step.startsWith(h.role ?? "-") || !ROLES.includes(h.role)) fail("step must start with its role (reviewer, critic, actor, judge)");
   if (h.id !== idOf(h.round, h.step)) fail(`id must be ${idOf(h.round, h.step)}`);
@@ -41,13 +70,11 @@ export function validateHandoff(h) {
   return h;
 }
 
-/** Hand-offs from the text of the record. A malformed line is an error, never skipped. */
 export function parseHandoffs(text) {
   return text.split("\n").filter(Boolean).map((line, i) => {
     try { return validateHandoff(JSON.parse(line)); } catch (e) { throw new Error(`${HANDOFFS}:${i + 1}: not a valid hand-off (${e.message})`); }
   });
 }
 
-/** The phase's frame exists when a reviewer-frame hand-off names a record present in the same tree. */
 export const hasPhaseFrame = (handoffs, phase, hasRecord) =>
   handoffs.some(h => h.role === "reviewer" && h.step === "reviewer-frame" && h.phase === phase && hasRecord(h.record));

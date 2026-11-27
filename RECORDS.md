@@ -239,22 +239,22 @@ entry reports missing binding/identity and the unavailable independent wake edge
 no local reconciliation; this ledger makes no autonomous recovery guarantee.
 
 A hand-off line (JSON, `scripts/lib/handoff.mjs`): its record ID, time, phase, round, step (the role, or the role and a
-mode such as `reviewer-frame`, `reviewer-architecture`, or `reviewer-distill`), the attempt number, the agent (runner, configured and observed model, cost, seconds),
+mode such as `reviewer-frame`, `reviewer-architecture`, or `reviewer-distill`), the attempt number, the agent (runner — including `paseo:better-paseo-antigravity` per `D-0066` — configured model, first `observedModel`, and complete multi-turn distinct `observedModels` across Antigravity `PLANNER_RESPONSE`, Codex `turn_context`, and Claude `system`/`assistant` events, cost, seconds),
 the view commit the role read, the briefs, the task's digest, the product commit it started from and the one it produced,
-the exit code, the audit counts, the feature IDs, the public record and every file of the hand-off. It states facts about one call and
+the exit code, the audit counts, the feature IDs, the public record and every file of the hand-off. Bounded Lead micro-patches (`self-loop.mjs patch`, `D-0064` T5) record lightweight `role: "lead-patch"` lines (`<= 20` changed lines, `<= 3` files, `<= 2` consecutive per wave). An independent no-dispute Critic hand-off (`audit.violations === 0`, report carrying `VERDICT: PASS|CONVERGED`, `ACCEPTANCE: pass`, `DISPUTES: -`, `OPENED: -`) directly certifies convergence under `loop.json` `judgeIndependence` (`D-0064` T10). Actor reports include a mandatory **Horizontal Sweep** table per Aerospace Dual-Five Zeroing (`D-0067`). It states facts about one call and
 carries no verdict. The committed `reviewer-frame` hand-off and its round record establish that the
 generative engine ran for that phase. Other reviewer modes cannot supply the phase frame. A `reviewer-architecture` hand-off
 records `product: { base, commit: base }` (zero product commit), receives read-only `arch-facts.json` + detached product worktree under
 strict `FILE_TOOLS` confinement, commits `evidence/<NNNN>/<step>-<k>-arch-facts.json` as the delta-scoped `T3` baseline (`compareArchFacts`, amended `D-0058`), resets the outer-loop `T1`/`T3` cadence counter, and supplies the baseline SHA for subsequent
-`arch-facts` growth and churn checks. Every post-`provenanceBaseline` `critic`, `actor`, and code `judge` hand-off carries `dispatch: { plan, package, files }` bound to a validated `PL-NNNN` plan (`D-0060`); `call.mjs` also stages once-per-tree host `suite-receipt.json` receipts (`D-0061`) and purges cached receipts for newly created unattested product trees on `record`. A line exists only for a call with no access violation, committed together with every file it names.
-A row of the trajectory is the lead's account of a ruling (area, verdict, blockers `class:id`, suite counts, the commit)
+`arch-facts` growth and churn checks. Every post-`provenanceBaseline` `critic`, `actor`, and code `judge` hand-off carries `dispatch: { plan, package, files }` bound to a validated `PL-NNNN` plan (`D-0060`); `call.mjs` also stages once-per-tree host `suite-receipt.json` receipts (`D-0061`), purges cached receipts for newly created unattested product trees on `record`, auto-prunes finished `wt/` checkouts, and ignores `out/tmp/` and `.git/` (`D-0064` T9). A line exists only for a call with no access violation, committed together with every file it names.
+A row of the trajectory is the lead's account of a ruling (`role: "judge"` or `role: "critic"` per `D-0064` T10 / `D-0067`: area, verdict `CONTINUE | CONVERGED | PASS | REFRAME`, blockers `class:id`, suite counts, the commit)
 and the append's own CI reading; the supervision alarms read it. When the lead pushed a commit raising `VERSION` on top
 of the ruled commit (D-0009 item 2), the row's `tip` names the pushed SHA and `commit` stays the ruled one. The loop is
 never told to the append: it is the loop.json of the records repository holding the ledger's real path, the row's
 `phase` is that loop's phase, and the append reads CI once for the pushed SHA (the tip, else the commit) where a push
 to the loop's `gates.remote` goes, over every `gates.require` check. The row carries the reading's word (`ci`) and
 names the reading saved under the round's evidence (`ciReceipt`, `evidence/<NNNN>/ci-<sha12>-<n>/receipt.json`: the
-ci-green receipt, or `{ sha, ci: "unknown", ok: false, error }` when no reading could be made). A CONVERGED row is
+ci-green receipt, or `{ sha, ci: "unknown", ok: false, error }` when no reading could be made). A `CONVERGED` or `PASS` row is
 written only when that word is `success`; a row in records without a loop.json, or in a ledger outside a records
 repository, carries CI `absent` and no receipt. The records check verifies offline that a CONVERGED row naming a
 `ciReceipt` names a receipt the records hold, for its pushed SHA, with the word `success`; rows written before the
@@ -318,8 +318,8 @@ helper) holds append-only `open` and `close` events:
 (`horizon` in `2..12`, sequential `W-NNNN` IDs, at most one open window per phase) and
 `{ "type": "close", "id": "W-NNNN", "phase", "closedAt", "closedBy", "commit", "verdict": "verified" | "reframed", "suiteReceipt"?, "ciReceipt"?, "note"? }`.
 A `verified` close is accepted only from committed records: a `CONVERGED` judge ruling in `metrics/trajectory.jsonl`
-covering `commit` with passing suite count (`[1-9]\d*/0`), independent judge/actor vendor and model (`metrics/handoffs.jsonl`),
-a committed green `suite-green` receipt on `commit`, and a committed green CI receipt when `gates.require` is configured.
+covering `commit` with passing suite count (`[1-9]\d*/0`), independent judge across every unjudged covering actor above `provenanceBaseline` per `loop.json` `judgeIndependence` (`"vendor"` default, `"model"` opt-in requiring single-model runtime `observedModels` / `observedModel` telemetry across all runners; prior `CONVERGED` and independent no-dispute critic waves retire earlier actors only under the `judgeIndependence` policy set authenticated from committed `records` history at the commits recording each prior certifying hand-off, trajectory row, and real view commit; `metrics/handoffs.jsonl`),
+a committed green `suite-green` receipt on `commit`, and a committed green CI receipt when `gates.require` is configured. `window-state.mjs` recognizes both `role: "judge"` and `role: "critic"` verdicts (`verdict !== "-"`) as well as committed no-dispute Critic hand-offs (`VERDICT: PASS|CONVERGED`, `ACCEPTANCE: pass`, `DISPUTES: -`, `audit.violations === 0`; `D-0064` T10, `D-0067`).
 A `reframed` close requires a committed post-open `reviewer-diagnosis` hand-off in the same phase citing
 `window-horizon:<phase>:<id>` on its `alarms:` line. `records-check.mjs` fails closed on any malformed, non-sequential,
 overlapping, or dangling window line.
@@ -424,7 +424,7 @@ From 2026-11-21, purpose records put `words: W-xxxxxxxxxx[, ...]` in the dated h
 in the word log. The checker screens for a missing source line and for each open word. The owner-words command
 checks committed records and their configuration. The records checker also sees staged records for review.
 Capture and transcript sync deterministically ignore T3/harness orchestration envelopes (`Delegated task node:delegated-task:`,
-`[T3 Code: the agent in T3 thread`, `<CONTEXT_SUMMARY>`, `<SYSTEM_MESSAGE>`). Substantive open owner words
+`[T3 Code: the agent in T3 thread`, `<CONTEXT_SUMMARY>`, `<SYSTEM_MESSAGE>`, and whole-message single or batched `<paseo-system ...>...</paseo-system>` envelopes for `agent-notification` and `agent-message`, while preserving Lead sessions for later human turns and preserving ordinary human text mentioning `<paseo-system>`). Substantive open owner words
 (`isSubstantiveOwnerWord`) trigger a `reviewer-distill` action in `next` and immediately block `plan.mjs validate` and `critic`/`actor` calls (`exit 7`, 0-turn grace per `D-0060`) until distilled or marked.
 Legacy declarations of native kinds in `extraKinds` keep their existing index presentation until the lead removes
 them and regenerates the index.
@@ -458,9 +458,7 @@ hand-off contract, so a revision that records, moves or lifts a hold keeps the h
 record IDs (an owner batch counts once answered or replaced), `capacity` and ISO times, comma-separated, is computed and
 released when every part is met. Any other release, a part in words included, still holds the package but cannot be
 checked: `next`, `tick` and `start` list it for review on every reconciliation, including other registered products until a revision names a computable release. A blank `release:`
-is no hold. Empty `files:` is read-only work; a trailing slash owns a directory. Packages of one plan never overlap;
-packages of two current plans of a phase may, and then the dispatcher offers a start to one at a time (plan ID order,
-then package order), the other waiting on a `writer` hold. A `needs` entry is a package of the plan, an owner batch (released by
+is no hold. Empty `files:` is read-only work; a trailing slash owns a directory. Concurrent/unordered packages of one plan never overlap (`!reaches(A, B) && !reaches(B, A)` over transitive in-plan `needs:` edges, including cross-depth independent branches; D-0063), while packages ordered transitively by `needs:` (such as `critic-initial -> actor -> critic-post-actor`) may declare and edit the same living domain acceptance file in one plan, serialized by G2/G3 `writer` holds with G5 permitting each package's own `files:` while still refusing writes to any non-overlapping peer file (supporting D-0063 living domain suites and mandatory `MERGE`/`RETIRE` test subtraction without disposable `-attack` filenames). Packages of two current plans of a phase may overlap, and then the dispatcher offers a start to one at a time (plan ID order, then package order), the other waiting on a `writer` hold. A `needs` entry is a package of the plan, an owner batch (released by
 its answer) or a record that must exist. `settings` is `current` (the default) or a JSON object whose values must
 match the role's configured agent (a mismatch waits for that configuration). `task` is optional (default
 `<workDir>/tasks/<handoff>.md`). Lists are comma-separated or JSON arrays (a value that starts with `[` but is no JSON
@@ -492,7 +490,7 @@ is the absolute path of the product's records repository, whose `loop.json` is t
 share one case-insensitive namespace; a records repository is registered once; `roots` are absolute folders under which
 `tick` and `start` report records repositories nobody registered, at any depth. Unknown fields are refused, so a misspelt field never silently
 drops a product. A product's `loop.json` may list `projects` (folders whose sessions belong to it, relative to the file
-or absolute) and `tick` (`stallHours`, `onStall`: `show` or `resume`). The records a driver reads and writes are the
+or absolute), `tick` (`stallHours`, `onStall`: `show` or `resume`), and optional `judgeIndependence` (`"vendor"` default, or `"model"` explicit opt-in requiring distinct case-insensitive models with known vendor and single-model runtime observed telemetry (`observedModels` / `observedModel`, failing closed on missing/`null`, unknown, or multi-model observations) across all runners; prior `CONVERGED` waves are certified strictly under the governing policy set authenticated from committed `records/loop.json` history; any unrecognized value fails closed across `call.mjs`, `loop.mjs`, `provenance.mjs`, `gated-push.mjs`, and `window.mjs`). The records a driver reads and writes are the
 registered folder holding that `loop.json`, whatever its `records` field says.
 
 ### The blueprint

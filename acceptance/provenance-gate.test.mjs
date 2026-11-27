@@ -8,16 +8,16 @@ import { now } from "./scenario.mjs";
 
 const CLAUDE_ACTOR = {
   runner: "t3:claude",
-  model: "claude-opus-5-5",
-  observedModel: "claude-opus-5-5",
-  observedModels: ["claude-opus-5-5"],
+  model: "claude-opus-4-6",
+  observedModel: "claude-opus-4-6",
+  observedModels: ["claude-opus-4-6"],
 };
 
 const CODEX_REVIEWER = {
   runner: "t3:codex",
-  model: "gpt-6.2-sol",
-  observedModel: "gpt-6.2-sol",
-  observedModels: ["gpt-6.2-sol"],
+  model: "gpt-5.4",
+  observedModel: "gpt-5.4",
+  observedModels: ["gpt-5.4"],
 };
 
 const CLAUDE_JUDGE_SAME_VENDOR = {

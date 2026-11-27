@@ -60,7 +60,7 @@ export function judgeRow(round, { verdict = "CONTINUE", area = "-", time = now, 
 export function mechanisms(t, { cadence, agents, owns } = {}) {
   const w = round6B(t);
   const p = phase(w, "mechanisms", { agents: agents ?? {
-    actor: t3("claude", "claude-opus-5-5"), critic: t3("codex", "gpt-6.2-sol"), judge: t3("codex", "gpt-6.2-sol") } });
+    actor: t3("claude", "claude-opus-4-6"), critic: t3("codex", "gpt-5.4"), judge: t3("codex", "gpt-5.4") } });
   w.register([p]);
   const config = JSON.parse(readFileSync(p.config, "utf8"));
   config.owns = owns ?? { actor: ["src", "scripts", "docs", "SKILL.md", "RECORDS.md"], critic: ["acceptance"] };

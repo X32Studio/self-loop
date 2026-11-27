@@ -1,4 +1,4 @@
-// P-0006, D-0018, design/dispatch.md#ready-state
+// P-0006, D-0018, D-0063, D-0064, design/dispatch.md#file-ownership, design/dispatch.md#ready-state
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -6,9 +6,9 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { gzipSync } from 'node:zlib';
 import { globOverlap } from '../lib/plan-globs.mjs';
-import { admitAcrossPlans, parsePlan, RELEASE_IN_WORDS, validatePlan, readyPlan } from '../lib/plan.mjs';
+import { admitAcrossPlans, criticCausalBase, judgeCoverageProblems, judgeJoinProblems, judgeLineageProblems, packageOrder, parsePlan, planCallCommand, planPackageMap, RELEASE_IN_WORDS, validatePlan, readyPlan } from '../lib/plan.mjs';
 import { executionInterval, measurePlan, renderMeasures } from '../lib/plan-measures.mjs';
-import { git, roomyStore, scripts, setup, temp } from './helpers.mjs';
+import { git, repo, roomyStore, scripts, setup, temp } from './helpers.mjs';
 
 const pkg = (id, changes = {}) => ({ id, authority: ['D-0001'], goal: `Deliver ${id}`, files: [],
   interface: 'fixed contract', needs: [], role: 'actor', acceptance: 'accept the contract',
@@ -113,8 +113,8 @@ test('flow: the lead runs a ready package whose role runs on a CLI runner; loss:
     handoffs: [], batches: [], plans: [current], prepared: [] };
   const [actor, critic] = readyPlan(state(), current, { context, host: { admits: true, over: [] } }).packages;
   assert.deepEqual([actor.status, critic.status], ['ready', 'ready']);
-  assert.match(actor.command, / --prepare$/);
-  assert.match(critic.command, /call\.mjs.* critic --round 1 --step critic-b --task \S+$/);
+  assert.match(actor.command, /--plan PL-0001 --package a --task \S+ --prepare$/);
+  assert.match(critic.command, /call\.mjs.* critic --round 1 --step critic-b --plan PL-0001 --package b --task \S+$/);
   assert.doesNotMatch(critic.command, /--prepare/);
 });
 
@@ -137,8 +137,8 @@ test('flow: the lead runs loop.mjs next after committing a plan; loss: stuck, se
   const out = run();
   assert.equal(out.status, 0, out.stderr);
   assert.match(out.stdout, /^- plan PL-0001 \(S5\/round-2\): 2 ready, 2 waiting, 0 running, 0 done \[plans\//m);
-  assert.match(out.stdout, /^ {4}node \S+call\.mjs \S+loop\.json actor --round 2 --step actor-a --task \S+R-0002-actor-a\.md$/m);
-  assert.match(out.stdout, /^ {4}node \S+call\.mjs \S+loop\.json critic --round 2 --step critic-b --task \S+R-0002-critic-b\.md$/m);
+  assert.match(out.stdout, /^ {4}node \S+call\.mjs \S+loop\.json actor --round 2 --step actor-a --plan PL-0001 --package build --task \S+R-0002-actor-a\.md$/m);
+  assert.match(out.stdout, /^ {4}node \S+call\.mjs \S+loop\.json critic --round 2 --step critic-b --plan PL-0001 --package cases --task \S+R-0002-critic-b\.md$/m);
   assert.match(out.stdout, /^ {2}follow \(R-0002-actor-c\) waits: package build; release: record successful handoff R-0002-actor-a$/m);
   assert.match(out.stdout, /^ {2}node \S+plan\.mjs ready --records \S+ --plan PL-0001$/m);
   assert.doesNotMatch(out.stdout, /plans\/PL-0001\.md \(undeclared\)/, 'RECORDS.md declares the Plan kind');
@@ -168,7 +168,7 @@ test('flow: the lead runs a ready judge package after two parallel actors record
   const sha = 'c'.repeat(40);
   const [merged] = readyPlan(state(), current, { context, host, base: sha }).packages;
   assert.equal(merged.status, 'ready');
-  assert.match(merged.command, new RegExp(`call\\.mjs \\S+ judge --round 1 --step judge --base ${sha} --task \\S+ --prepare$`));
+  assert.match(merged.command, new RegExp(`call\\.mjs \\S+ judge --round 1 --step judge --base ${sha} --plan PL-0001 --package j --task \\S+ --prepare$`));
   const [diverged] = readyPlan(state(), current, { context, host, base: null }).packages;
   assert.equal(diverged.status, 'waiting');
   assert.equal(diverged.command, undefined);
@@ -309,4 +309,229 @@ test('measures-zero per plan: a batch the plan names accrues from its publicatio
   assert.deepEqual([none.ownerWaiting.seconds, none.ownerWaiting.intervals], [null, []], 'no figure, never 0');
   assert.match(renderMeasures(none), /^Owner waiting time: n\/a \(the plan names no owner batch; the phase figure is in loop\.mjs next\)\.$/m);
   assert.doesNotMatch(renderMeasures(none), /Owner waiting time: 0 s/);
+});
+
+test('D-0063 sequential plan ownership: transitive needs chains may share files while unordered and cross-depth overlaps stay refused and live writer holds persist (flow: critic-initial -> actor -> critic-post-actor share one living suite; loss: false-verdict / wrong-result)', () => {
+  const seq = plan([
+    pkg('critic-initial', { role: 'critic', handoff: 'R-0001-critic-init', files: ['acceptance/domain.test.mjs'], reviews: ['actor-fix'] }),
+    pkg('actor-fix', { role: 'actor', handoff: 'R-0001-actor-fix', files: ['src/a.js'], needs: ['critic-initial'] }),
+    pkg('critic-post', { role: 'critic', handoff: 'R-0001-critic-post', files: ['acceptance/domain.test.mjs'], needs: ['actor-fix'], reviews: ['actor-fix'] }),
+    pkg('judge', { role: 'judge', handoff: 'R-0001-judge', files: [], needs: ['critic-post'] }),
+  ]);
+  assert.deepEqual(validatePlan(seq, state()), []);
+  const ord = packageOrder(seq);
+  assert.equal(ord.reaches('critic-initial', 'critic-post'), true);
+  assert.equal(ord.ordered('critic-initial', 'critic-post'), true);
+
+  const byHandoff = plan([
+    pkg('critic-initial', { role: 'critic', handoff: 'R-0001-critic-init', files: ['acceptance/domain.test.mjs'] }),
+    pkg('actor-fix', { role: 'actor', handoff: 'R-0001-actor-fix', files: ['src/a.js'], needs: ['R-0001-critic-init'] }),
+    pkg('critic-post', { role: 'critic', handoff: 'R-0001-critic-post', files: ['acceptance/domain.test.mjs'], needs: ['R-0001-actor-fix'], reviews: ['actor-fix'] }),
+    pkg('judge', { role: 'judge', handoff: 'R-0001-judge', files: [], needs: ['R-0001-critic-post'] }),
+  ]);
+  assert.deepEqual(validatePlan(byHandoff, state()), []);
+  assert.equal(planPackageMap(byHandoff).get('R-0001-critic-init')?.id, 'critic-initial');
+  assert.equal(planPackageMap(byHandoff).get('actor-fix')?.handoff, 'R-0001-actor-fix');
+  assert.equal(packageOrder(byHandoff).ordered('critic-initial', 'critic-post'), true);
+  assert.equal(packageOrder(byHandoff).reaches('R-0001-critic-init', 'R-0001-judge'), true);
+
+  const preActorHandoffOnly = plan([
+    pkg('critic-initial', { role: 'critic', handoff: 'R-0001-critic-init', files: ['acceptance/domain.test.mjs'] }),
+    pkg('actor-fix', { role: 'actor', handoff: 'R-0001-actor-fix', files: ['src/a.js'], needs: ['R-0001-critic-init'] }),
+    pkg('judge', { role: 'judge', handoff: 'R-0001-judge', files: [], needs: ['R-0001-actor-fix'] }),
+  ]);
+  assert.deepEqual(validatePlan(preActorHandoffOnly, state()), []);
+
+  const missingExternal = plan([
+    pkg('critic-initial', { role: 'critic', handoff: 'R-0001-critic-init', files: ['acceptance/domain.test.mjs'], needs: ['R-0001-critic-missing'] }),
+    pkg('actor-fix', { role: 'actor', handoff: 'R-0001-actor-fix', files: ['src/a.js'], needs: ['R-0001-critic-init'] }),
+    pkg('judge', { role: 'judge', handoff: 'R-0001-judge', files: [], needs: ['R-0001-actor-fix'] }),
+  ]);
+  assert.match(validatePlan(missingExternal, state()).join('\n'), /missing committed record R-0001-critic-missing/);
+
+  const handoffCycle = plan([
+    pkg('a', { files: ['src/a.js'], needs: ['R-0001-actor-b'] }),
+    pkg('b', { files: ['src/b.js'], needs: ['R-0001-actor-a'] }),
+    pkg('cr', { role: 'critic', handoff: 'R-0001-critic-cr', needs: ['a', 'b'], reviews: ['a', 'b'] }),
+    pkg('j', { role: 'judge', handoff: 'R-0001-judge', needs: ['cr'] }),
+  ]);
+  assert.match(validatePlan(handoffCycle, state()).join('\n'), /needs cycle/);
+
+  byHandoff.packages.forEach(p => { p.task = import.meta.filename; });
+  const handoffCtx = {
+    cfg: { agents: { critic: { runner: 't3' }, actor: { runner: 't3' }, judge: { runner: 't3' } }, workDir: '/', configFile: '/loop.json' },
+    handoffs: [], batches: [], plans: [byHandoff], prepared: [],
+  };
+  const handoffReady0 = readyPlan(state(), byHandoff, { context: handoffCtx, host: { admits: true, over: [] } });
+  assert.equal(handoffReady0.packages.find(p => p.id === 'critic-initial').status, 'ready');
+  const waitingActor = handoffReady0.packages.find(p => p.id === 'actor-fix');
+  assert.equal(waitingActor.status, 'waiting');
+  assert.ok(waitingActor.holds.some(h => h.kind === 'package' && h.target === 'critic-initial' && /R-0001-critic-init/.test(h.release)));
+  const handoffReady1 = readyPlan(
+    state({ 'rounds/0001-critic-init.md': '# R-0001-critic-init\n' }),
+    byHandoff,
+    { context: { ...handoffCtx, handoffs: [{ id: 'R-0001-critic-init', phase: 'v1', record: 'rounds/0001-critic-init.md' }] }, host: { admits: true, over: [] } },
+  );
+  assert.equal(handoffReady1.packages.find(p => p.id === 'actor-fix').status, 'ready');
+  assert.equal(handoffReady1.packages.find(p => p.id === 'critic-post').status, 'waiting');
+
+  seq.packages.forEach(p => { p.task = import.meta.filename; });
+  const context = {
+    cfg: { agents: { critic: { runner: 't3' }, actor: { runner: 't3' }, judge: { runner: 't3' } }, workDir: '/', configFile: '/loop.json' },
+    handoffs: [], batches: [], plans: [seq],
+    prepared: [{ id: 'R-0001-critic-init', role: 'critic', phase: 'v1', liveWorkspace: true, ws: '/work/c0', dispatch: { files: ['acceptance/domain.test.mjs'] } }],
+  };
+  const ready = readyPlan(state(), seq, { context, host: { admits: true, over: [] } });
+  const postRow = ready.packages.find(p => p.id === 'critic-post');
+  assert.equal(postRow.status, 'waiting');
+  assert.ok(postRow.holds.some(h => h.kind === 'package' && h.target === 'actor-fix'));
+  assert.ok(postRow.holds.some(h => h.kind === 'writer' && h.target === 'R-0001-critic-init'));
+
+  const crossDepth = plan([
+    pkg('aa', { files: ['src/a0.js'] }),
+    pkg('ab', { files: ['src/a1.js'], needs: ['aa'] }),
+    pkg('ca', { role: 'critic', handoff: 'R-0001-critic-a', files: ['acceptance/domain.test.mjs'], needs: ['ab'], reviews: ['aa', 'ab'] }),
+    pkg('ba', { files: ['src/b0.js'] }),
+    pkg('cb', { role: 'critic', handoff: 'R-0001-critic-b', files: ['acceptance/domain.test.mjs'], needs: ['ba'], reviews: ['ba'] }),
+    pkg('j', { role: 'judge', handoff: 'R-0001-judge', files: [], needs: ['ca', 'cb'] }),
+  ]);
+  assert.match(validatePlan(crossDepth, state()).join('\n'), /ca and cb share overlapping files/);
+});
+
+test('R49-1 measurePlan resolves same-plan handoff-ID needs identically to package-ID needs (flow: lead measures a sequential plan; loss: wrong-result)', () => {
+  const at = iso => Date.parse(iso);
+  const log = (start, end) => gzipSync([
+    { timestamp: start, type: 'user', message: { content: 'task' } },
+    { timestamp: end, type: 'result', subtype: 'success' },
+  ].map(r => JSON.stringify(r)).join('\n'));
+  const specs = [
+    ['critic-init', 'critic', 'R-0002-critic-init', '2026-11-24T09:00:10Z', '2026-11-24T09:00:15Z', '2026-11-24T09:00:20Z', 5],
+    ['actor-fix', 'actor', 'R-0002-actor-fix', '2026-11-24T09:00:30Z', '2026-11-24T09:00:40Z', '2026-11-24T09:00:45Z', 10],
+    ['critic-post', 'critic', 'R-0002-critic-post', '2026-11-24T09:00:50Z', '2026-11-24T09:00:56Z', '2026-11-24T09:01:00Z', 6],
+    ['judge-final', 'judge', 'R-0002-judge', '2026-11-24T09:01:10Z', '2026-11-24T09:01:21Z', '2026-11-24T09:01:25Z', 11],
+  ];
+  const files = {}, sent = { 'plans/PL-0001.md': at('2026-11-24T09:00:00Z') }, handoffs = [];
+  for (const [, role, id, start, end, pub, seconds] of specs) {
+    const rec = `rounds/${id.slice(2)}.md`, lg = `evidence/${id}.log.gz`;
+    files[rec] = `# ${id}\n`; files[lg] = log(start, end); sent[rec] = at(pub);
+    handoffs.push({ id, time: pub, phase: 'v1', round: 2, step: id.slice(7), role, attempt: 1, agent: { runner: 't3', seconds }, view: 'a'.repeat(40), product: null, audit: { violations: 0 }, record: rec, files: [rec, lg] });
+  }
+  files['metrics/handoffs.jsonl'] = handoffs.map(h => JSON.stringify(h)).join('\n') + '\n';
+  const recState = state(files);
+  const build = useHandoff => plan([
+    pkg('critic-init', { role: 'critic', handoff: 'R-0002-critic-init', reviews: ['actor-fix'] }),
+    pkg('actor-fix', { role: 'actor', handoff: 'R-0002-actor-fix', needs: [useHandoff ? 'R-0002-critic-init' : 'critic-init'] }),
+    pkg('critic-post', { role: 'critic', handoff: 'R-0002-critic-post', needs: [useHandoff ? 'R-0002-actor-fix' : 'actor-fix'], reviews: ['actor-fix'] }),
+    pkg('judge-final', { role: 'judge', handoff: 'R-0002-judge', needs: [useHandoff ? 'R-0002-critic-post' : 'critic-post'] }),
+  ]);
+  const byPkg = measurePlan(recState, build(false), { published: p => sent[p] ?? null, now: at('2026-11-24T09:02:00Z') });
+  const byHandoff = measurePlan(recState, build(true), { published: p => sent[p] ?? null, now: at('2026-11-24T09:02:00Z') });
+  assert.equal(byPkg.criticalPath.seconds, 32);
+  assert.deepEqual(byHandoff.criticalPath, byPkg.criticalPath);
+  assert.deepEqual(byHandoff.criticalPath.path, ['critic-init', 'actor-fix', 'critic-post', 'judge-final']);
+  assert.deepEqual(byHandoff.idleDispatchable.intervals, byPkg.idleDispatchable.intervals);
+  assert.deepEqual(byHandoff.idleDispatchable.intervals.map(i => i.dependencyAvailableWindowSeconds), [10, 10, 5, 10]);
+  assert.deepEqual(byHandoff.execution, byPkg.execution);
+});
+
+test('R50-1/R50-2 criticCausalBase pins off-branch actors, holds diverged actors, and judgeLineageProblems preserves no-change actor ancestry (flow: critic/judge preparation; loss: wrong-result)', () => {
+  const r = repo({ 'src/a.js': 'export const a = 1;\n', 'src/b.js': 'export const b = 1;\n', 'README.md': '# r\n' });
+  const olderSha = git(r, 'rev-parse', 'HEAD');
+  const commitOn = (parent, file, body, msg) => {
+    git(r, 'checkout', '-q', '--detach', parent); writeFileSync(join(r, file), body);
+    git(r, 'add', file); git(r, 'commit', '-qm', msg); return git(r, 'rev-parse', 'HEAD');
+  };
+  const docSha = commitOn(olderSha, 'README.md', '# doc\n', 'doc');
+  const shaA = commitOn(olderSha, 'src/a.js', 'export const a = 2;\n', 'actor a');
+  const shaB = commitOn(olderSha, 'src/b.js', 'export const b = 2;\n', 'actor b');
+  git(r, 'checkout', '-q', '--detach', shaA); git(r, 'merge', '-q', '--no-edit', shaB);
+  const mergeSha = git(r, 'rev-parse', 'HEAD');
+  const pl = plan([
+    pkg('c0', { role: 'critic', handoff: 'R-0001-critic-init' }), pkg('a1', { handoff: 'R-0001-actor-a', needs: ['c0'] }),
+    pkg('a2', { handoff: 'R-0001-actor-b', needs: ['c0'] }), pkg('c1', { role: 'critic', handoff: 'R-0001-critic-one', needs: ['a1'] }),
+    pkg('cj', { role: 'critic', handoff: 'R-0001-critic-join', needs: ['a1', 'a2'] }), pkg('j', { role: 'judge', handoff: 'R-0001-judge', needs: ['cj'] }),
+  ]);
+  pl.packages.forEach(p => { p.task = import.meta.filename; });
+  const hs = [
+    { id: 'R-0001-critic-init', phase: 'v1', record: 'rounds/0001-critic-init.md', product: { base: olderSha, commit: olderSha } },
+    { id: 'R-0001-actor-a', phase: 'v1', record: 'rounds/0001-actor-a.md', product: { base: olderSha, commit: shaA } },
+    { id: 'R-0001-actor-b', phase: 'v1', record: 'rounds/0001-actor-b.md', product: { base: olderSha, commit: shaB } },
+  ];
+  assert.deepEqual(criticCausalBase(pl, pl.packages[0], { repo: r, handoffs: hs, base: docSha }), { ok: true, base: docSha, pinned: false, missing: [] });
+  const pinOne = criticCausalBase(pl, pl.packages[3], { repo: r, handoffs: hs, base: docSha });
+  assert.deepEqual([pinOne.ok, pinOne.base, pinOne.pinned, pinOne.missing.length], [true, shaA, true, 1]);
+  assert.match(pinOne.detail, new RegExp(shaA.slice(0, 12)));
+  const div = criticCausalBase(pl, pl.packages[4], { repo: r, handoffs: hs, base: null });
+  assert.deepEqual([div.ok, div.base, div.pinned, div.missing.length], [false, null, false, 2]);
+  assert.match(div.release, /dispatch\.mjs integrate --plan PL-0001 --apply/);
+  const files = Object.fromEntries(hs.map(h => [h.record, `# ${h.id}\n`]));
+  const ctx = { cfg: { product: r, agents: { critic: { runner: 't3' }, actor: { runner: 't3' }, judge: { runner: 't3' } }, workDir: '/', configFile: '/loop.json' }, handoffs: hs, batches: [], plans: [pl], prepared: [] };
+  const held = readyPlan(state(files), pl, { context: ctx, host: { admits: true, over: [] }, base: null });
+  assert.match(held.packages.find(p => p.id === 'c1').command, new RegExp(`--base ${shaA}`));
+  const cjHeld = held.packages.find(p => p.id === 'cj');
+  assert.deepEqual([cjHeld.status, cjHeld.command, cjHeld.holds[0].kind], ['waiting', undefined, 'merge']);
+  assert.match(readyPlan(state(files), pl, { context: ctx, host: { admits: true, over: [] }, base: mergeSha }).packages.find(p => p.id === 'cj').command, new RegExp(`--base ${mergeSha}`));
+
+  const noDiffPlan = plan([pkg('a1', { handoff: 'R-0002-actor-fix' }), pkg('cp', { role: 'critic', handoff: 'R-0002-critic-post', needs: ['a1'] }), pkg('j', { role: 'judge', handoff: 'R-0002-judge', needs: ['cp'] })]);
+  noDiffPlan.packages.forEach(p => { p.task = import.meta.filename; });
+  const hsNoDiff = [
+    { id: 'R-0002-actor-fix', phase: 'v1', record: 'rounds/0002-actor-fix.md', product: { base: docSha, commit: docSha } },
+    { id: 'R-0002-critic-post', phase: 'v1', record: 'rounds/0002-critic-post.md', product: { base: docSha, commit: docSha } },
+  ];
+  assert.deepEqual(judgeLineageProblems(noDiffPlan, { repo: r, handoffs: hsNoDiff, base: olderSha }).map(p => [p.kind, p.id, p.sha]), [['merge', 'a1', docSha]]);
+  assert.deepEqual(judgeLineageProblems(noDiffPlan, { repo: r, handoffs: hsNoDiff, base: docSha }), []);
+  assert.deepEqual(judgeLineageProblems(noDiffPlan, { repo: r, handoffs: [hsNoDiff[0], { ...hsNoDiff[1], product: { base: olderSha, commit: olderSha } }], base: docSha }).map(p => [p.kind, p.id]), [['lineage', 'cp']]);
+  const noDiffCtx = { ...ctx, handoffs: hsNoDiff, plans: [noDiffPlan] }, noDiffFiles = Object.fromEntries(hsNoDiff.map(h => [h.record, `# ${h.id}\n`]));
+  assert.equal(readyPlan(state(noDiffFiles), noDiffPlan, { context: noDiffCtx, host: { admits: true, over: [] }, base: olderSha }).packages.find(p => p.id === 'j').status, 'waiting');
+  assert.equal(readyPlan(state(noDiffFiles), noDiffPlan, { context: noDiffCtx, host: { admits: true, over: [] }, base: docSha }).packages.find(p => p.id === 'j').status, 'ready');
+});
+
+test('R51-1/R51-2/D-0064 T10: planCallCommand binds plan/package, readyPlan holds code judge on pending critic/coverage, and validatePlan allows actor+critic without mandatory judge', () => {
+  const actorCritic = plan([
+    pkg('a1', { handoff: 'R-0001-actor-a', files: ['src/a.js'] }),
+    pkg('c1', { role: 'critic', handoff: 'R-0001-critic-post', files: ['test/a.test.js'], needs: ['a1'], reviews: ['a1'] }),
+  ]);
+  assert.deepEqual(validatePlan(actorCritic, state()), []);
+  assert.match(validatePlan(plan([pkg('a1', { handoff: 'R-0001-actor-a', files: ['src/a.js'] })]), state()).join('\n'), /lack critic coverage/);
+
+  const withJudge = plan([
+    pkg('a1', { handoff: 'R-0001-actor-a', files: ['src/a.js'] }),
+    pkg('c1', { role: 'critic', handoff: 'R-0001-critic-post', files: ['test/a.test.js'], needs: ['a1'], reviews: ['a1'] }),
+    pkg('jf', { role: 'judge', handoff: 'R-0001-judge-frame', needs: ['a1'] }),
+    pkg('j', { role: 'judge', handoff: 'R-0001-judge', needs: ['a1'] }),
+  ]);
+  withJudge.packages.forEach(p => { p.task = import.meta.filename; });
+  const r = repo({ 'src/a.js': 'export const a = 1;\n' });
+  const sha = git(r, 'rev-parse', 'HEAD');
+  const actorH = { id: 'R-0001-actor-a', phase: 'v1', record: 'rounds/0001-actor-a.md', product: { base: sha, commit: sha } };
+  const criticH = { id: 'R-0001-critic-post', phase: 'v1', record: 'rounds/0001-critic-post.md', product: { base: sha, commit: sha } };
+  const cfg = { product: r, agents: { actor: { runner: 't3' }, critic: { runner: 't3' }, judge: { runner: 't3' } }, workDir: '/', configFile: '/loop.json' };
+  const host = { admits: true, over: [] };
+
+  const pendingCtx = { cfg, handoffs: [actorH], batches: [], plans: [withJudge], prepared: [] };
+  const pendingState = state({ [actorH.record]: '# actor\n' });
+  const pendingReady = readyPlan(pendingState, withJudge, { context: pendingCtx, host, base: sha });
+  const jHeld = pendingReady.packages.find(p => p.id === 'j');
+  const jfReady = pendingReady.packages.find(p => p.id === 'jf');
+  const cReady = pendingReady.packages.find(p => p.id === 'c1');
+  assert.equal(jfReady.status, 'ready');
+  assert.equal(cReady.status, 'ready');
+  assert.equal(cReady.command, planCallCommand(cfg, 'PL-0001', withJudge.packages[1], { base: sha }));
+  assert.deepEqual([jHeld.status, jHeld.idle, jHeld.command], ['waiting', false, undefined]);
+  assert.ok(jHeld.holds.some(h => h.kind === 'critic' && h.release.includes('R-0001-critic-post')));
+  assert.deepEqual(judgeCoverageProblems(withJudge, { handoffs: [actorH] }).map(p => [p.kind, p.handoff]), [['critic', 'R-0001-critic-post']]);
+
+  const doneCtx = { cfg, handoffs: [actorH, criticH], batches: [], plans: [withJudge], prepared: [] };
+  const doneState = state({ [actorH.record]: '# actor\n', [criticH.record]: '# critic\n' });
+  assert.deepEqual(judgeJoinProblems(withJudge, { repo: r, handoffs: [actorH, criticH], base: sha }), []);
+  const jReady = readyPlan(doneState, withJudge, { context: doneCtx, host, base: sha }).packages.find(p => p.id === 'j');
+  assert.equal(jReady.status, 'ready');
+  assert.equal(jReady.command, planCallCommand(cfg, 'PL-0001', withJudge.packages[3], { base: sha }));
+
+  const uncovered = plan([pkg('a1', { handoff: 'R-0001-actor-a', files: ['src/a.js'] }), pkg('j', { role: 'judge', handoff: 'R-0001-judge', needs: ['a1'] })]);
+  uncovered.packages.forEach(p => { p.task = import.meta.filename; });
+  const covHeld = readyPlan(pendingState, uncovered, { context: { ...pendingCtx, plans: [uncovered] }, host, base: sha }).packages.find(p => p.id === 'j');
+  assert.deepEqual([covHeld.status, covHeld.idle, covHeld.holds[0].kind], ['waiting', false, 'coverage']);
+  const slackReady = readyPlan(pendingState, uncovered, { context: { ...pendingCtx, plans: [uncovered] }, host, base: sha, window: { mode: 'slack' } }).packages.find(p => p.id === 'j');
+  assert.equal(slackReady.status, 'ready');
 });

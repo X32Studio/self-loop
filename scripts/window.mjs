@@ -1,9 +1,5 @@
 #!/usr/bin/env node
-// CLI for Bounded Horizon Windows (`metrics/windows.jsonl`).
-//
-// node scripts/window.mjs open --records <dir> --phase <p> --horizon <N> --goal "<text>" --invariant "<text>" [--invariant ...] [--start-round <R>] [--by <who>] [--json]
-// node scripts/window.mjs status --records <dir> [--phase <p>] [--json]
-// node scripts/window.mjs close --records <dir> --id <W-NNNN> --verdict verified|reframed [--commit <sha>] [--config <loop.json>] [--by <who>] [--note "<text>"] [--json]
+// D-0064
 import "./lib/unbind-git.mjs";
 import { lstatSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
@@ -119,7 +115,7 @@ export function main(argv, { cwd = process.cwd() } = {}) {
         try { phase = JSON.parse(snap.read("loop.json")).phase ?? null; } catch {}
       }
       const nextRound = defaultStartRound(records, snap.head);
-      const state = windowState({ windows, handoffs, rows, phase, nextRound });
+      const state = windowState({ windows, handoffs, rows, phase, nextRound, read: snap.read, files: snap.files });
       if (opts.json) console.log(JSON.stringify(state, null, 2));
       else console.log(formatStatusText(state, phase));
       return 0;

@@ -17,11 +17,12 @@ import { continuationText, parentEntryInput, reconcileParentEntry, startReport, 
 import { stallThreshold, tick, tickText } from "./lib/tick.mjs";
 import { cliClock, nextLines, recordsOf, stallState } from "./loop.mjs";
 import { main as runDispatch } from "./dispatch.mjs";
+import { main as runPatch } from "./lead-patch.mjs";
 import { main as runSsot } from "./ssot-check.mjs";
 import { main as runWindow } from "./window.mjs";
 
 const skill = join(dirname(fileURLToPath(import.meta.url)), "..");
-const USAGE = "self-loop.mjs init|start|next|stall|tick|ssot|window|dispatch|heartbeat|hooks|registry ...";
+const USAGE = "self-loop.mjs init|start|next|stall|tick|ssot|window|dispatch|patch|heartbeat|hooks|registry ...";
 
 function hoursOf(args) {
   if (!("hours" in args)) return null;
@@ -323,7 +324,23 @@ function runHooks(args, env, cwd) {
   }
 }
 
-const INIT_VALUE_FLAGS = new Set(["product", "records", "name", "branch", "owner-store"]);
+const INIT_VALUE_FLAGS = new Set([
+  "product",
+  "records",
+  "name",
+  "branch",
+  "owner-store",
+  "harness",
+  "runner",
+  "provider",
+  "adapter",
+  "model",
+  "actor-model",
+  "critic-model",
+  "judge-model",
+  "reviewer-model",
+  "independence",
+]);
 const INIT_BOOL_FLAGS = new Set(["local-exclude", "register", "json"]);
 
 function runInit(args, env, cwd) {
@@ -344,6 +361,16 @@ function runInit(args, env, cwd) {
       records: args.records ?? null,
       name: args.name ?? null,
       branch: args.branch ?? null,
+      harness: args.harness ?? null,
+      runner: args.runner ?? null,
+      provider: args.provider ?? null,
+      adapter: args.adapter ?? null,
+      model: args.model ?? null,
+      actorModel: args["actor-model"] ?? null,
+      criticModel: args["critic-model"] ?? null,
+      judgeModel: args["judge-model"] ?? null,
+      reviewerModel: args["reviewer-model"] ?? null,
+      independence: args.independence ?? null,
       localExclude: "local-exclude" in args,
       register: "register" in args,
       ownerStore: args["owner-store"] ?? null,
@@ -401,6 +428,7 @@ export function main(argv, { env = process.env, cwd = process.cwd() } = {}) {
   if (command === "ssot") return runSsot(argv.slice(1), { env, cwd });
   if (command === "window") return runWindow(argv.slice(1), { env, cwd });
   if (command === "dispatch") return runDispatch(argv.slice(1));
+  if (command === "patch") return runPatch(argv.slice(1), { env, cwd });
   if (command === "heartbeat") return runHeartbeat(args, env);
   if (command === "hooks") return runHooks(args, env, cwd);
   if (command === "registry") return runRegistry(args, env);

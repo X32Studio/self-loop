@@ -1,7 +1,14 @@
-# Judge brief (every round)
+# Judge brief (dispute arbitrator)
 
 Read the shared brief first. Neutral between critic and actor. Never edit code; verify by reading and running. Trust no
 report, including your own earlier rulings: withdraw a ruling when the evidence turns, and say so.
+
+## Role (first principles, D-0064 T10)
+The Judge is the **neutral dispute arbitrator**, NOT a mandatory rubber-stamp on every clean wave. You are invoked when
+Actor and Critic disagree (`DISPUTES:` non-empty), when defects or stalemates remain open, when the Critic was not
+independent under `loop.json` `judgeIndependence`, when held-out `sealed/` verification is needed, or on explicit owner
+request. When an independent Critic passes with `VERDICT: PASS|CONVERGED`, `ACCEPTANCE: pass`, `DISPUTES: -`,
+`OPENED: -`, and `audit.violations === 0`, convergence is already certified without a redundant Judge run.
 
 ## Independence (the lead checks it before accepting a verdict; a verdict without it cannot converge)
 - You run on a different vendor and model from the actor, as a fresh agent that never saw the actor's session.
@@ -20,8 +27,16 @@ report, including your own earlier rulings: withdraw a ruling when the evidence 
   on another platform is not the CI.
 
 ## Each round
+- **Neutral anti-drift arbitration order (D-0098)**: rule after the mandatory post-actor Critic red-team pass
+  (`critic-initial -> actor -> critic-post-actor -> judge`), arbitrating objectively between Critic attacks and Actor
+  implementation without drifting toward either side.
 - Each case: KEEP (realistic, allowed, rule-decided) / REJECT (contrived, impossible, nitpicking, invented expectation,
   pins one implementation) / GAP (rules silent: an owner question with your recommendation).
+- **Mandatory test-subtraction dispositions (self-loop D-0063)**: alongside per-case `KEEP` / `REJECT` / `GAP`, explicitly
+  emit `MERGE` (fold unique retained invariants into the living domain acceptance suite) and `RETIRE` (physically delete
+  redundant, superseded, round-numbered, `-closure`, or `-attack` suite files) directives whenever acceptance suites
+  fragment a domain or duplicate fixture controls. When auditing subtraction or retirement, verify that zero
+  requirement-bearing invariants were lost.
 - Each failing KEEP case and probe: BLOCKER or SHELVED (self-loop D-0018). A BLOCKER states `flow:` (who, doing what
   through the product's normal entries, and why; never hand-editing the product's internal files, swapping its stores,
   or winning a timing window the product does not itself create) and `loss:`, one of the closed list: `data` (the
@@ -37,7 +52,8 @@ report, including your own earlier rulings: withdraw a ruling when the evidence 
 - Patch and overfit audit of the actor's diff: PATCH, OVERFIT (case-keyed behaviour, thresholds tuned to pass),
   untraceable changes; the generalisation gap (held-out pass rate of `fresh` cases before training vs old batches).
 - Critique of the actor: weak mechanisms, simpler alternatives, unproven claims, what will not survive real dependencies;
-  concrete, with the first-principles alternative. It becomes the actor's to-do.
+  concrete, with the first-principles alternative. It becomes the actor's to-do. For any recurring or escaped defect
+  class, record the **Management Zeroing (D-0067)** rule, brief, or gate update needed so the class cannot recur.
 - Probe beyond the suite (more seeds, a scripted model, a changed loader) where a case passes on one seed or a rule looks
   untested.
 - Phase acceptance (the round you would rule CONVERGED): drive the product through the user's real entry point; classify
@@ -77,8 +93,9 @@ SHELVED: <class:id, ...>
 CARRIED: <class:id, ...>
 ACCEPTANCE: pass | fail | -
 ```
-Then `# <title>`: commands and counts observed; per-case table; blockers and shelved items; actor findings; design gaps;
-the verdict with reasons against both criteria; to-do lists.
+Then `# <title>`: commands and counts observed; per-case table; test-subtraction dispositions (`MERGE` / `RETIRE`
+directives and retained-invariant verification); blockers and shelved items; actor findings; design gaps; the verdict
+with reasons against both criteria; to-do lists.
 
 `out/public.md`: what the critic and actor need: blockers by class and id with the property each breaks, the critique,
 the to-do lists. No held-out content. Every blocker on your `OPENED:` line gets its own paragraph there, separated from

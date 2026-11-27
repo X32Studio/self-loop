@@ -1,4 +1,4 @@
-// F-0004, F-0006, F-0008, F-0011, F-0012, D-0060, D-0061, design/mandatory-control-plane.md#5, design/suite-once.md#2
+// F-0004, F-0006, F-0008, F-0011, F-0012, D-0060, D-0061, D-0066, design/mandatory-control-plane.md#5, design/suite-once.md#2
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -6,8 +6,10 @@ import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSyn
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
-import { call, cancelCall, EXIT, preparedIn, recordCall } from "../call.mjs";
+import { argv, call, cancelCall, EXIT, preparedIn, recordCall } from "../call.mjs";
+import { prepareWave, recordWave } from "../lib/dispatch.mjs";
 import { appendWords } from "../lib/owner-words.mjs";
+import { loadPlan, planCallCommand, snapshot } from "../lib/plan.mjs";
 import { hostLoad } from "../lib/registry.mjs";
 import { isStalePreparation, resolveChildSession } from "../lib/t3-child.mjs";
 import { lookupSuiteReceipt, suiteGreen, suiteStore } from "../suite-green.mjs";
@@ -32,7 +34,7 @@ function writeCodex(codexHome, sid, prompt, cwd, commands = []) {
   const file = join(dir, `rollout-${sid}-${Math.random().toString(16).slice(2)}.jsonl`);
   writeFileSync(file, [
     { timestamp: ts, type: "session_meta", payload: { cwd, id: sid } },
-    { timestamp: ts, type: "turn_context", payload: { cwd, model: "gpt-6" } },
+    { timestamp: ts, type: "turn_context", payload: { cwd, model: "gpt-5.4" } },
     { timestamp: ts, type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: prompt }] } },
     ...commands.map(c => ({ timestamp: ts, type: "event_msg", payload: { type: "item_completed", item: { type: "CommandExecution", command: ["/bin/sh", "-c", c], cwd: `file://${cwd}`, exit_code: 0 } } })),
     { timestamp: ts, type: "event_msg", payload: { type: "task_complete" } },
@@ -108,7 +110,7 @@ test("0-turn substantive owner-word guard refuses critic and actor immediately w
 });
 
 test("optional --session nonce resolution, call.mjs cancel, and prior-round zombie expiry", async () => {
-  const t3 = { runner: "t3", provider: "codex", model: "gpt-6", effort: "high" };
+  const t3 = { runner: "t3", provider: "codex", model: "gpt-5.4", effort: "high" };
   const s = await setup({}, { agents: { critic: t3, actor: t3, judge: t3, reviewer: { runner: "cmd", cmd: ["true"] } } });
   const codexHome = temp("cu-codex-");
   const oldCodex = process.env.CODEX_HOME;
@@ -258,7 +260,7 @@ test("ancestor-extinguished ci-absent and delta-scoped T3 hotspot blocking work 
 
 test("stageSuiteWorkspace pre-judge ensure/red refusal, lookup, purgeTreeReceipts pre-poisoning defense, duplicateSuiteRuns audit, and gated-push auto-receipt", async () => {
   const counterFile = join(temp("cu-suite-count-"), "runs.log");
-  const t3 = { runner: "t3", provider: "codex", model: "gpt-6" };
+  const t3 = { runner: "t3", provider: "codex", model: "gpt-5.4" };
   const s = await setup({}, {
     agents: { critic: t3, actor: t3, judge: t3, reviewer: { runner: "cmd", cmd: ["true"] } },
     gates: { require: [], suite: "node --test test/suite.test.mjs", format: "node-test" },
@@ -386,4 +388,142 @@ test("stageSuiteWorkspace pre-judge ensure/red refusal, lookup, purgeTreeReceipt
   } finally {
     if (oldCodex === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldCodex;
   }
+});
+
+test("D-0066: runner paseo + better-paseo-antigravity works across call --prepare, recordCall, planCallCommand, and dispatch prepare/record", async () => {
+  assert.equal(argv({ runner: "paseo", provider: "better-paseo-antigravity", model: "gemini-2.5-flash" }, { confined: false, cwd: ".", addDirs: [] }), null);
+  assert.equal(argv({ runner: "paseo", provider: "pi", model: "openrouter/gemini-2.5-pro-exp" }, { confined: false, cwd: ".", addDirs: [] }), null);
+  assert.equal(argv({ runner: "t3", provider: "opencode", adapter: "generic", model: "xai/grok-4" }, { confined: false, cwd: ".", addDirs: [] }), null);
+  assert.throws(
+    () => argv({ runner: "paseo", provider: "   " }, { confined: false, cwd: ".", addDirs: [] }),
+    /a t3\/paseo agent needs a non-empty provider string/,
+  );
+  assert.throws(
+    () => argv({ runner: "t3", provider: "pi", adapter: "bogus" }, { confined: false, cwd: ".", addDirs: [] }),
+    /unknown adapter/,
+  );
+  const paseoAg = model => ({ runner: "paseo", provider: "better-paseo-antigravity", model, effort: "high" });
+  const s = await setup({}, {
+    agents: {
+      actor: paseoAg("gemini-2.5-flash"),
+      critic: paseoAg("gemini-2.5-pro"),
+      judge: paseoAg("gemini-2.5-pro-exp"),
+      reviewer: { runner: "paseo", provider: "codex", model: "gpt-5.4" },
+    },
+    judgeIndependence: "model",
+  });
+  const revRefused = s.run("reviewer", { round: 1, step: "reviewer-diagnosis", prepare: true });
+  assert.equal(revRefused.code, EXIT.usage);
+  assert.match(revRefused.message, /paseo:codex/);
+
+  const agHome = temp("cu-paseo-ag-");
+  const savedEnv = {
+    ANTIGRAVITY_HOME: process.env.ANTIGRAVITY_HOME,
+    ANTIGRAVITY_APP_DATA_DIR: process.env.ANTIGRAVITY_APP_DATA_DIR,
+    GEMINI_HOME: process.env.GEMINI_HOME,
+    T3CODE_HOME: process.env.T3CODE_HOME,
+  };
+  process.env.ANTIGRAVITY_HOME = agHome;
+  delete process.env.ANTIGRAVITY_APP_DATA_DIR;
+  process.env.GEMINI_HOME = temp("cu-paseo-gem-");
+  process.env.T3CODE_HOME = "";
+  const writePaseoTx = (convId, prompt, model, ws) => {
+    const file = join(agHome, "antigravity-acp", "brain", convId, ".system_generated", "logs", "transcript_full.jsonl");
+    mkdirSync(dirname(file), { recursive: true });
+    const escaped = prompt.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const ts = new Date().toISOString();
+    writeFileSync(file, [
+      { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: ts,
+        content: `<USER_REQUEST>\n<paseo-system version="1" kind="agent-message" source-agent-id="lead">\n${escaped}\n</paseo-system>\n</USER_REQUEST>` },
+      { step_index: 1, type: "PLANNER_RESPONSE", status: "DONE", model, created_at: ts, tool_calls: [] },
+    ].map(r => JSON.stringify(r)).join("\n") + "\n");
+    bumpAfter(file, ws);
+    return file;
+  };
+  try {
+    const prep = s.run("actor", { round: 1, prepare: true });
+    assert.equal(prep.code, EXIT.done, prep.message);
+    assert.match(prep.prepared.prompt, /You run as a Paseo child agent/);
+    assert.equal(prep.prepared.target.provider, "better-paseo-antigravity");
+    put(prep.prepared.ws, "out/report.md", "# R-0001-actor\n\nDone via Paseo.\n");
+    put(prep.prepared.wt, "src/paseo.js", "export const ok = true;\n");
+    writePaseoTx("conv-paseo-actor-1", prep.prepared.prompt, "gemini-2.5-flash", prep.prepared.ws);
+    const rec = recordCall(s.cfg, prep.prepared.ws);
+    assert.equal(rec.code, EXIT.done, rec.message);
+    assert.equal(rec.handoff.agent.runner, "paseo:better-paseo-antigravity");
+    assert.equal(rec.handoff.agent.observedModel, "gemini-2.5-flash");
+    assert.deepEqual(rec.handoff.agent.observedModels, ["gemini-2.5-flash"]);
+
+    const planText = planMd("PL-0066", [
+      { id: "actor-paseo", role: "actor", handoff: "R-0002-actor-paseo", files: ["src/wave.js"] },
+      { id: "critic-paseo", role: "critic", handoff: "R-0002-critic-paseo", files: ["test/wave.test.js"], needs: ["actor-paseo"], reviews: ["actor-paseo"] },
+    ], { scope: "S5/paseo", phase: "S5" });
+    put(s.records, "plans/PL-0066.md", planText);
+    const cfgPath = join(s.records, "loop.json");
+    s.cfg.configFile = cfgPath;
+    writeFileSync(cfgPath, JSON.stringify({ ...s.cfg, records: "." }, null, 2) + "\n");
+    commitAll(s.records, "commit paseo plan");
+
+    const st = snapshot(s.records, "HEAD");
+    const pl = loadPlan(st, "PL-0066");
+    const cmd = planCallCommand(s.cfg, "PL-0066", pl.packages[0]);
+    assert.match(cmd, /--prepare/);
+    assert.match(cmd, /--plan PL-0066 --package actor-paseo/);
+
+    const pw = prepareWave({ cfg: s.cfg, state: st, plan: pl, host: { admits: true, over: [], calls: [] } });
+    assert.equal(pw.ok, true, JSON.stringify(pw.errors));
+    assert.equal(pw.prepared.length, 1);
+    assert.match(pw.prepared[0].prompt, /You run as a Paseo child agent/);
+    put(pw.prepared[0].ws, "out/report.md", "# R-0002-actor-paseo\n\nWave done.\n");
+    put(pw.prepared[0].wt, "src/wave.js", "export const wave = 1;\n");
+    writePaseoTx("conv-paseo-wave-2", pw.prepared[0].prompt, "gemini-2.5-flash", pw.prepared[0].ws);
+
+    const rw = recordWave({ cfg: s.cfg, state: st, plan: pl });
+    assert.equal(rw.ok, true, JSON.stringify(rw.errors));
+    assert.equal(rw.recorded.length, 1);
+    assert.equal(rw.recorded[0].handoffRecord.agent.runner, "paseo:better-paseo-antigravity");
+    assert.deepEqual(rw.recorded[0].handoffRecord.agent.observedModels, ["gemini-2.5-flash"]);
+
+    const nextPaseo = spawnSync(process.execPath, [join(scripts, "loop.mjs"), "next", "--config", cfgPath], {
+      encoding: "utf8", env: { ...isolatedEnv(), SELF_LOOP_OWNER_STORE: roomyStore(), SELF_LOOP_LOAD_DIR: temp("cu-paseo-next-load-") },
+    });
+    assert.equal(nextPaseo.status, 0, nextPaseo.stderr);
+    assert.match(nextPaseo.stdout, /call\.mjs .* --prepare/);
+  } finally {
+    for (const [k, v] of Object.entries(savedEnv)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  }
+});
+
+test("D-0068: arbitrary provider (pi/opencode) prepares and records via generic adapter with --transcript and --session", async () => {
+  const s = await setup({}, {
+    agents: {
+      actor: { runner: "paseo", provider: "pi", model: "openrouter/gemini-2.5-pro-exp", vendor: "google" },
+      critic: { runner: "t3", provider: "opencode", adapter: "generic", model: "xai/grok-4" },
+      judge: { runner: "paseo", provider: "pi", model: "openrouter/gemini-2.5-pro-exp" },
+      reviewer: { runner: "paseo", provider: "pi", model: "openrouter/gemini-2.5-pro-exp" },
+    },
+    judgeIndependence: "session",
+  });
+  const prep = s.run("actor", { round: 1, prepare: true });
+  assert.equal(prep.code, EXIT.done, prep.message);
+  assert.equal(prep.prepared.target.provider, "pi");
+  assert.equal(prep.prepared.target.model, "openrouter/gemini-2.5-pro-exp");
+  put(prep.prepared.ws, "out/report.md", "# R-0001-actor\n\nGeneric provider done.\n");
+  put(prep.prepared.wt, "src/generic.js", "export const generic = true;\n");
+
+  const missingTx = recordCall(s.cfg, prep.prepared.ws);
+  assert.equal(missingTx.code, EXIT.failure);
+  assert.match(missingTx.message, /generic adapter.*--transcript/);
+
+  const txFile = join(prep.prepared.ws, "pi-transcript.jsonl");
+  writeFileSync(txFile, [
+    { role: "user", content: prep.prepared.prompt },
+    { role: "assistant", model: "openrouter/gemini-2.5-pro-exp", content: "Done." },
+  ].map(r => JSON.stringify(r)).join("\n") + "\n");
+  const rec = recordCall(s.cfg, prep.prepared.ws, { transcript: txFile, session: "pi-sess-42" });
+  assert.equal(rec.code, EXIT.done, rec.message);
+  assert.equal(rec.handoff.agent.runner, "paseo:pi");
+  assert.equal(rec.handoff.agent.session, "pi-sess-42");
+  assert.equal(rec.handoff.agent.vendor, "google");
+  assert.deepEqual(rec.handoff.agent.observedModels, ["openrouter/gemini-2.5-pro-exp"]);
 });

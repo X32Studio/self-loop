@@ -1,7 +1,7 @@
 // F-0012
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -28,7 +28,7 @@ test('selectors resolve exact pointers and unique headings without fenced decoys
 });
 
 function fixture(t) {
-  const repo = mkdtempSync(join(tmpdir(), 'plan-evidence-synthetic-'));
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), 'plan-evidence-synthetic-')));
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore','pipe','pipe'] }).trim();
   git('init'); git('config', 'user.email', 'synthetic@example.invalid'); git('config', 'user.name', 'Synthetic archive recorder');
@@ -147,7 +147,7 @@ test('native correspondence reads public handoff identity without sealed accepta
   assert.match(actor.findings.join('\n'),/missing exact selector|invalid native assignment/);
 });
 
-function positiveEvidence(t, { mode='external', at='2026-11-22T11:50:00Z', event=true, mutate=()=>{}, regression=false, conflict=false, forecast=null }={}) {
+function positiveEvidence(t, { mode='external', at='2026-11-22T11:50:00Z', event=true, mutate=()=>{}, regression=false, conflict=false, forecast=null, patchPlan=()=>{}, patchScope=()=>{} }={}) {
   const f=fixture(t), product=fixture(t);
   product.put('artifact.txt','usable artifact');const sha=product.commit(),tree=product.git('rev-parse',`${sha}^{tree}`);
   const ref=(path,commit=f.git('rev-parse','HEAD'))=>({repository:f.repo,commit,path,sha256:hash(execFileSync('git',['-C',f.repo,'show',`${commit}:${path}`]))});
@@ -169,6 +169,7 @@ function positiveEvidence(t, { mode='external', at='2026-11-22T11:50:00Z', event
     {id:'cr',needs:actorIds,reviews:actorIds,goal:'usable',interface:'report',acceptance:'works',handoff:'R-0001-critic-cr',role:'critic',authority:['D-0001'],files:['test/cr.test.mjs']},
     {id:'j',needs:['cr'],goal:'usable',interface:'report',acceptance:'works',handoff:'R-0001-judge',role:'judge',authority:['D-0001'],files:[]},
   );
+  patchPlan(plan);
   f.put('plans/PL-0001.md',JSON.stringify(plan));const basedOn=f.commit(),planRef=ref('plans/PL-0001.md',basedOn),counts={scope:0,release:0,event:0};
   function bind(type,claim,supersedes=[]) {
     const i=counts[type]++,dir=`evidence/0012/archive-${type}-${i}`;
@@ -200,6 +201,7 @@ function positiveEvidence(t, { mode='external', at='2026-11-22T11:50:00Z', event
     const o={schema:'plan-forecast/v1',rootRef:planRef,planRef,parents:[],promisesAdded:[],outlook:{asOf,basedOn:forecast.wrongCut?initial:basedOn,observation:{observedAt:asOf,recordedAt:asOf,evidenceRefs:[authority]},inputs:[authority],releasePackages:forecast.packages,reserve:{remaining:{lowSeconds:0,highSeconds:0},covers:[],basisRefs:[authority],assumptions:[]},checkpointAt:'2026-11-22T14:00:00Z',change:{reason:'synthetic forecast',authorityRefs:[authority],deferredPackages:forecast.deferred??[]},outcome:{state:'active',evidenceRefs:[],deliveredAt:null}},estimates:{core:estimate(1800,2400),restart:estimate(1800,2400),polish:estimate(60,120)}};
     const bytes=JSON.stringify(o);forecastPath=`forecasts/FO-${hash(bytes)}.json`;f.put(forecastPath,bytes);f.commit();
   }
+  patchScope(sc);
   const scope=bind('scope',sc);
   const rc={scopeRef:scope,candidate:{repository:product.repo,sha,tree,destination:{host:'github.com',repository:'synthetic/product'}},recipient:'owner',channel:'public',gateRefs:[{kind:'ci',ref:ref('evidence/0012/ci.json',initial)},{kind:'suite',ref:ref('evidence/0012/suite.json',initial)}],criteriaResults:[{criterion:{ref:criterion,selector:'# Minimum'},evidenceRefs:[artifact],availability:{artifactSha256:artifact.sha256,recipient:'owner',channel:'public',usable:true},result:'pass'}]};
   const release=bind('release',rc);
@@ -405,4 +407,63 @@ test('AC-26: CodeCommit plan-time CI evidence accepts matching host/repository/a
   const repoDrift = codecommitEvidence({ ciPatch: { repository: 'myrepo' } });
   assert.equal(repoDrift.releaseEvidence.length, 0);
   assert.match(repoDrift.findings.join('\n'), /candidate\/destination\/verdict mismatch/);
+});
+
+test('PLB-15: scope and forecast verification resolve same-plan handoff aliases identically while rejecting missing refs, alias duplicates, and cycles', t => {
+  const runView = opts => {
+    const { f, args, result, forecastPath } = positiveEvidence(t, opts);
+    const state = snapshot(f.repo, args.stateAtQ.revision);
+    const history = loadForecastHistory(f.repo, state.revision, args.plan.id);
+    const view = projectPlanTime(state, args.plan, { now: args.now, clockMode: 'simulation', forecastHistory: history });
+    return { result, scope: result.scopeByObservation[forecastPath], view };
+  };
+  const pkgRun = runView({ forecast: { packages: ['restart'], deferred: ['polish'] } });
+  const handoffPlan = plan => {
+    plan.packages.find(p => p.id === 'restart').needs = ['R-0001-actor'];
+    plan.packages.find(p => p.id === 'cr').needs = ['R-0001-actor', 'R-0002-actor-restart', 'R-0002-actor-polish'];
+    plan.packages.find(p => p.id === 'j').needs = ['R-0001-critic-cr'];
+  };
+  const handoffRun = runView({
+    forecast: { packages: ['R-0002-actor-restart'], deferred: ['R-0002-actor-polish'] },
+    patchPlan: handoffPlan,
+    patchScope: sc => {
+      sc.criteria[0].packages = ['R-0002-actor-restart'];
+      sc.releasePackages = ['R-0002-actor-restart'];
+      sc.deferred[0].package = 'R-0002-actor-polish';
+    },
+  });
+  assert.equal(pkgRun.scope.verification, 'verified', JSON.stringify(pkgRun.scope));
+  assert.equal(handoffRun.scope.verification, 'verified', JSON.stringify(handoffRun.scope));
+  assert.deepEqual(handoffRun.scope.releasePackages, pkgRun.scope.releasePackages);
+  assert.deepEqual(handoffRun.scope.findings, []);
+  assert.deepEqual(handoffRun.result.findings, []);
+  assert.deepEqual(handoffRun.view.forecast.releaseEta, pkgRun.view.forecast.releaseEta);
+  assert.equal(handoffRun.view.forecast.releaseEta.evidenceStatus, 'verified');
+
+  const externalNeedRun = runView({
+    forecast: { packages: ['R-0002-actor-restart'], deferred: ['R-0002-actor-polish'] },
+    patchPlan: plan => { handoffPlan(plan); plan.packages.find(p => p.id === 'restart').needs.push('D-0001'); },
+  });
+  assert.equal(externalNeedRun.scope.verification, 'verified', JSON.stringify(externalNeedRun.scope));
+  assert.deepEqual(externalNeedRun.result.findings, []);
+
+  const missingRef = runView({ forecast: { packages: ['ghost-pkg'] }, patchPlan: handoffPlan });
+  assert.equal(missingRef.scope.verification, 'unverified');
+  assert.match(missingRef.scope.findings.join('\n'), /missing dependency or cycle/);
+  assert.equal(missingRef.view.forecast.releaseEta.evidenceStatus, 'unverified');
+
+  const dupAlias = runView({ forecast: { packages: ['restart', 'R-0002-actor-restart'] }, patchPlan: handoffPlan });
+  assert.equal(dupAlias.scope.verification, 'unverified');
+  assert.match(dupAlias.scope.findings.join('\n'), /invalid package list/);
+
+  const cyclic = runView({
+    forecast: { packages: ['restart'] },
+    patchPlan: plan => {
+      plan.packages.find(p => p.id === 'core').needs = ['R-0002-actor-restart'];
+      plan.packages.find(p => p.id === 'restart').needs = ['R-0001-actor'];
+    },
+  });
+  assert.equal(cyclic.scope.verification, 'unverified');
+  assert.equal(cyclic.view.forecast.releaseEta.evidenceStatus, 'unverified');
+  assert.match(cyclic.result.findings.join('\n'), /invalid execution plan\/contract/);
 });

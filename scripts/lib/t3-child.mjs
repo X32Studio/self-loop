@@ -1,4 +1,4 @@
-// F-0008, D-0060, design/mandatory-control-plane.md#5
+// F-0008, D-0060, D-0066, D-0068, design/mandatory-control-plane.md#5
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -16,6 +16,7 @@ import {
 import { ARCH_STEP } from "./cadence.mjs";
 import { git, gitOk } from "./git-plumbing.mjs";
 import { HANDOFFS, recordOf, ROLES } from "./handoff.mjs";
+import { resolveAdapter, unwrapPaseoAgentMessage } from "./paseo.mjs";
 import { canonical } from "./path-canonical.mjs";
 
 const EXIT = { failure: 1, records: 7, usage: 64 };
@@ -61,14 +62,17 @@ const claudePrompt = r => r.type === "user" && !r.toolUseResult && !r.isMeta && 
 const claudeFirstPrompt = rows => textOf(rows.find(claudePrompt)?.message?.content);
 const recent = (dir, since) => (existsSync(dir) ? readdirSync(dir).filter(n => n.endsWith(".jsonl")).map(n => join(dir, n)).filter(f => statSync(f).mtimeMs >= since) : []);
 
-function candidateFiles(runner, since) {
+const providerNameOf = runnerOrAgent => (runnerOrAgent && typeof runnerOrAgent === "object" ? runnerOrAgent.provider : runnerOrAgent);
+
+function candidateFiles(runnerOrAgent, since) {
+  const kind = resolveAdapter(runnerOrAgent);
   since -= 2_000;
-  if (runner === "claude") {
+  if (kind === "claude") {
     const projects = join(claudeHome(), "projects");
     return existsSync(projects) ? readdirSync(projects, { withFileTypes: true }).filter(p => p.isDirectory())
       .flatMap(p => recent(join(projects, p.name), since)) : [];
   }
-  if (runner === "antigravity") {
+  if (kind === "antigravity") {
     const files = [];
     for (const appDir of antigravityAppDirs()) {
       const brain = join(appDir, "brain");
@@ -86,6 +90,7 @@ function candidateFiles(runner, since) {
     }
     return files;
   }
+  if (kind !== "codex") return [];
   const files = recent(join(codexHome(), "archived_sessions"), since);
   const day = 86_400_000;
   for (let t = since - day; t <= Date.now() + day; t += day) {
@@ -96,23 +101,31 @@ function candidateFiles(runner, since) {
   return files;
 }
 
-export function findTranscripts(runner, nonce, since, session = null) {
-  const first = runner === "codex" ? codexFirstPrompt : runner === "antigravity" ? antigravityFirstPrompt : claudeFirstPrompt;
-  const identity = runner === "codex" ? codexSession : runner === "antigravity" ? ((_rows, file) => conversationIdFromPath(file)) : claudeSession;
-  return [...new Set(candidateFiles(runner, since))].flatMap(file => {
+export function findTranscripts(runnerOrAgent, nonce, since, session = null) {
+  const provider = providerNameOf(runnerOrAgent);
+  const kind = resolveAdapter(runnerOrAgent);
+  if (!kind || kind === "generic") return [];
+  const first = kind === "codex" ? codexFirstPrompt : kind === "antigravity" ? antigravityFirstPrompt : claudeFirstPrompt;
+  const identity = kind === "codex" ? codexSession : kind === "antigravity" ? ((_rows, file) => conversationIdFromPath(file)) : claudeSession;
+  return [...new Set(candidateFiles(kind, since))].flatMap(file => {
     const rows = lines(file), nativeId = identity(rows, file);
-    return (!session || session === nativeId) && first(rows).includes(nonce) ? [{ runner, file, session: nativeId }] : [];
+    return (!session || session === nativeId) && first(rows).includes(nonce) ? [{ runner: provider, adapter: kind, file, session: nativeId }] : [];
   });
 }
 
-// D-0060, design/mandatory-control-plane.md#5
-export function resolveChildSession(runner, nonce, since, explicitSession = null, explicitTranscript = null) {
-  if (explicitTranscript) return { runner, file: resolve(explicitTranscript), session: explicitSession || null };
-  const matches = findTranscripts(runner, nonce, since, explicitSession || null);
+// D-0060, D-0068, design/mandatory-control-plane.md#5
+export function resolveChildSession(runnerOrAgent, nonce, since, explicitSession = null, explicitTranscript = null) {
+  const provider = providerNameOf(runnerOrAgent);
+  const kind = resolveAdapter(runnerOrAgent);
+  if (explicitTranscript) return { runner: provider, adapter: kind, file: resolve(explicitTranscript), session: explicitSession || null };
+  if (kind === "generic") {
+    throw stop(EXIT.failure, `provider ${provider} uses the generic adapter and does not auto-discover transcripts; pass --transcript <file> (and --session <id> if not recorded in the transcript)`);
+  }
+  const matches = findTranscripts(runnerOrAgent, nonce, since, explicitSession || null);
   if (matches.length === 1) return matches[0];
   throw stop(EXIT.failure, matches.length
     ? `${matches.length} transcripts hold nonce ${nonce} (${matches.map(f => `${f.file} [${f.session}]`).join(", ")}); pass --session and, if needed, --transcript`
-    : `no transcript holds nonce ${nonce} for the prepared ${runner} child; check the provider session ID`);
+    : `no transcript holds nonce ${nonce} for the prepared ${provider} child; check the provider session ID`);
 }
 
 function claudeStatus(rows) {
@@ -185,12 +198,57 @@ function codexTools(rows) {
   return events.concat(unknown.map(call_id => ({ type: "unparsed_tool_call", call_id: call_id ?? null })));
 }
 
-export function transcriptEvents(id, { runner, file }) {
-  const actualFile = runner === "antigravity" ? resolveAuthoritativeTranscript(file) : file;
+const distinctModels = list => [...new Set(list.filter(m => typeof m === "string" && m.trim()).map(m => m.trim()))];
+
+function genericSession(rows) {
+  for (const r of rows) {
+    for (const cand of [r?.sessionId, r?.session_id, r?.session, r?.conversationId, r?.threadId, r?.payload?.id, r?.payload?.session_id]) {
+      if (typeof cand === "string" && cand.trim()) return cand.trim();
+    }
+  }
+  return null;
+}
+
+function genericFirstPrompt(rows, text) {
+  for (const r of rows) {
+    const role = r?.role ?? r?.message?.role ?? r?.payload?.role;
+    const type = r?.type ?? r?.payload?.type;
+    const isUser = role === "user" || type === "user" || type === "user_message" || type === "USER_INPUT";
+    if (!isUser) continue;
+    const raw = textOf(r?.content ?? r?.message?.content ?? r?.text ?? r?.prompt ?? r?.payload?.message ?? r?.payload?.content);
+    if (!raw.trim()) continue;
+    const unwrapped = unwrapPaseoAgentMessage(raw);
+    return unwrapped ? unwrapped.body : raw;
+  }
+  return text;
+}
+
+function genericStatus(rows, text) {
+  if (!rows.length) return text.trim() ? "complete" : "pending";
+  let complete = false;
+  let sawPending = false;
+  for (const r of rows) {
+    const type = r?.type ?? r?.payload?.type;
+    const status = r?.status ?? r?.payload?.status;
+    if (r?.is_error === true || type === "error" || type === "turn_aborted" || type === "task_failed" || type === "turn_failed"
+      || status === "failed" || status === "error" || status === "aborted") return "failed";
+    if (status === "complete" || status === "completed" || status === "done" || status === "DONE" || type === "result" || type === "task_complete") {
+      complete = true;
+    } else if (status === "pending" || status === "running" || status === "in_progress") {
+      sawPending = true;
+      complete = false;
+    }
+  }
+  return complete || !sawPending ? "complete" : "pending";
+}
+
+export function transcriptEvents(id, { runner, file, adapter = null, session: explicitSession = null }) {
+  const kind = adapter ? resolveAdapter({ adapter }) : resolveAdapter(runner);
+  const actualFile = kind === "antigravity" ? resolveAuthoritativeTranscript(file) : file;
   const text = readFileSync(actualFile, "utf8"), rows = lines(actualFile);
   const times = rows.map(r => Date.parse(r.timestamp ?? r.created_at ?? "")).filter(Number.isFinite);
   const seconds = times.length ? Math.round((Math.max(...times) - Math.min(...times)) / 100) / 10 : null;
-  if (runner === "antigravity") {
+  if (kind === "antigravity") {
     const session = conversationIdFromPath(actualFile);
     const nonAuthoritative = basename(actualFile) !== "transcript_full.jsonl";
     const truncated = rows.some(r => Array.isArray(r.truncated_fields) && r.truncated_fields.length > 0);
@@ -209,32 +267,48 @@ export function transcriptEvents(id, { runner, file }) {
     const forked = Boolean(summary?.parent_conversation_id)
       || (summary?.nesting_depth ?? 0) > 0
       || /^Context handoff \([a-z_]+\):/.test(firstPrompt.trimStart());
-    const observedModels = [...new Set(
-      rows
-        .filter(r => r?.type === "PLANNER_RESPONSE" && typeof r.model === "string" && r.model.trim())
-        .map(r => r.model.trim()),
-    )];
+    const observedModels = distinctModels(rows.map(r => (r?.type === "PLANNER_RESPONSE" ? r.model : null)));
     return {
       events: rows.map(event => ({ id, event })), session, forked, status: antigravityStatus(rows, summary),
       firstPrompt, observedModel: observedModels[0] ?? null, observedModels, seconds, cwd: summary?.workspaces?.[0] ?? null, text,
     };
   }
-  if (runner === "claude") {
+  if (kind === "claude") {
     const session = claudeSession(rows);
     const events = rows.filter(r => r.type === "assistant" || r.type === "user").map(event => ({ id, event }));
-    const observedModel = rows.find(r => r.type === "assistant" && r.message?.model)?.message.model ?? null;
+    const observedModels = distinctModels(rows.map(r => (r?.type === "assistant" ? r.message?.model : r?.type === "system" ? r.model : null)));
     return { events, session, forked: rows.some(r => r.sessionId && r.sessionId !== session), status: claudeStatus(rows),
-      firstPrompt: claudeFirstPrompt(rows), observedModel, seconds, cwd: rows.find(r => typeof r.cwd === "string")?.cwd ?? null, text };
+      firstPrompt: claudeFirstPrompt(rows), observedModel: observedModels[0] ?? null, ...(observedModels.length ? { observedModels } : {}),
+      seconds, cwd: rows.find(r => typeof r.cwd === "string")?.cwd ?? null, text };
   }
-  const meta = codexMeta(rows);
-  const observedModel = rows.find(r => r.type === "turn_context" && r.payload?.model)?.payload.model ?? null;
-  return { events: codexTools(rows).map(event => ({ id, event })), session: codexSession(rows), forked: Boolean(meta.forked_from_id),
-    status: codexStatus(rows), firstPrompt: codexFirstPrompt(rows), observedModel, seconds, cwd: meta.cwd ?? null, text };
+  if (kind === "codex") {
+    const meta = codexMeta(rows);
+    const observedModels = distinctModels(rows.map(r => (r?.type === "turn_context" ? r.payload?.model : null)));
+    return { events: codexTools(rows).map(event => ({ id, event })), session: codexSession(rows), forked: Boolean(meta.forked_from_id),
+      status: codexStatus(rows), firstPrompt: codexFirstPrompt(rows), observedModel: observedModels[0] ?? null,
+      ...(observedModels.length ? { observedModels } : {}), seconds, cwd: meta.cwd ?? null, text };
+  }
+  const session = genericSession(rows) ?? (typeof explicitSession === "string" && explicitSession.trim() ? explicitSession.trim() : null);
+  const observedModels = distinctModels(rows.flatMap(r => [r?.model, r?.message?.model, r?.payload?.model]));
+  const cwdRow = rows.find(r => typeof r?.cwd === "string" || typeof r?.payload?.cwd === "string");
+  return {
+    events: [],
+    session,
+    forked: rows.some(r => Boolean(r?.forked_from_id || r?.payload?.forked_from_id || r?.parent_conversation_id)),
+    status: genericStatus(rows, text),
+    firstPrompt: genericFirstPrompt(rows, text),
+    observedModel: observedModels[0] ?? null,
+    ...(observedModels.length ? { observedModels } : {}),
+    seconds,
+    cwd: typeof cwdRow?.cwd === "string" ? cwdRow.cwd : (typeof cwdRow?.payload?.cwd === "string" ? cwdRow.payload.cwd : null),
+    text,
+  };
 }
 
-export function t3Prompt({ id, nonce, wt, ws, text }) {
+export function t3Prompt({ id, nonce, wt, ws, text, runner = "t3" }) {
+  const childLabel = runner === "paseo" ? "Paseo child agent" : "T3 child thread";
   return [`self-loop call ${id} · nonce ${nonce}`, "",
-    "You run as a T3 child thread whose session starts in another directory. Work only in the folders below, by absolute path.",
+    `You run as a ${childLabel} whose session starts in another directory. Work only in the folders below, by absolute path.`,
     `- Your working folder: ${ws} (brief-shared.md, brief.md, task.md, records/${wt ? "" : ", purpose/"}; write under ${ws}/out).`,
     wt
       ? `- The product worktree: ${wt}. Run every shell command as \`cd ${wt} && ...\`.`
@@ -291,7 +365,7 @@ export function readPreparation(cfg, ws) {
   }
   if (ctx.ws !== ws) throw stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
   if (ctx.role === "reviewer") {
-    if (ctx.agent?.provider === "codex") throw stop(EXIT.records, "the frame reviewer cannot run on t3:codex");
+    if (resolveAdapter(ctx.agent) === "codex") throw stop(EXIT.records, `the frame reviewer cannot run on ${ctx.agent?.runner ?? "t3"}:codex`);
     if (ARCH_STEP.test(ctx.step ?? "")) {
       if (ctx.wt !== join(ws, "wt")) throw stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
       if (!existsSync(ctx.wt) || !hasReviewerWorkspace(ws)) throw stop(EXIT.failure, `the prepared workspace ${ws} is gone; prepare the call again`);

@@ -10,7 +10,7 @@
   <a href="README.zh-CN.md">中文</a> · <b>English</b> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/METHODOLOGY.md">Methodology</a> · <a href="SKILL.md">Skill Spec</a>
 </p>
 
-<sub>By <a href="https://x32studio.com">X32 Studio</a> · MIT Licensed · v0.9.0</sub>
+<sub>By <a href="https://x32studio.com">X32 Studio</a> · MIT Licensed · v0.9.6</sub>
 
 </div>
 
@@ -35,18 +35,28 @@ On toy tasks, that works. On real software, an ungoverned agent mob fails in fou
 
 ---
 
-## What's New in v0.9.0
+## What's New in v0.9.6
 
-- **Mandatory Control Plane & Universal Commit-Graph Provenance (`provenance.mjs`, `gated-push.mjs`, `.githooks/pre-push`)** — Every commit above `provenanceBaseline` must come from a `PL-NNNN`-attested handoff or clean wave merge (`--no-replace-objects`). Both `call.mjs --base` and working-branch pushes (`loop/<phase>`) enforce full `PL + critic + actor + cross-vendor judge` provenance (exempting open `W-NNNN` refactoring windows); pre-judge remote CI pushes land on `ci/<handoff-id>`.
-- **Nonce-Bound Lead Delegation & Write Confinement (`lead-guard.mjs`, `git-push-command.mjs`)** — `PreToolUse` denies raw delegation tools without a live unrecorded 16-hex `call.json` nonce, narrows `--workspaces` writes strictly to `<workDir>/tasks/`, blocks `git push --no-verify` / `-n` / `-c core.hooksPath=...` / `--exec-path=...`, and fails closed on corrupt hook stdin.
-- **Once-Per-Tree Host Suite Verification (`suite-green.mjs`, `audit-access.mjs`)** — Runs `gates.suite` **once** per `(repo, HEAD^{tree}, command, install, runtime)` via an atomic `linkSync` monotonic generation chain (sharing both green and red outcomes across concurrent callers with zero TOCTOU), stages read-only `0444` `suite-receipt.json` into code Judges and read-only final Critics, purges unattested tree caches on `call.mjs record` to defeat pre-poisoning, auto-resolves receipts in `gated-push.mjs`, and removes duplicate full-suite re-runs from role briefs.
-- **Zero-Turn Owner Words, Delta-Scoped `T3`, & Ergonomics (`plan.mjs`, `cadence.mjs`, `t3-child.mjs`, `dispatch.mjs`)** — Substantive open owner words block immediately (0-turn grace, ignoring routine confirmations); `ci-absent` extinguishes once a same-phase descendant passes CI; `T3` compares deltas against the last `reviewer-architecture` baseline and blocks only hotspot-overlapping packages while async review is active; `call.mjs record --ws <ws>` auto-discovers sessions by nonce (`--session` optional), `call.mjs cancel` tears down dead workspaces, and `dispatch.mjs prepare|record` batches wave execution.
+- **Configurable Models & Harnesses — Zero Hardcoded Lock-Ins (`paseo.mjs`, `vendor.mjs`, `init.mjs`, `hooks.mjs`)** — First-class `runner: "paseo"` alongside `t3`, `claude`, and `codex`; open non-empty `provider` with explicit `adapter` (`antigravity | claude | codex | generic`), router-prefix model normalization (e.g. `openrouter/gemini-2.5-pro`), expanded vendor families + custom `modelVendors` / `agent.vendor`, `judgeIndependence: "vendor" | "model" | "session"`, `ANTIGRAVITY_HOME` hook support, and fully parameterized `self-loop.mjs init --harness ... --provider ... --actor-model ... --independence ...`.
+- **Throughput Gates & Zero-Waste Convergence (`lead-patch.mjs`, `lexers*.mjs`, `directives.mjs`, `arch-facts.mjs`, `ci.mjs`, `window.mjs`, `blueprint.mjs`)** — Bounded Lead micro-patches (`self-loop.mjs patch`: `<= 20` lines, `<= 3` files, `<= 2` consecutive, zero added prose, mandatory `--verify`), `< 0.1s` `VERSION`/docs-only `pre-commit` fast-pass + `codeTree` suite receipt reuse, honest `churn-hotspot` (shrinking refactors never hard-block), deterministic 15-language zero-comment lexers eliminating `judge-comments` LLM micro-audits, and **no-dispute independent Critic convergence** (clean `VERDICT: PASS / ACCEPTANCE: pass / DISPUTES: - / OPENED: -` with `0` audit violations converges directly without a redundant Judge).
+- **Aerospace Dual-Five Zeroing (`SKILL.md`, `assets/brief-*.md`, `RECORDS.md`)** — Encodes root-cause Technical Zeroing + mandatory whole-repo horizontal grep sweeps across every Actor and Critic handoff, plus Management Zeroing back into briefs and deterministic gates.
+- **Lean, Action-First `SKILL.md` (`160` lines) + Reference Split (`assets/reference-cli-and-gates.md`)** — Restructured into Intention & Concrete Failure Modes → Step 0–5 Operating Flow (with a mandatory **Pre-Idle Anti-Serial Check** so orthogonal file-disjoint tracks launch in parallel instead of idling behind Track 1) → explicit `Not for / Must Not` guardrails.
 
-## What's New in v0.8.0
+<details>
+<summary>Earlier highlights in v0.9.0 – v0.9.2</summary>
 
-The workflow connects three engines in sequence. The **Generation Engine** defines the plan and package contracts. The **Dispatch & Integration Engine** combines the `arch-facts` import graph with symbolic file globs to identify independent work, schedule parallel Actor waves, and integrate their commits. The **Adversarial Engine** runs one unified Critic or multiple parallel Critics and joins their evidence for a cross-vendor Judge.
+### v0.9.0 – v0.9.2
+- **Mandatory Control Plane & Universal Commit-Graph Provenance (`provenance.mjs`, `gated-push.mjs`, `.githooks/pre-push`)** — Every commit above `provenanceBaseline` must come from a `PL-NNNN`-attested handoff or clean wave merge (`--no-replace-objects`). Both `call.mjs --base` and working-branch pushes (`loop/<phase>`) enforce full `PL + critic + actor + independent judge/critic` provenance (exempting open `W-NNNN` refactoring windows); pre-judge remote CI pushes land on `ci/<handoff-id>`.
+- **Nonce-Bound Lead Delegation, Antigravity Multi-Product Hooks & Write Confinement (`lead-guard.mjs`, `antigravity.mjs`, `git-push-command.mjs`)** — `PreToolUse` denies raw delegation tools without a live unrecorded 16-hex `call.json` nonce, decodes `argumentsJson` structured file-tool targets, enforces confined child read/write scopes, supports multi-product `--owner-store` hooks, and blocks hook-bypass `git push` flags.
+- **Once-Per-Tree Host Suite Verification (`suite-green.mjs`, `audit-access.mjs`)** — Runs `gates.suite` **once** per `(repo, HEAD^{tree}, command, install, runtime)` via an atomic `linkSync` monotonic generation chain, stages read-only `0444` `suite-receipt.json` into code Judges and read-only final Critics, purges unattested tree caches on `call.mjs record`, and auto-resolves receipts in `gated-push.mjs`.
+- **Zero-Turn Owner Words, Delta-Scoped `T3`, & Ergonomics (`plan.mjs`, `cadence.mjs`, `t3-child.mjs`, `dispatch.mjs`)** — Substantive open owner words block immediately (0-turn grace); `ci-absent` extinguishes once a same-phase descendant passes CI; `T3` compares deltas against the last `reviewer-architecture` baseline; `call.mjs record --ws <ws>` auto-discovers sessions by nonce and auto-prunes finished worktrees.
 
-Use `self-loop.mjs dispatch analyze|waves|integrate` to inspect coupling, list ready waves, or integrate landed work. Use `call.mjs --plan PL-NNNN --package <id>` with the normal role arguments to bind a call to a committed package. See [Planning and dispatch](SKILL.md#2b-planning-and-dispatch-f-0012-p-0006).
+### v0.8.0
+The workflow connects three engines in sequence. The **Generation Engine** defines the plan and package contracts. The **Dispatch & Integration Engine** combines the `arch-facts` import graph with symbolic file globs to identify independent work, schedule parallel Actor waves, and integrate their commits. The **Adversarial Engine** runs one unified Critic or multiple parallel Critics and joins their evidence for an independent Judge (or converges directly on a clean no-dispute Critic pass).
+
+Use `self-loop.mjs dispatch analyze|waves|integrate` to inspect coupling, list ready waves, or integrate landed work. Use `call.mjs --plan PL-NNNN --package <id>` with the normal role arguments to bind a call to a committed package. See [Operating Flow](SKILL.md#step-1--parallel-first-multi-track-planning-pl-nnnn--admitacrossplans).
+
+</details>
 
 ## What's New in v0.7.0
 
@@ -134,7 +144,7 @@ We build in the open and document what broke—not just what worked:
 ```bash
 git clone https://github.com/X32Studio/self-loop.git
 cd self-loop
-git checkout v0.7.0
+git checkout v0.9.6
 npm test
 ```
 

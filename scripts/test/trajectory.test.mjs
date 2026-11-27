@@ -1,16 +1,14 @@
-// Supervision alarms on the real S4 trajectory (rounds 24–30). Alarms are screening, so no admission is needed; the
-// test records what they would have raised and when, against what actually happened.
+// D-0015, D-0016, D-0024, D-0026, D-0064, D-0067
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { alarms, alarmsAfter, parse, parseRows, readRows, validateRow } from "../trajectory.mjs";
+import { alarms, alarmsAfter, extinguishedCiAbsent, parse, parseRows, readRows, validateRow } from "../trajectory.mjs";
 import { fakeGh, fixtures, isolatedEnv, redOn, repo, scripts, temp } from "./helpers.mjs";
 
 const rows = parse(readFileSync(join(fixtures, "s4-trajectory.tsv"), "utf8"));
 const sizes = JSON.parse(readFileSync(join(fixtures, "s4-access-sizes.json"), "utf8"));
-/** The first round after which supervision would have seen an alarm of this type. */
 const firstAfter = type => [...new Set(rows.map(r => r.round))].find(n => alarmsAfter(rows, n, { sizes }).some(a => a.type === type));
 
 test("S4 rounds 24–27: no alarm (green CI, distinct blockers, module under the threshold)", () => {
@@ -32,7 +30,7 @@ test("S4 key-file problem: the alarms fire after round 28 and 29, before the lea
 });
 
 test("L-0002: an area ruled on twice with its earlier blockers still open raises partly-closed", () => {
-  assert.deepEqual(redOn("partly-closed-alarm"), { alarms: [] }); // red on a4db050: no alarm for the self-loop reviews
+  assert.deepEqual(redOn("partly-closed-alarm"), { alarms: [] });
   const row = (round, opened, closed, area = "orchestrator") => ({ time: "-", round, phase: "skill", area, role: "judge", model: "-", verdict: "CONTINUE", opened, closed, suite: "-", owner: "0", commit: "-", ci: "-" });
   const review = [row(1, "convergence:B1,ci:B2,isolation:B3,audit:B4,handoff:B5,resume:B6,owner:B7", "-"), row(2, "-", "-")];
   const [a] = alarms(review).filter(x => x.type === "partly-closed");
@@ -192,4 +190,62 @@ test("C4 at the command line: a refused opening reads no CI and saves no receipt
   assert.deepEqual([written.opened, written.shelved, written.carried, written.ci], ["收据:丢失", "a:1", "b:2", "success"]);
   assert.equal(gh.queries().length, 2);
   assert.ok(!("shelved" in plain) && !("carried" in plain), "an empty list writes no field");
+});
+
+test("D-0064 T10 & D-0067: role=critic convergence rows (PASS/CONVERGED) enforce green CI and participate in alarms/extinguishment", () => {
+  const passRow = validateRow({ round: 5, phase: "v1", role: "critic", verdict: "PASS", suite: "20/0", ci: "success" });
+  const convRow = validateRow({ round: 6, phase: "v1", role: "critic", verdict: "CONVERGED", suite: "20/0", ci: "success" });
+  assert.equal(passRow.verdict, "PASS");
+  assert.equal(convRow.verdict, "CONVERGED");
+
+  const product = repo({ "README.md": "# product\n" });
+  const c1 = spawnSync("git", ["-C", product, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  writeFileSync(join(product, "README.md"), "# product v2\n");
+  spawnSync("git", ["-C", product, "commit", "-qam", "v2"]);
+  const c2 = spawnSync("git", ["-C", product, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  spawnSync("git", ["-C", product, "remote", "add", "origin", "https://github.com/example/critic-ci.git"]);
+
+  const gh = fakeGh({
+    "example/critic-ci": {
+      [c1]: [{ id: 1, app: "github-actions", name: "verify", status: "completed", conclusion: "failure" }],
+      [c2]: [{ id: 2, app: "github-actions", name: "verify", status: "completed", conclusion: "success" }],
+    },
+  });
+  const records = repo({
+    "records.json": "{}\n",
+    "metrics/.keep": "",
+    "loop.json": JSON.stringify({ product, phase: "v1", gates: { require: ["github-actions/verify"] } }),
+  });
+  const file = join(records, "metrics", "trajectory.jsonl");
+  const env = isolatedEnv({ PATH: gh.env.PATH });
+
+  const redPass = appendTo(file, { round: 2, phase: "v1", role: "critic", area: "core", verdict: "PASS", suite: "10/0", commit: c1, opened: "-", closed: "-" }, [], env);
+  assert.equal(redPass.status, 2, "PASS refuses failing CI");
+  assert.match(redPass.stderr, /PASS needs CI success/);
+  assert.equal(existsSync(file), false);
+
+  const okPass = appendTo(file, { round: 2, phase: "v1", role: "critic", area: "core", verdict: "PASS", suite: "10/0", commit: c2, opened: "-", closed: "-" }, [], env);
+  assert.equal(okPass.status, 0, okPass.stderr);
+  const okConv = appendTo(file, { round: 3, phase: "v1", role: "critic", area: "core", verdict: "CONVERGED", suite: "10/0", commit: c2, opened: "-", closed: "-" }, [], env);
+  assert.equal(okConv.status, 0, okConv.stderr);
+  const saved = readRows(file);
+  assert.deepEqual(saved.map(r => [r.role, r.verdict, r.ci]), [["critic", "PASS", "success"], ["critic", "CONVERGED", "success"]]);
+
+  const noLoopFile = join(temp(), "standalone.jsonl");
+  const noLoopPass = appendTo(noLoopFile, { round: 1, phase: "v1", role: "critic", area: "core", verdict: "PASS", suite: "10/0", commit: c2, opened: "-", closed: "-" }, [], env);
+  assert.equal(noLoopPass.status, 2, "PASS without loop.json is refused");
+
+  const criticAbsent = [
+    ruling(1, { role: "critic", area: "-", verdict: "PASS", commit: c1, ci: "absent" }),
+    ruling(2, { role: "critic", area: "-", verdict: "-", commit: c1, ci: "absent" }),
+  ];
+  const absentAlarms = alarms(criticAbsent);
+  assert.deepEqual(absentAlarms.map(a => [a.type, a.at]), [["ci-absent", 1]]);
+
+  const withGreen = [...criticAbsent, ruling(3, { role: "critic", area: "-", verdict: "PASS", commit: c2, ci: "success" })];
+  assert.deepEqual(alarms(withGreen, { repo: product }), []);
+  assert.equal(extinguishedCiAbsent(withGreen, { repo: product }).length, 1);
+
+  const failAlarms = alarms([ruling(1, { role: "critic", verdict: "PASS", commit: c1, ci: "failure" })]);
+  assert.deepEqual(failAlarms.map(a => a.type), ["ci-not-green"]);
 });

@@ -92,7 +92,7 @@ function setup(t) {
         ws,
         wt: role === "reviewer" ? null : wt,
         owns: role === "actor" ? ["scripts/"] : [],
-        agent: { runner: "t3", provider: "antigravity", model: "gemini-4-hydrogen" },
+        agent: { runner: "t3", provider: "antigravity", model: "gemini-2.5-pro" },
         nonce,
         preparedAt: 1795518506000,
         ...(recorded ? { recorded: true } : {}),

@@ -18,10 +18,10 @@
     "actor": ["src", "test/unit"]
   },
   "agents": {
-    "critic": { "runner": "codex", "model": "gpt-6.2-sol", "effort": "high" },
-    "actor": { "runner": "claude", "model": "claude-opus-5-5", "effort": "high" },
-    "judge": { "runner": "codex", "model": "gpt-6.2-astra", "effort": "high" },
-    "reviewer": { "runner": "claude", "model": "claude-opus-5-5", "effort": "high" }
+    "critic": { "runner": "codex", "model": "gpt-5.4", "effort": "high" },
+    "actor": { "runner": "claude", "model": "claude-opus-4-6", "effort": "high" },
+    "judge": { "runner": "codex", "model": "gpt-5.4-pro", "effort": "high" },
+    "reviewer": { "runner": "claude", "model": "claude-opus-4-6", "effort": "high" }
   },
   "setup": [["npm", "ci"]],
   "sealed": ["/path/to/product-loop-sealed"],

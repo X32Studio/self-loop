@@ -19,7 +19,8 @@ const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit", ...AN
 const SHELL_TOOLS = new Set(["Bash", ...ANTIGRAVITY_SHELL_TOOLS]);
 export const DELEGATION_TOOLS = new Set(["Agent", "spawn_agent", ...ANTIGRAVITY_DELEGATION_TOOLS]);
 const CHILD_WT_ROLES = new Set(["critic", "actor"]);
-const DELEGATION_PROMPT_KEYS = Object.freeze(["task", "prompt", "Prompt", "message", "brief", "Script"]);
+const DELEGATION_PROMPT_KEYS = Object.freeze(["task", "prompt", "Prompt", "message", "brief", "Script", "initialPrompt"]);
+const LEAD_PATCH_CMD_RE = /(?:^|[\s;|&])(?:[^\s;|&]*\/)?node\s+(?:[^\s;|&]*\/)?(?:self-loop\.mjs\s+patch|lead-patch\.mjs)(?=$|[\s;|&])/;
 const NONCE_RE = /^[0-9a-f]{16}$/;
 const NONCE_TOKEN_RE = /\b[0-9a-f]{16}\b/g;
 const GIT_TIMEOUT_MS = 2_000;
@@ -213,6 +214,10 @@ export function productCode(top, rel, { timeoutMs = GIT_TIMEOUT_MS } = {}) {
   return `Git could not tell whether it is ignored: ${failed(ignored)}`;
 }
 
+export function isLeadPatchCommand(command) {
+  return typeof command === "string" && LEAD_PATCH_CMD_RE.test(command);
+}
+
 export function refusal(input, { product = null, workspaces = [], allow = null, records = null, ownerStore = null, format = null, gitTimeoutMs = GIT_TIMEOUT_MS } = {}) {
   const { format: hookFormat, tool, args, cwd, argError } = normalizeHookInput(input, format);
   if (argError) return argError;
@@ -266,8 +271,12 @@ export function refusal(input, { product = null, workspaces = [], allow = null, 
     }
     return null;
   }
-  if (SHELL_TOOLS.has(tool) && hasGitPush(String(args.command ?? args.CommandLine ?? "")))
-    return "A direct git push. Every push goes through gated-push.mjs (suite-green receipt, CI and protected branches checked).";
+  if (SHELL_TOOLS.has(tool)) {
+    const cmd = String(args.command ?? args.CommandLine ?? "");
+    if (hasGitPush(cmd))
+      return "A direct git push. Every push goes through gated-push.mjs (suite-green receipt, CI and protected branches checked).";
+    if (isLeadPatchCommand(cmd)) return null;
+  }
   return null;
 }
 

@@ -1,12 +1,11 @@
-// call.mjs: one isolated role call and its hand-off record, with scripted agents (fake-agent.mjs). Each test marked
-// "red on a4db050" asserts the old result first (fixtures/v0.2-red/probes.log) and then the v0.3 behaviour of the case.
+// F-0008, D-0016, D-0064
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { proseLines } from "../lib/comments.mjs";
-import { EXIT } from "../call.mjs";
+import { EXIT, recordCall } from "../call.mjs";
 import { check } from "../records-check.mjs";
 import { parseHandoffs } from "../lib/handoff.mjs";
 import { git, grepTree, redOn, scripts, setup, temp } from "./helpers.mjs";
@@ -16,8 +15,6 @@ process.env.SELF_LOOP_LOAD_DIR = temp("self-loop-load-");
 const handoffs = records => parseHandoffs(git(records, "show", "HEAD:metrics/handoffs.jsonl")).filter(h => h.step !== "reviewer-frame");
 const viewOf = r => join(r.ws, "records");
 const committed = records => git(records, "ls-tree", "-r", "--name-only", "HEAD").split("\n");
-
-// ---------- one call, one hand-off ----------
 
 test("a call runs the agent once and commits exactly its hand-off: record, evidence, its line and the index", async () => {
   const s = await setup({ critic: [{ write: { "test/b.test.js": "export const attack = 1;\n", "ws:out/cases.json": "[1]\n" } }] });
@@ -68,13 +65,11 @@ test("the call decides nothing: a CONVERGED ruling is recorded as text, with no 
 });
 
 test("one call is one agent run: a report saying `FACT-NEEDED: none.` costs no second call", async () => {
-  assert.deepEqual(redOn("one-call"), { reviewerCalls: 2 }); // red on a4db050: the orchestrator re-called the reviewer
+  assert.deepEqual(redOn("one-call"), { reviewerCalls: 2 });
   const s = await setup({ reviewer: [{ report: "VERDICT: CONTINUE\nFACT-NEEDED: none. Everything needed is in the records.\n" }] }, { frame: false });
   assert.equal(s.run("reviewer", { step: "reviewer-frame" }).code, EXIT.done);
   assert.deepEqual(s.counts(), { reviewer: 1 });
 });
-
-// ---------- refusals before any model runs ----------
 
 test("feature declarations are checked against regular feature files in the exact role view before any model runs", async () => {
   const path = "blueprint/F-0001.md";
@@ -103,7 +98,7 @@ test("feature declarations are checked against regular feature files in the exac
 });
 
 test("a record number already taken is refused before any model call", async () => {
-  assert.deepEqual(redOn("taken-number"), { code: 7, reviewerCalls: 1 }); // red on a4db050: called first, then failed
+  assert.deepEqual(redOn("taken-number"), { code: 7, reviewerCalls: 1 });
   const s = await setup({}, { recordFiles: { "rounds/0001-reviewer-frame.md": "# R-0001-reviewer-frame\n\nOlder record.\n" } });
   const r = s.run("reviewer", { step: "reviewer-frame" });
   assert.equal(r.code, EXIT.records);
@@ -112,7 +107,7 @@ test("a record number already taken is refused before any model call", async () 
 });
 
 test("a failing setup stops the call before the model runs: no hand-off", async () => {
-  assert.deepEqual(redOn("setup-failed-handoff"), { criticHandoff: true, critic: 1, code: "handoff" }); // red on a4db050
+  assert.deepEqual(redOn("setup-failed-handoff"), { criticHandoff: true, critic: 1, code: "handoff" });
   const s = await setup({}, { setup: [["sh", "-c", "exit 19"]] });
   const head = git(s.records, "rev-parse", "HEAD");
   const r = s.run("critic");
@@ -143,10 +138,8 @@ test("usage refusals: codex and t3:codex frame reviewer, the cmd stand-in outsid
   assert.deepEqual(s.counts(), {});
 });
 
-// ---------- the view: public by construction ----------
-
 test("an older judge report under rounds/ with no hand-off is not in any view, unless the lead imports it as public", async () => {
-  assert.deepEqual(redOn("legacy-judge-in-view"), { inCriticView: true }); // red on a4db050
+  assert.deepEqual(redOn("legacy-judge-in-view"), { inCriticView: true });
   const legacy = "# R-0002-judge\n\nHeld-out case 07 expects SYNTHETIC_HELDOUT_311.\n";
   const s = await setup({}, { recordFiles: { "rounds/0002-judge.md": legacy, "rounds/0003-critic.md": "# R-0003-critic\n\nPUBLIC_OLD_CRITIC\n" } });
   const r = s.run("critic", { dry: true });
@@ -160,7 +153,7 @@ test("an older judge report under rounds/ with no hand-off is not in any view, u
 });
 
 test("the judge's public record is its out/public.md only: no line of the private report reaches another role", async () => {
-  assert.deepEqual(redOn("private-header-in-public"), { inPublicRecord: true }); // red on a4db050
+  assert.deepEqual(redOn("private-header-in-public"), { inPublicRecord: true });
   const report = "VERDICT: CONTINUE\nSHA: x\nSUITE: 1/0\nOPENED: -\nCLOSED: -\nACCEPTANCE: -\nPRIVATE-NOTE: SYNTHETIC_SEALED_909\n\n# Ruling\n\nHeld-out case 07 expects CANNED_KEY_230.\n";
   const s = await setup({ judge: [{ report, write: { "ws:out/public.md": "Key rotation loses a member's key under concurrent writes (property).\n" } }] });
   assert.equal(s.run("judge").code, EXIT.done);
@@ -176,7 +169,6 @@ test("the judge's public record is its out/public.md only: no line of the privat
     assert.ok(readFileSync(join(viewOf(r), "rounds/0001-judge.md"), "utf8").includes("loses a member's key"), `${role} sees the public ruling`);
     assert.equal(existsSync(join(viewOf(r), "sealed")), false);
   }
-  // the judge alone also reads its own earlier private rulings (lead decision on v0.3), and nothing else of sealed/
   mkdirSync(join(s.records, "sealed/cases"), { recursive: true });
   writeFileSync(join(s.records, "sealed/cases/case-09.md"), "CRITIC_HELDOUT_909\n");
   git(s.records, "add", "sealed/cases/case-09.md"); git(s.records, "commit", "-qm", "a held-out case");
@@ -187,7 +179,7 @@ test("the judge's public record is its out/public.md only: no line of the privat
 });
 
 test("a committed symlink never enters a view", async () => {
-  assert.deepEqual(redOn("symlink-in-view"), { symlinkInView: true, readsOutside: true }); // red on a4db050
+  assert.deepEqual(redOn("symlink-in-view"), { symlinkInView: true, readsOutside: true });
   const secret = join(temp(), "owner-private.md");
   writeFileSync(secret, "OWNER_PRIVATE_515\n");
   const s = await setup({});
@@ -214,10 +206,8 @@ test("ignored, staged and uncommitted drafts, briefs, evidence and the records' 
   assert.ok(!/engines\/|evidence|P-0010/.test(viewIndex), "the view's index names only what the view holds");
 });
 
-// ---------- the hand-off record ----------
-
 test("an unrelated staged file stays staged and out of the hand-off commit and its index", async () => {
-  assert.deepEqual(redOn("index-lists-staged"), { indexListsStaged: true, committed: false }); // red on a4db050
+  assert.deepEqual(redOn("index-lists-staged"), { indexListsStaged: true, committed: false });
   const s = await setup({});
   mkdirSync(join(s.records, "lessons"));
   writeFileSync(join(s.records, "lessons/L-0007.md"), "# L-0007\napplies-to: product\n");
@@ -229,7 +219,7 @@ test("an unrelated staged file stays staged and out of the hand-off commit and i
 });
 
 test("raw files the role wrote under out/ are recorded with the hand-off", async () => {
-  assert.deepEqual(redOn("raw-artifact"), { rawCommitted: false }); // red on a4db050
+  assert.deepEqual(redOn("raw-artifact"), { rawCommitted: false });
   const s = await setup({ actor: [{ report: "Measured: see out/raw-trial.json", write: { "ws:out/raw-trial.json": "{\"latencyMs\":[812,790]}\n" } }] });
   assert.equal(s.run("actor").code, EXIT.done);
   assert.equal(git(s.records, "show", "HEAD:evidence/0001/actor-1/out/raw-trial.json"), "{\"latencyMs\":[812,790]}");
@@ -300,8 +290,6 @@ test("dry run: the workspace and prompt are built, nothing is called or recorded
 });
 
 test("CLI, run from inside a git hook: inherited GIT_INDEX_FILE / GIT_DIR never redirect the call's git commands", async () => {
-  // found while committing 0.3: under the pre-commit hook, git sets GIT_INDEX_FILE and the hand-off's reset wrote into
-  // the skill repository's commit index
   const s = await setup({}, { frame: false });
   const decoy = temp();
   git(decoy, "init", "-q");
@@ -386,4 +374,66 @@ test("adversarial calls and T3 preparation require a committed frame hand-off fo
   const prepared = s.run("actor", { round: 2, view: oldView, prepare: true });
   assert.equal(prepared.code, EXIT.done, prepared.message);
   assert.equal(JSON.parse(readFileSync(join(prepared.prepared.ws, "call.json"), "utf8")).phase, "S6");
+});
+
+test("D-0064 T9 & D-0067: recordCall skips out/tmp and nested .git, auto-prunes wt/, and injects ssotHint for critic", async () => {
+  const s = await setup({}, {
+    ssot: { entries: [{ id: "purpose", doc: "docs/PURPOSE.md", watch: ["src/**"], mode: "same-batch" }] },
+  });
+  s.cfg.configFile = join(s.records, "loop.json");
+  writeFileSync(s.cfg.configFile, JSON.stringify({
+    product: s.product, records: ".", workDir: s.cfg.workDir, branch: s.cfg.branch, phase: s.cfg.phase,
+    briefs: s.cfg.briefs, agents: s.cfg.agents, ssot: s.cfg.ssot,
+  }, null, 2) + "\n");
+  const criticDry = s.run("critic", { dry: true });
+  assert.equal(criticDry.code, EXIT.done, criticDry.message);
+  const statusFile = join(criticDry.ws, "ssot-status.md");
+  assert.equal(existsSync(statusFile), true);
+  assert.equal(statSync(statusFile).mode & 0o777, 0o444);
+  assert.match(readFileSync(join(criticDry.ws, "prompt.md"), "utf8"), /SSOT status at .*read ssot-status\.md before reviewing/);
+
+  s.cfg.agents.judge = { runner: "t3", provider: "codex", model: "gpt-5.4" };
+  const prep = s.run("judge", { round: 2, prepare: true });
+  assert.equal(prep.code, EXIT.done, prep.message);
+  const { ws, wt, prompt: childPrompt } = prep.prepared;
+  assert.equal(existsSync(wt), true);
+  assert.ok(git(s.product, "worktree", "list").includes(wt));
+
+  writeFileSync(join(ws, "out", "report.md"), "VERDICT: CONVERGED\nACCEPTANCE: pass\n");
+  writeFileSync(join(ws, "out", "public.md"), "All checks pass.\n");
+  writeFileSync(join(ws, "out", "evidence.json"), '{"ok":true}\n');
+  mkdirSync(join(ws, "out", "tmp", "scratch-repo", ".git"), { recursive: true });
+  writeFileSync(join(ws, "out", "tmp", "scratch-repo", ".git", "HEAD"), "ref: refs/heads/main\n");
+  writeFileSync(join(ws, "out", "tmp", "scratch.txt"), "ignore me\n");
+  mkdirSync(join(ws, "out", "nested-repo", ".git"), { recursive: true });
+  writeFileSync(join(ws, "out", "nested-repo", ".git", "config"), "[core]\n");
+  writeFileSync(join(ws, "out", "nested-repo", "keep.txt"), "kept\n");
+  mkdirSync(join(ws, "out", "gitfile-dir"), { recursive: true });
+  writeFileSync(join(ws, "out", "gitfile-dir", ".git"), "gitdir: /tmp/x\n");
+
+  const txFile = join(temp("t9-tx-"), "codex.jsonl");
+  const lines = [
+    { type: "session_meta", payload: { id: "sess-t9-1", cwd: wt } },
+    { type: "turn_context", payload: { model: "gpt-5.4" } },
+    { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: childPrompt }] } },
+    { type: "event_msg", payload: { type: "task_complete" } },
+  ];
+  writeFileSync(txFile, lines.map(l => JSON.stringify(l)).join("\n") + "\n");
+
+  const zombieWt = join(temp("t9-zombie-"), "wt");
+  git(s.product, "worktree", "add", "-q", "--detach", zombieWt, "HEAD");
+  rmSync(zombieWt, { recursive: true, force: true });
+  assert.ok(git(s.product, "worktree", "list", "--porcelain").includes("prunable"));
+
+  const recorded = recordCall(s.cfg, ws, { transcript: txFile });
+  assert.equal(recorded.code, EXIT.done, recorded.message);
+  const files = committed(s.records);
+  assert.ok(files.some(f => f.endsWith("/out/evidence.json")));
+  assert.ok(files.some(f => f.endsWith("/out/nested-repo/keep.txt")));
+  assert.equal(files.some(f => f.includes("/out/tmp/")), false);
+  assert.equal(files.some(f => f.includes("/.git")), false);
+  assert.equal(existsSync(wt), false, "wt/ auto-pruned after successful recordCall");
+  assert.equal(git(s.product, "worktree", "list").includes(wt), false);
+  assert.equal(git(s.product, "worktree", "list", "--porcelain").includes("prunable"), false);
+  assert.equal(git(s.product, "worktree", "list").split("\n").length, 1);
 });

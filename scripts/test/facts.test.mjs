@@ -1,12 +1,12 @@
+// D-0016, D-0064, D-0067
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { area, shipped, sizes } from "../facts.mjs";
 import { parse } from "../trajectory.mjs";
-import { fixtures, git, repo, s4History, scripts, temp } from "./helpers.mjs";
+import { fixtures, git, repo, s4History } from "./helpers.mjs";
 
-// The L-0001 pattern: code that only ever lived on an unmerged test branch shipped nowhere.
 test("shipped: a symbol present only on an unmerged branch is reported as such", () => {
   const dir = repo({ "src/access.js": "export const read = () => 1;\n" });
   git(dir, "tag", "v0.1");
@@ -31,8 +31,6 @@ test("shipped: the recorded S4 key-file replacement never reached rewrite, main 
   assert.ok(fact.firstChangeReachableFrom.branches.includes("origin/test/s4-collab"));
   assert.deepEqual(fact.containing, []);
   assert.ok(fact.notContaining.includes("origin/rewrite") && fact.notContaining.includes("origin/main"));
-  // The property is "never shipped": no shipped branch (rewrite, main, their remotes) holds it. Working branches come
-  // and go (s4-collab, loop/*), so the test names the shipped ones instead of listing the working ones.
   assert.ok(!fact.firstChangeReachableFrom.branches.some(b => /(^|\/)(rewrite|main)$/.test(b)), fact.firstChangeReachableFrom.branches.join());
   assert.deepEqual(fact.firstChangeReachableFrom.tags, []);
 });
@@ -44,6 +42,27 @@ test("area: rounds, blockers and commits per area from the trajectory", () => {
   assert.equal(facts.keyfile.opened.length, 5);
   assert.equal(facts.keyfile.closed.length, 5, "round 27 closed both round-26 blockers");
   assert.deepEqual(facts.keyfile.verdicts.slice(1), ["28:CONTINUE:ci=failure", "29:CONTINUE:ci=failure", "30:CONTINUE:ci=failure"]);
+});
+
+test("area: includes role=critic convergence and continue verdicts alongside role=judge (D-0064 T10, D-0067)", () => {
+  const sha = "a".repeat(40);
+  const rows = [
+    { round: 1, phase: "v1", area: "gate", role: "actor", verdict: "-", opened: "-", closed: "-", owner: "0", commit: sha, ci: "-" },
+    { round: 2, phase: "v1", area: "gate", role: "critic", verdict: "-", opened: "-", closed: "-", owner: "0", commit: sha, ci: "-" },
+    { round: 3, phase: "v1", area: "gate", role: "critic", verdict: "CONTINUE", opened: "gate:R3-1", closed: "-", owner: "0", commit: sha, ci: "failure" },
+    { round: 4, phase: "v1", area: "gate", role: "critic", verdict: "PASS", opened: "-", closed: "gate:R3-1", owner: "0", commit: sha, ci: "success" },
+    { round: 5, phase: "v1", area: "gate", role: "critic", verdict: "CONVERGED", opened: "-", closed: "-", owner: "0", commit: sha, ci: "success" },
+    { round: 6, phase: "v1", area: "gate", role: "judge", verdict: "CONVERGED", opened: "-", closed: "-", owner: "0", commit: sha, ci: "success" },
+  ];
+  const facts = area(rows, { area: "gate", phase: "v1" });
+  assert.deepEqual(facts.gate.verdicts, [
+    "3:CONTINUE:ci=failure",
+    "4:PASS:ci=success",
+    "5:CONVERGED:ci=success",
+    "6:CONVERGED:ci=success",
+  ]);
+  assert.equal(facts.gate.roles.critic, 4);
+  assert.equal(facts.gate.roles.judge, 1);
 });
 
 test("sizes: lines per path per commit, absent where the file did not exist", () => {

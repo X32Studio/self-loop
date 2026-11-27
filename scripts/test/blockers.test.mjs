@@ -1,11 +1,11 @@
-// R-0008-judge-frame proposal 3; design/round9-b.md
+// R-0008-judge-frame, D-0064, D-0067, design/round9-b.md#one-ruling-one-transition
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { repo, scripts } from "./helpers.mjs";
-import { admit, blockerState, readRuling, transition } from "../lib/blockers.mjs";
+import { admit, blockerState, isRuling, readRuling, transition } from "../lib/blockers.mjs";
 import { blockerState as driver } from "../loop.mjs";
 import { alarms } from "../trajectory.mjs";
 const row = (round, fields = {}) => ({ round, phase: "v1", area: "core", role: "judge", verdict: "CONTINUE", ...fields });
@@ -56,7 +56,7 @@ test("flow: append a structured carried-and-closed ruling, then resume; loss: fa
   assert.deepEqual(driver([written]).open, []);
   assert.deepEqual(alarms([written]).filter(a => a.type === "partly-closed"), []);
 });
-// D-0024 item 2; R-0008-judge-frame transcription premise
+// D-0024, R-0008-judge-frame
 test("carried blockers remain open without counting as new partial-closure openings", () => {
   const carried = row(1, { carried: "delivery:inherited" });
   const later = row(2);
@@ -68,4 +68,24 @@ test("carried blockers remain open without counting as new partial-closure openi
   const closed = row(2, { closed: "delivery:new,delivery:inherited" });
   assert.deepEqual(driver([opened, closed]).open, []);
   assert.deepEqual(alarms([opened, closed]).filter(a => a.type === "partly-closed"), []);
+});
+
+test("D-0064 T10: isRuling and blockerState track OPENED/CLOSED/SHELVED/CARRIED transitions on role critic rows", () => {
+  const criticOpen = { round: 2, phase: "v1", area: "core", role: "critic", verdict: "CONTINUE", opened: "scope:c1", carried: "scope:c0" };
+  const criticNoVerdict = { round: 2, phase: "v1", area: "core", role: "critic", verdict: "-", opened: "scope:ignored" };
+  const criticClose = { round: 3, phase: "v1", area: "core", role: "critic", verdict: "PASS", closed: "scope:c1", shelved: "scope:c0" };
+  assert.equal(isRuling(criticOpen), true);
+  assert.equal(isRuling(criticClose), true);
+  assert.equal(isRuling(criticNoVerdict), false);
+
+  const st1 = blockerState([criticNoVerdict, criticOpen], { phase: "v1" });
+  assert.equal(st1.get("scope:c1")?.status, "open");
+  assert.equal(st1.get("scope:c0")?.status, "open");
+  assert.equal(st1.has("scope:ignored"), false);
+  assert.deepEqual(driver([criticNoVerdict, criticOpen]).open, ["scope:c1 (R-0002)", "scope:c0 (R-0002)"]);
+
+  const st2 = blockerState([criticOpen, criticClose], { phase: "v1" });
+  assert.equal(st2.get("scope:c1")?.status, "closed");
+  assert.equal(st2.get("scope:c0")?.status, "shelved");
+  assert.deepEqual(driver([criticOpen, criticClose]).open, []);
 });

@@ -132,14 +132,20 @@ test("validatePlan enforces decision and generation-engine authority provenance"
   }
 });
 
-test("validatePlan enforces Critic+Judge coverage outside open W-NNNN refactoring windows", async () => {
+test("validatePlan enforces Critic coverage outside open W-NNNN refactoring windows without requiring a mandatory judge", async () => {
   const s = await makeBatchWorld();
   const actorOnly = parsePlan(planMd("PL-0001", [
     { id: "actor-a", role: "actor", handoff: "R-0002-actor-a", authority: "D-0002", files: ["src/a.js"], needs: [] },
   ]));
   const errs = validatePlan(actorOnly, snapshot(s.records));
   assert.ok(errs.some(e => /critic/i.test(e)), errs.join("\n"));
-  assert.ok(errs.some(e => /judge/i.test(e)), errs.join("\n"));
+  assert.ok(!errs.some(e => /judge/i.test(e)), errs.join("\n"));
+
+  const actorPlusCritic = parsePlan(planMd("PL-0001", [
+    { id: "critic-a", role: "critic", handoff: "R-0002-critic-a", authority: "D-0002", files: ["test/a.test.js"], needs: [], reviews: ["actor-a"] },
+    { id: "actor-a", role: "actor", handoff: "R-0002-actor-a", authority: "D-0002", files: ["src/a.js"], needs: ["critic-a"] },
+  ]));
+  assert.deepEqual(validatePlan(actorPlusCritic, snapshot(s.records)), []);
 
   openWindow(s.records, { phase: "S5", startRound: 2, horizon: 3, goal: "refactor", invariants: ["tests green"] });
   assert.deepEqual(validatePlan(actorOnly, snapshot(s.records)), []);

@@ -1,8 +1,8 @@
-// Provider-agnostic owner-words rules, filtering, echo tracking, and stable ID numbering.
-// Layered below harness adapters (e.g. antigravity-words.mjs) and owner-words.mjs to keep the import graph acyclic.
+// F-0002, F-0009, D-0016, D-0062, design/paseo-and-judge-policy.md#1
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
+import { isPaseoSystemEnvelope } from "./paseo.mjs";
 import { canonical } from "./path-canonical.mjs";
 
 export const WORDS = "owner/words.jsonl";
@@ -11,7 +11,7 @@ const LEAD_MARKERS = ["self-loop call ", "[lead", "Your task is the file "];
 const HANDOFF = /^Context handoff \([a-z_]+\):(?:\r?\n|$)/;
 const SLASH_COMMAND = /^<command-name>(\/[^<]+)<\/command-name>\s*<command-message>[\s\S]*?<\/command-message>\s*<command-args>([\s\S]*)<\/command-args>$/;
 export const SEND = /^(?:mcp__t3[-_]code__|mcp_t3[-_]code_)t3_thread_send(?:_attachments)?$/;
-const DELEGATED = /^Act as the [\w -]+ sub-agent for this task\./;
+export const DELEGATED = /^Act as the [\w -]+ sub-agent for this task\./;
 export const T3_AGENT_NOTICE = /^\[T3 Code: (?:the agent in T3 thread "[^"\r\n]+"(?: on linked environment "[^"\r\n]+")? sent this message, not the user|this message came through T3 Code's tools, not from the user typing in this chat)\.\](?:\r?\n|$)/;
 export const DELEGATED_NOTICE = /^Delegated task (?:node:|thread:)?delegated-task:\S+(?: \([^\r\n]*\))?(?: in child thread \S+)? (?:\[(?:completed|failed|cancelled|interrupted)\](?::|\. Use task_status\b)|asked a question and is still working\.)/;
 export const HARNESS_ENVELOPE = /^\s*(?:Delegated task node:delegated-task:|\[T3 Code:\s*the agent in T3 thread\b|<CONTEXT_SUMMARY>|<SYSTEM_MESSAGE>)/;
@@ -47,11 +47,8 @@ export function wordId(session, text, ordinal) {
   return `W-${sha(`${session}\0${text}\0${ordinal}`).slice(0, 10)}`;
 }
 
-/** The exact owner message appended to a T3 context summary. */
 export function handoffMessage(text) {
   if (!HANDOFF.test(text.trimStart())) return null;
-  // T3 separates the new message from the summary with a paragraph break. An inline delimiter inside the
-  // owner's message is literal text. Older envelopes without paragraph framing use the last delimiter line.
   const marker = [...text.matchAll(/(?:\r?\n){2,}User message:\r?\n/g)].at(-1)
     ?? [...text.matchAll(/\r?\nUser message:\r?\n/g)].at(-1);
   const message = marker && text.slice(marker.index + marker[0].length);
@@ -68,6 +65,7 @@ export function ownerPrompt(text, { claude = false } = {}) {
     || (claude && /^\[Request interrupted by user(?: for tool use)?\]$/.test(content))
     || /^(?:\[Historical (?:user|assistant); [^\]\r\n]*\]|<codex_internal_context\b)/.test(content)
     || T3_AGENT_NOTICE.test(content) || DELEGATED_NOTICE.test(content) || HARNESS_ENVELOPE.test(content)
+    || isPaseoSystemEnvelope(content)
     || /^<(task-notification|system-reminder|local-command-stdout)>[\s\S]*<\/\1>$/.test(content)
     || /^<local-command-caveat>[\s\S]*?<\/local-command-caveat>/.test(content)) return null;
   const command = SLASH_COMMAND.exec(content);
@@ -78,16 +76,15 @@ export function ownerPrompt(text, { claude = false } = {}) {
 export const ownerPromptText = text => ownerPrompt(text)?.text ?? null;
 
 export function captureOwnerText(text) {
-  if (typeof text !== "string" || HARNESS_ENVELOPE.test(text)) return null;
+  if (typeof text !== "string" || HARNESS_ENVELOPE.test(text) || isPaseoSystemEnvelope(text)) return null;
   const owner = ownerPrompt(text, { claude: true })?.text ?? null;
   return owner && !isLeadPrompt(owner) ? owner : null;
 }
 
-/** True for substantive owner statements/questions/principles; false for short routine acks or harness noise. */
 export function isSubstantiveOwnerWord(text) {
   if (typeof text !== "string") return false;
   const trimmed = text.trim();
-  if (!trimmed || HARNESS_ENVELOPE.test(trimmed) || T3_AGENT_NOTICE.test(trimmed) || DELEGATED_NOTICE.test(trimmed)) return false;
+  if (!trimmed || HARNESS_ENVELOPE.test(trimmed) || T3_AGENT_NOTICE.test(trimmed) || DELEGATED_NOTICE.test(trimmed) || isPaseoSystemEnvelope(trimmed)) return false;
   if (/[?？]/.test(trimmed)) return true;
   const norm = trimmed.replace(/[.!。！~～,，]+$/u, "").trim().toLowerCase();
   return !(trimmed.length <= 8 && ROUTINE_ACKS.has(norm));
@@ -112,7 +109,6 @@ export class LeadSends {
       this.recent.splice(i, 1);
       return true;
     }
-    // A genuine intervening prompt breaks the association with earlier sends.
     this.recent = [];
     return false;
   }

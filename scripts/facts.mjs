@@ -1,12 +1,5 @@
 #!/usr/bin/env node
-// Fact queries for the frame reviewer. Subtraction and premise tests need facts, not questions (backtest 2026-11-20:
-// the live case was settled by one git query about what shipped). Each query prints structured JSON; none writes.
-//
-// node facts.mjs shipped --repo <product> (--path <p> | --symbol <text> [--path <p>]) [--refs <glob,...>]
-//     which branches and tags contain the path or symbol, and the first and last commits that touched it
-// node facts.mjs area --file <trajectory.jsonl | trajectory.tsv> [--area <a>] [--phase <p>]
-//     rounds, roles, blockers opened and closed, owner interventions and commits per area
-// node facts.mjs sizes --repo <product> --paths a,b --commits c1,c2   (lines per path per commit; feeds growth alarms)
+// D-0016, D-0064, D-0067
 import "./lib/unbind-git.mjs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -16,7 +9,6 @@ import { readRows } from "./trajectory.mjs";
 const git = (repo, ...argv) => execFileSync("git", ["-C", repo, ...argv], { encoding: "utf8", maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "pipe"] }).trim();
 const ok = (repo, ...argv) => { try { git(repo, ...argv); return true; } catch { return false; } };
 
-/** Which refs contain a path or a symbol, and when it first and last changed. */
 export function shipped(repo, { path, symbol, refs = ["refs/heads", "refs/remotes", "refs/tags"] }) {
   if (!path && !symbol) throw new UsageError("shipped needs --path or --symbol");
   const names = git(repo, "for-each-ref", "--format=%(refname)\t%(refname:short)", ...refs).split("\n")
@@ -40,7 +32,6 @@ export function shipped(repo, { path, symbol, refs = ["refs/heads", "refs/remote
     changes: history.length, firstChangeReachableFrom: { branches: branchesWithFirst, tags: tagsWithFirst } };
 }
 
-/** Per-area cost from the trajectory: what an area took in rounds, blockers and owner time. */
 export function area(rows, { area: only, phase } = {}) {
   const out = {};
   for (const r of rows) {
@@ -54,7 +45,7 @@ export function area(rows, { area: only, phase } = {}) {
     for (const b of r.closed === "-" ? [] : r.closed.split(",")) a.closed.push(`${r.round}:${b}`);
     a.owner += Number(r.owner) || 0;
     if (r.commit !== "-" && !a.commits.includes(r.commit)) a.commits.push(r.commit);
-    if (r.role === "judge" && r.verdict !== "-") a.verdicts.push(`${r.round}:${r.verdict}:ci=${r.ci}`);
+    if ((r.role === "judge" || r.role === "critic") && r.verdict !== "-") a.verdicts.push(`${r.round}:${r.verdict}:ci=${r.ci}`);
   }
   for (const a of Object.values(out)) a.rounds = [...a.rounds].sort((x, y) => x - y);
   return out;
@@ -65,7 +56,7 @@ export function sizes(repo, paths, commits) {
   for (const path of paths) {
     out[path] = {};
     for (const commit of commits) {
-      try { out[path][commit] = git(repo, "show", `${commit}:${path}`).split("\n").length; } catch { /* absent at that commit */ }
+      try { out[path][commit] = git(repo, "show", `${commit}:${path}`).split("\n").length; } catch {}
     }
   }
   return out;

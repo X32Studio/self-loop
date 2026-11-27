@@ -317,8 +317,8 @@ test("stageSuiteWorkspace serializes concurrent cold ensure calls per key and re
     [baseKey.runtime?.node ?? null, baseKey.runtime?.platform ?? null, baseKey.runtime?.arch ?? null],
   ])).digest("hex");
 
-  writeFileSync(join(dir, "VERSION"), "0.1.1\n");
-  git(dir, "add", "VERSION");
+  writeFileSync(join(dir, "code.mjs"), "export const step = 1;\n");
+  git(dir, "add", "code.mjs");
   git(dir, "commit", "-qm", "dead pid lock tree");
   const deadSha = git(dir, "rev-parse", "HEAD");
   const deadTree = git(dir, "rev-parse", `${deadSha}^{tree}`);
@@ -331,8 +331,8 @@ test("stageSuiteWorkspace serializes concurrent cold ensure calls per key and re
   assert.equal(existsSync(deadLock), false);
   assert.equal(count(), 2);
 
-  writeFileSync(join(dir, "VERSION"), "0.1.2\n");
-  git(dir, "add", "VERSION");
+  writeFileSync(join(dir, "code.mjs"), "export const step = 2;\n");
+  git(dir, "add", "code.mjs");
   git(dir, "commit", "-qm", "malformed lock tree");
   const corruptSha = git(dir, "rev-parse", "HEAD");
   const corruptTree = git(dir, "rev-parse", `${corruptSha}^{tree}`);
@@ -395,8 +395,8 @@ test("stageSuiteWorkspace uses monotonic generation chain for concurrent red han
   assert.equal(JSON.parse(readFileSync(join(genDir, "g2.done.json"), "utf8")).green, true);
   assert.equal(statSync(join(retryWs, "suite-receipt.json")).mode & 0o222, 0);
 
-  writeFileSync(join(dir, "VERSION"), "0.2.0\n");
-  git(dir, "add", "VERSION");
+  writeFileSync(join(dir, "other.mjs"), "export const other = 1;\n");
+  git(dir, "add", "other.mjs");
   git(dir, "commit", "-qm", "other tree");
   const otherSha = git(dir, "rev-parse", "HEAD");
   const otherTree = git(dir, "rev-parse", `${otherSha}^{tree}`);
@@ -653,4 +653,43 @@ test("generation fencing refuses execution and publication when superseded, and 
   writeFileSync(join(badGenDir, "g1.claim"), "");
   assert.throws(() => stageSuiteWorkspace({ repo: badDir, sha: badSha, command, ws: temp("ws-bad-corrupt-"), mode: "ensure", format: "node-test" }), /invalid suite claim/);
   assert.equal(badCount(), 1);
+});
+
+test("D-0064 T6: VERSION-only commits hit codeTree reuse while real code changes trigger a fresh suite run", () => {
+  const { dir, count } = countedRepo(true);
+  const baseSha = git(dir, "rev-parse", "HEAD");
+  const command = "node --test t.test.mjs";
+
+  const first = stageSuiteWorkspace({ repo: dir, sha: baseSha, command, ws: temp("ws-ct-base-"), mode: "ensure", format: "node-test" });
+  assert.equal(first.ok, true);
+  assert.equal(first.reused, false);
+  assert.equal(count(), 1);
+
+  writeFileSync(join(dir, "VERSION"), "0.1.1\n");
+  git(dir, "add", "VERSION");
+  git(dir, "commit", "-qm", "bump VERSION only");
+  const verSha = git(dir, "rev-parse", "HEAD");
+  const verTree = git(dir, "rev-parse", `${verSha}^{tree}`);
+
+  const hit = lookupSuiteReceipt({ repo: dir, sha: verSha, command });
+  assert.ok(hit);
+  assert.equal(hit.receipt.sha, verSha);
+  assert.equal(hit.receipt.tree, verTree);
+  assert.equal(hit.receipt.versionVaried, "0.1.1");
+
+  const reused = stageSuiteWorkspace({ repo: dir, sha: verSha, command, ws: temp("ws-ct-ver-"), mode: "ensure", format: "node-test" });
+  assert.equal(reused.ok, true);
+  assert.equal(reused.reused, true);
+  assert.equal(reused.receipt.tree, verTree);
+  assert.equal(count(), 1);
+
+  writeFileSync(join(dir, "feature.mjs"), "export const feature = 1;\n");
+  git(dir, "add", "feature.mjs");
+  git(dir, "commit", "-qm", "real code change");
+  const codeSha = git(dir, "rev-parse", "HEAD");
+  assert.equal(lookupSuiteReceipt({ repo: dir, sha: codeSha, command }), null);
+  const fresh = stageSuiteWorkspace({ repo: dir, sha: codeSha, command, ws: temp("ws-ct-code-"), mode: "ensure", format: "node-test" });
+  assert.equal(fresh.ok, true);
+  assert.equal(fresh.reused, false);
+  assert.equal(count(), 2);
 });

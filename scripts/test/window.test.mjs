@@ -1,3 +1,4 @@
+// P-0011, D-0016, D-0058, D-0064, D-0067
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -5,7 +6,8 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { EXIT } from "../call.mjs";
 import { UsageError } from "../lib/args.mjs";
-import { closeWindow, openWindow, parseWindows, windowAlarmKey, WindowRefusalError, WINDOWS, windowState } from "../lib/window.mjs";
+import { closeWindow, defaultStartRound, openWindow, parseWindows, windowAlarmKey, WindowRefusalError, WINDOWS, windowState } from "../lib/window.mjs";
+import { isNoDisputeCriticHandoff, parseNoDisputeCritic } from "../lib/window-state.mjs";
 import { git, roomyStore, scripts, selfLoop, setup, temp } from "./helpers.mjs";
 
 const PHASE = "S5";
@@ -110,7 +112,6 @@ test("2. horizon=4 progresses slack -> converging -> gate-due, blocking actor wi
 
   openWindow(s.records, { phase: PHASE, startRound: 10, horizon: 4, goal: "Rewrite core", invariants: ["Full suite green", "API stable"] });
 
-  // Rounds 10, 11, 12 -> usedActorRounds = 0, 1, 2 -> mode === "slack"
   for (let i = 0; i < 3; i++) {
     const round = 10 + i;
     const nextOut = runNext(s, config);
@@ -127,7 +128,6 @@ test("2. horizon=4 progresses slack -> converging -> gate-due, blocking actor wi
     commitAll(s.records, `actor round ${round}`);
   }
 
-  // Round 13 -> usedActorRounds = 3 -> mode === "converging"
   const convNext = runNext(s, config);
   assert.equal(convNext.status, 0, convNext.stderr);
   assert.match(convNext.stdout, /Window: W-0001 \(converging · 3\/4 actor rounds · end round 13\)/);
@@ -138,7 +138,6 @@ test("2. horizon=4 progresses slack -> converging -> gate-due, blocking actor wi
   appendHandoff(s.records, makeActorHandoff(13, b13, c13));
   commitAll(s.records, "actor round 13");
 
-  // After 4th actor hand-off -> usedActorRounds = 4 -> mode === "gate-due", actorBlocked === true
   const gateNext = runNext(s, config);
   assert.equal(gateNext.status, 0, gateNext.stderr);
   assert.match(gateNext.stdout, /Window: W-0001 \(gate-due · 4\/4 actor rounds · end round 13\)/);
@@ -153,12 +152,10 @@ test("2. horizon=4 progresses slack -> converging -> gate-due, blocking actor wi
   assert.equal(actorRefused.code, EXIT.records, `expected exit 7, got ${actorRefused.code}: ${actorRefused.message}`);
   assert.match(actorRefused.message, /W-0001.*4\/4/);
 
-  // Critic, judge, and reviewer are NEVER blocked by gate-due
   assert.equal(s.run("critic", { round: 14, dry: true }).code, EXIT.done);
   assert.equal(s.run("judge", { round: 14, dry: true }).code, EXIT.done);
   assert.equal(s.run("reviewer", { round: 14, dry: true }).code, EXIT.done);
 
-  // A CONTINUE judge ruling inside the window emits deterministic window-horizon alarm
   const { entry: j14 } = makeJudgeHandoff(14, c13);
   appendHandoff(s.records, j14);
   put(s.records, "metrics/trajectory.jsonl", jsonl({
@@ -179,10 +176,8 @@ test("3. verified close refuses missing/failing/same-vendor evidence and succeed
   appendHandoff(s.records, makeActorHandoff(10, base, commit, { runner: "claude", model: "claude-opus-4-6" }));
   commitAll(s.records, "actor commit");
 
-  // Missing judge ruling
   assert.throws(() => closeWindow(s.records, { id: "W-0001", commit, verdict: "verified", cfg: s.cfg }), WindowRefusalError);
 
-  // Failing suite count (10/1)
   const { entry: jBad } = makeJudgeHandoff(11, commit, { agent: { runner: "codex", model: "gpt-5" } });
   appendHandoff(s.records, jBad);
   put(s.records, "metrics/trajectory.jsonl", jsonl({
@@ -191,7 +186,6 @@ test("3. verified close refuses missing/failing/same-vendor evidence and succeed
   commitAll(s.records, "bad suite count");
   assert.throws(() => closeWindow(s.records, { id: "W-0001", commit, verdict: "verified", cfg: s.cfg }), /suite count/);
 
-  // Same-vendor judge/actor (both anthropic/claude)
   const { entry: jSame } = makeJudgeHandoff(12, commit, { agent: { runner: "claude", model: "claude-sonnet-4-6" } });
   appendHandoff(s.records, jSame);
   put(s.records, "metrics/trajectory.jsonl", jsonl({
@@ -200,7 +194,6 @@ test("3. verified close refuses missing/failing/same-vendor evidence and succeed
   commitAll(s.records, "same vendor ruling");
   assert.throws(() => closeWindow(s.records, { id: "W-0001", commit, verdict: "verified", cfg: s.cfg }), /independence/);
 
-  // Different-vendor judge, passing suite count, but missing suite-green receipt
   const { entry: jGood } = makeJudgeHandoff(13, commit, { agent: { runner: "codex", model: "gpt-5" } });
   appendHandoff(s.records, jGood);
   put(s.records, "metrics/trajectory.jsonl", jsonl({
@@ -209,12 +202,10 @@ test("3. verified close refuses missing/failing/same-vendor evidence and succeed
   commitAll(s.records, "good judge no receipts");
   assert.throws(() => closeWindow(s.records, { id: "W-0001", commit, verdict: "verified", cfg: s.cfg }), /suite-green receipt/);
 
-  // Add green suite-green receipt, still missing committed green CI receipt (gates.require configured)
   put(s.records, "evidence/0013/suite-1.json", JSON.stringify({ repository: s.product, sha: commit, tree, green: true }));
   commitAll(s.records, "suite receipt only");
   assert.throws(() => closeWindow(s.records, { id: "W-0001", commit, verdict: "verified", cfg: s.cfg }), /remote CI/);
 
-  // Add committed green CI receipt -> CLI close succeeds
   const ciPath = `evidence/0013/ci-${commit.slice(0, 12)}-1/receipt.json`;
   put(s.records, ciPath, JSON.stringify({ repository: "example/product", sha: commit, ci: "success", ok: true, missing: [], conclusions: { "github-actions/verify": "success" } }));
   put(s.records, "metrics/trajectory.jsonl", jsonl({
@@ -229,7 +220,6 @@ test("3. verified close refuses missing/failing/same-vendor evidence and succeed
   assert.equal(payload.event.suiteReceipt, "evidence/0013/suite-1.json");
   assert.equal(payload.event.ciReceipt, ciPath);
 
-  // Closing again or closing unknown ID is refused
   assert.throws(() => closeWindow(s.records, { id: "W-0001", commit, verdict: "verified", cfg: s.cfg }), /already closed/);
   assert.throws(() => closeWindow(s.records, { id: "W-0099", commit, verdict: "verified", cfg: s.cfg }), /does not exist/);
 });
@@ -238,7 +228,6 @@ test("4. reframed close requires post-open reviewer-diagnosis citing window-hori
   const s = await setup();
   const alarmKey = windowAlarmKey(PHASE, "W-0001");
 
-  // Pre-open diagnosis citing the key must NOT satisfy a later window
   appendHandoff(s.records, {
     id: "R-0002-reviewer-diagnosis", time: "2026-11-24T00:00:00Z", phase: PHASE, round: 2,
     step: "reviewer-diagnosis", role: "reviewer", attempt: 1, agent: { runner: "claude" },
@@ -250,7 +239,6 @@ test("4. reframed close requires post-open reviewer-diagnosis citing window-hori
   openWindow(s.records, { phase: PHASE, startRound: 10, horizon: 3, goal: "Try refactor", invariants: ["ok"], now: new Date("2026-11-24T01:00:00Z") });
   assert.throws(() => closeWindow(s.records, { id: "W-0001", verdict: "reframed" }), /reviewer-diagnosis/);
 
-  // Key only inside Report (not task) must NOT satisfy
   appendHandoff(s.records, {
     id: "R-0011-reviewer-diagnosis", time: "2026-11-24T02:00:00Z", phase: PHASE, round: 11,
     step: "reviewer-diagnosis", role: "reviewer", attempt: 1, agent: { runner: "claude" },
@@ -260,7 +248,6 @@ test("4. reframed close requires post-open reviewer-diagnosis citing window-hori
   commitAll(s.records, "report-only alarm");
   assert.throws(() => closeWindow(s.records, { id: "W-0001", verdict: "reframed" }), /reviewer-diagnosis/);
 
-  // Post-open diagnosis citing alarmKey on task alarms: line succeeds
   appendHandoff(s.records, {
     id: "R-0012-reviewer-diagnosis", time: "2026-11-24T03:00:00Z", phase: PHASE, round: 12,
     step: "reviewer-diagnosis", role: "reviewer", attempt: 1, agent: { runner: "claude" },
@@ -325,7 +312,7 @@ test("6. records-check passes valid metrics/windows.jsonl and fails closed on co
   const goodLine = readFileSync(join(s.records, WINDOWS), "utf8");
   const corruptCases = [
     goodLine + "{not-json\n",
-    goodLine + goodLine, // duplicate ID + overlapping open
+    goodLine + goodLine,
     goodLine + JSON.stringify({ type: "close", id: "W-0099", phase: PHASE, closedAt: "2026-11-24T03:00:00Z", closedBy: "lead", commit: null, verdict: "reframed" }) + "\n",
   ];
   for (const content of corruptCases) {
@@ -346,4 +333,159 @@ test("7. zero regression when metrics/windows.jsonl is absent", async () => {
   assert.doesNotMatch(out.stdout, /Window:|bounded window/);
   assert.equal(s.run("actor", { round: 2, dry: true }).code, EXIT.done);
   assert.equal(nodeRun("records-check.mjs", ["--repo", s.records, "--write"]).status, 0);
+});
+
+test("8. windowState recognizes role=critic verdicts and committed no-dispute critic handoffs fail-closed (D-0064 T10, D-0067)", () => {
+  const win = [{
+    type: "open", id: "W-0001", phase: PHASE, startRound: 10, horizon: 3,
+    goal: "Refactor state", invariants: ["Green"], openedAt: "2026-11-24T00:00:00Z", openedBy: "lead",
+  }];
+  const sha = "a".repeat(40);
+  const stContinue = windowState({
+    windows: win,
+    handoffs: [],
+    rows: [{ round: 11, phase: PHASE, role: "critic", verdict: "CONTINUE", commit: sha, suite: "10/1", ci: "success" }],
+    phase: PHASE,
+  });
+  assert.equal(stContinue.lastRuling?.role, "critic");
+  assert.equal(stContinue.lastRuling?.verdict, "CONTINUE");
+  assert.equal(stContinue.alarm?.key, windowAlarmKey(PHASE, "W-0001"));
+  assert.match(stContinue.alarm.message, /received critic verdict CONTINUE in round 11/);
+
+  const stRowPass = windowState({
+    windows: win,
+    handoffs: [],
+    rows: [
+      { round: 11, phase: PHASE, role: "critic", verdict: "CONTINUE", commit: sha, suite: "10/1", ci: "success" },
+      { round: 12, phase: PHASE, role: "critic", verdict: "PASS", commit: sha, suite: "12/0", ci: "success" },
+    ],
+    phase: PHASE,
+  });
+  assert.equal(stRowPass.lastRuling?.verdict, "PASS");
+  assert.equal(stRowPass.alarm, null);
+
+  const criticHandoff = (round, { violations = 0, step = "critic", sealed = false } = {}) => {
+    const p = String(round).padStart(4, "0");
+    const record = `rounds/${p}-${step}.md`;
+    const sealedFile = `sealed/critic/${p}/${step}-1.md`;
+    return {
+      id: `R-${p}-${step}`, time: `2026-11-24T0${round - 10}:00:00Z`, phase: PHASE, round, step, role: "critic", attempt: 1,
+      agent: { runner: "codex", model: "gpt-5" }, view: sha, product: { base: sha, commit: sha },
+      audit: { violations }, record, files: sealed ? [record, sealedFile] : [record],
+    };
+  };
+  const body = hdr => `# R\n\n## Task (verbatim)\n\n\`\`\`text\nVERDICT: PASS\nACCEPTANCE: pass\n\`\`\`\n\n## Report (verbatim)\n\n${hdr}\n`;
+
+  const clean = criticHandoff(12);
+  const store = new Map([[clean.record, body("VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: none\nOPENED: -")]]);
+  const read = p => store.get(p) ?? "";
+  const files = new Set(store.keys());
+
+  assert.equal(isNoDisputeCriticHandoff(clean, { read, has: p => files.has(p) }), true);
+  assert.equal(parseNoDisputeCritic(clean, { read, has: p => files.has(p) }).verdict, "PASS");
+
+  const stClean = windowState({
+    windows: win,
+    handoffs: [clean],
+    rows: [{ round: 11, phase: PHASE, role: "critic", verdict: "CONTINUE", commit: sha, suite: "10/1", ci: "success" }],
+    phase: PHASE,
+    read,
+    files,
+  });
+  assert.equal(stClean.criticConverged?.id, clean.id);
+  assert.equal(stClean.lastRuling?.verdict, "PASS");
+  assert.equal(stClean.alarm, null);
+
+  const badCases = [
+    ["audit violations", criticHandoff(12, { violations: 1 }), "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: -"],
+    ["disputes present", criticHandoff(12), "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: actor challenges case"],
+    ["opened blocker", criticHandoff(12), "VERDICT: CONVERGED\nACCEPTANCE: pass\nDISPUTES: -\nOPENED: bug:R12-1"],
+    ["acceptance fail", criticHandoff(12), "VERDICT: PASS\nACCEPTANCE: fail\nDISPUTES: -"],
+    ["task spoofing only", criticHandoff(12), "No verdict headers here."],
+  ];
+  for (const [label, h, hdr] of badCases) {
+    const sMap = new Map([[h.record, body(hdr)]]);
+    assert.equal(isNoDisputeCriticHandoff(h, { read: p => sMap.get(p) ?? "", has: p => sMap.has(p) }), false, label);
+  }
+
+  const stContradicted = windowState({
+    windows: win,
+    handoffs: [clean],
+    rows: [{ round: 12, phase: PHASE, role: "judge", verdict: "CONTINUE", commit: sha, suite: "10/1", ci: "success" }],
+    phase: PHASE,
+    read,
+    files,
+  });
+  assert.equal(stContradicted.criticConverged, null);
+  assert.equal(stContradicted.alarm?.key, windowAlarmKey(PHASE, "W-0001"));
+});
+
+test("9. defaultStartRound ignores round-less lead-patch entries; verified close admits independent no-dispute critic and modelVendors config", async () => {
+  const s = await setup({}, {
+    gates: { require: ["github-actions/verify"] },
+    judgeIndependence: "vendor",
+    modelVendors: { "custom-alpha": "alpha", "custom-beta": "beta" },
+  });
+  const { base, commit: actorSha } = commitProduct(s.product, "actor change");
+  const { commit: lpSha } = commitProduct(s.product, "lead micro patch");
+  const { commit: criticSha } = commitProduct(s.product, "critic test");
+  const tree = git(s.product, "rev-parse", `${criticSha}^{tree}`);
+
+  const lpEntry = {
+    id: "LP-0001", time: "2026-11-27T01:05:00Z", phase: PHASE, role: "lead-patch",
+    product: { base: actorSha, commit: lpSha }, files: ["a.js"],
+    lines: { added: 1, deleted: 0, total: 1 }, reason: "typo",
+    verify: { command: "true", exit: 0 }, audit: { violations: 0 },
+  };
+  const actorAgent = { runner: "t3:pi", model: "custom-alpha", observedModel: "custom-alpha", observedModels: ["custom-alpha"] };
+  const criticAgent = { runner: "t3:opencode", model: "custom-beta", observedModel: "custom-beta", observedModels: ["custom-beta"] };
+  appendHandoff(s.records, makeActorHandoff(10, base, actorSha, actorAgent));
+  put(s.records, "metrics/handoffs.jsonl", readFileSync(join(s.records, "metrics/handoffs.jsonl"), "utf8") + JSON.stringify(lpEntry) + "\n");
+  commitAll(s.records, "seed actor and round-less lead-patch");
+
+  assert.equal(defaultStartRound(s.records), 11);
+  const opened = nodeRun("window.mjs", ["open", "--records", s.records, "--phase", PHASE, "--horizon", "2", "--goal", "Critic close", "--invariant", "Green", "--json"]);
+  assert.equal(opened.status, 0, opened.stderr + opened.stdout);
+  assert.equal(JSON.parse(opened.stdout).event.startRound, 11);
+
+  const criticRecord = "rounds/0011-critic-a.md";
+  const criticEntry = {
+    id: "R-0011-critic-a", time: "2026-11-27T02:00:00Z", phase: PHASE, round: 11, step: "critic-a", role: "critic", attempt: 1,
+    agent: criticAgent, view: "a".repeat(40), product: { base: lpSha, commit: criticSha }, audit: { violations: 0 },
+    record: criticRecord, files: [criticRecord],
+  };
+  const criticBody = hdr => `# R-0011-critic-a\n\n## Report (verbatim)\n\n${hdr}\n`;
+  appendHandoff(s.records, criticEntry, criticBody("VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: -\nOPENED: -"));
+  const ciPath = `evidence/0011/ci-${criticSha.slice(0, 12)}-1/receipt.json`;
+  put(s.records, "evidence/0011/suite-1.json", JSON.stringify({ repository: s.product, sha: criticSha, tree, green: true }));
+  put(s.records, ciPath, JSON.stringify({ repository: "example/product", sha: criticSha, ci: "success", ok: true, missing: [], conclusions: { "github-actions/verify": "success" } }));
+  put(s.records, "metrics/trajectory.jsonl", jsonl({
+    round: 11, phase: PHASE, role: "critic", area: "core", verdict: "PASS", commit: criticSha, suite: "8/0", ci: "success", ciReceipt: ciPath, time: "2026-11-27T02:01:00Z",
+  }));
+  commitAll(s.records, "independent critic pass");
+
+  const statusJson = JSON.parse(nodeRun("window.mjs", ["status", "--records", s.records, "--phase", PHASE, "--json"]).stdout);
+  assert.equal(statusJson.criticConverged?.id, "R-0011-critic-a");
+
+  const badCfg = join(s.dir, "bad-mv.json");
+  put(s.dir, "bad-mv.json", JSON.stringify({ ...s.cfg, modelVendors: ["not-an-object"] }));
+  assert.notEqual(nodeRun("window.mjs", ["close", "--records", s.records, "--id", "W-0001", "--verdict", "verified", "--commit", criticSha, "--config", badCfg]).status, 0);
+  assert.throws(() => closeWindow(s.records, { id: "W-0001", commit: criticSha, verdict: "verified", cfg: { ...s.cfg, modelVendors: ["not-an-object"] } }), WindowRefusalError);
+
+  put(s.records, criticRecord, criticBody("VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: D1\nOPENED: -"));
+  commitAll(s.records, "disputed critic");
+  assert.throws(() => closeWindow(s.records, { id: "W-0001", commit: criticSha, verdict: "verified", cfg: s.cfg }), WindowRefusalError);
+
+  put(s.records, criticRecord, criticBody("VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: -\nOPENED: -"));
+  const sameVendorHandoffs = readFileSync(join(s.records, "metrics/handoffs.jsonl"), "utf8").replaceAll("custom-beta", "custom-alpha");
+  put(s.records, "metrics/handoffs.jsonl", sameVendorHandoffs);
+  commitAll(s.records, "same-vendor critic");
+  assert.throws(() => closeWindow(s.records, { id: "W-0001", commit: criticSha, verdict: "verified", cfg: s.cfg }), /independence/);
+
+  put(s.records, "metrics/handoffs.jsonl", sameVendorHandoffs.replace("R-0011-critic-a\",\"time\":\"2026-11-27T02:00:00Z\",\"phase\":\"S5\",\"round\":11,\"step\":\"critic-a\",\"role\":\"critic\",\"attempt\":1,\"agent\":{\"runner\":\"t3:opencode\",\"model\":\"custom-alpha\",\"observedModel\":\"custom-alpha\",\"observedModels\":[\"custom-alpha\"]}", "R-0011-critic-a\",\"time\":\"2026-11-27T02:00:00Z\",\"phase\":\"S5\",\"round\":11,\"step\":\"critic-a\",\"role\":\"critic\",\"attempt\":1,\"agent\":{\"runner\":\"t3:opencode\",\"model\":\"custom-beta\",\"observedModel\":\"custom-beta\",\"observedModels\":[\"custom-beta\"]}"));
+  commitAll(s.records, "restore independent critic");
+  const config = writeConfig(s);
+  const closed = nodeRun("window.mjs", ["close", "--records", s.records, "--id", "W-0001", "--verdict", "verified", "--commit", criticSha, "--config", config, "--json"]);
+  assert.equal(closed.status, 0, closed.stderr + closed.stdout);
+  assert.equal(JSON.parse(closed.stdout).event.ciReceipt, ciPath);
 });

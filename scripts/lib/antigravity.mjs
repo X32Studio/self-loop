@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isPaseoFramed, PASEO_MCP_TOOL_PREFIX, unwrapPaseoAgentMessage } from "./paseo.mjs";
 import { canonical } from "./path-canonical.mjs";
 
 export const VERIFIED_ANTIGRAVITY_LS_VERSION = "cli-1.5.14";
@@ -53,12 +54,15 @@ const ANTIGRAVITY_NATIVE_DELEGATION_TOOLS = new Set([
   "invoke_subagent", "run_workflow", "define_subagent", "swarm", "send_message", "browser_subagent",
 ]);
 
-// F-0008, F-0009, D-0060, design/mandatory-control-plane.md#2
+// F-0008, F-0009, D-0060, D-0062, D-0066, design/mandatory-control-plane.md#2
 const T3_DELEGATION_BASES = ["delegate_task", "t3_thread_launch", "create_threads"];
 export const ANTIGRAVITY_DELEGATION_TOOLS = new Set([
   "invoke_subagent",
   "run_workflow",
   "swarm",
+  "create_agent",
+  "mcp_paseo_create_agent",
+  "mcp__paseo__create_agent",
   ...T3_DELEGATION_BASES.flatMap(base => [base, `mcp_t3-code_${base}`, `mcp__t3-code__${base}`]),
 ]);
 
@@ -75,8 +79,11 @@ const T3_MCP_READ_ONLY_ALLOWLIST = new Set([
 
 export function isDisallowedRoleTool(name) {
   if (typeof name !== "string" || !name) return false;
-  if (ANTIGRAVITY_NATIVE_DELEGATION_TOOLS.has(name)) return true;
-  const m = T3_MCP_TOOL_PREFIX.exec(name);
+  const trimmed = name.trim();
+  if (!trimmed) return false;
+  if (ANTIGRAVITY_NATIVE_DELEGATION_TOOLS.has(trimmed) || trimmed === "create_agent") return true;
+  if (PASEO_MCP_TOOL_PREFIX.test(trimmed)) return true;
+  const m = T3_MCP_TOOL_PREFIX.exec(trimmed);
   if (m) return !T3_MCP_READ_ONLY_ALLOWLIST.has(m[1]);
   return false;
 }
@@ -124,6 +131,11 @@ export function t3AntigravityInstances({ env = process.env, home = env?.HOME || 
 export function antigravityAppDirs({ env = process.env, home = env?.HOME || homedir() } = {}) {
   const candidates = [];
   if (env?.ANTIGRAVITY_APP_DATA_DIR) candidates.push(resolve(env.ANTIGRAVITY_APP_DATA_DIR));
+  if (typeof env?.ANTIGRAVITY_HOME === "string" && env.ANTIGRAVITY_HOME.trim()) {
+    const agHome = resolve(env.ANTIGRAVITY_HOME);
+    candidates.push(agHome);
+    for (const sub of APP_SUBDIRS) candidates.push(join(agHome, sub));
+  }
   const gHome = geminiHome(env, home);
   for (const sub of APP_SUBDIRS) candidates.push(join(gHome, sub));
   for (const inst of t3AntigravityInstances({ env, home })) candidates.push(inst.appDataDir);
@@ -281,7 +293,10 @@ export function unwrapAntigravityUserText(raw) {
 export function antigravityFirstPrompt(rows) {
   const first = rows.find(r => r?.type === "USER_INPUT" && r.source === "USER_EXPLICIT" && typeof r.content === "string");
   if (!first) return "";
-  return unwrapAntigravityUserText(first.content) ?? "";
+  const unwrapped = unwrapAntigravityUserText(first.content);
+  if (unwrapped === null) return "";
+  if (isPaseoFramed(unwrapped)) return unwrapPaseoAgentMessage(unwrapped)?.body ?? "";
+  return unwrapped;
 }
 
 // F-0009, design/antigravity-harness.md#status

@@ -170,3 +170,33 @@ test("R6-B3-13 copying a legacy prose line creates a new comment even when its t
   }, [[file, 4, prose]], { [file]: [[1,prose]] });
   accept(w, p, prepared, { [file]: original + "\n" + added }, [[file,1,prose]], { [file]: [[1,prose]] });
 });
+
+test("R6-B3-14 fresh · flow: valid TSX generic defaults (<T = \"ok\">, <T = { a: number }>) cannot switch the lexer into JSX children and hide trailing prose comments · loss: false-verdict", t => {
+  const w = round6B(t), p = phase(w), file = "src/Component.tsx";
+  const good = 'export type Handler = <T = "ok">(x: T) => T;\nexport type BoxFn = <T = { a: number }>(x: T) => T;\nexport const View = () => <div>{"// literal text"}</div>;\n';
+  const bad = 'export type Handler = <T = "ok">(x: T) => T;\n// Explain why the guard was bypassed.\nexport const View = () => <div>ok</div>;\n';
+  const prepared = reject(w, p, "actor", { [file]: bad }, [[file, 2, "Explain why the guard was bypassed."]]);
+  accept(w, p, prepared, { [file]: good });
+});
+
+test("R6-B3-15 fresh · flow: Go, C/C++, Rust, Java, and Kotlin literals, lifetimes, digit separators, and nested Rust blocks pass while trailing prose refuses · loss: false-verdict", t => {
+  const w = round6B(t), p = phase(w);
+  const clean = {
+    "src/main.go": "package main\nfunc main() { _ = `// literal /* inside raw */` }\n",
+    "src/main.cpp": 'int n = 1\'000;\nconst char* s = R"(// raw C++ string)";\n',
+    "src/lib.rs": "/* D-0016\n   /* R-0053-critic-vfive-full */\n   D-0068 */\npub fn f<'a>(s: &'a str) -> &'a str { let _r = r#\"// literal\"#; s }\n",
+    "src/Main.java": 'class Main { String s = """\n// text block\n"""; }\n',
+    "src/Main.kt": 'fun main() { val n = 1; println("// $n /* keep */"); }\n',
+  };
+  const prose = {
+    "src/main.go": "// Explain Go raw string behavior.",
+    "src/main.cpp": "// Explain C++ digit separator.",
+    "src/lib.rs": "// Explain Rust lifetime parameter.",
+    "src/Main.java": "// Explain Java text block literal.",
+    "src/Main.kt": "// Explain Kotlin string template.",
+  };
+  const bad = Object.fromEntries(Object.entries(clean).map(([f, v]) => [f, v + prose[f] + "\n"]));
+  const diags = Object.entries(bad).map(([f, v]) => [f, v.split("\n").length - 1, prose[f].slice(3)]);
+  const prepared = reject(w, p, "actor", bad, diags);
+  accept(w, p, prepared, clean);
+});

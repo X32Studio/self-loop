@@ -10,7 +10,7 @@
   <b>中文</b> · <a href="README.md">English</a> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/METHODOLOGY.md">Methodology</a> · <a href="SKILL.md">Skill Spec</a>
 </p>
 
-<sub>作者：<a href="https://x32studio.com">X32 Studio</a> · MIT 协议 · v0.9.0</sub>
+<sub>作者：<a href="https://x32studio.com">X32 Studio</a> · MIT 协议 · v0.9.6</sub>
 
 </div>
 
@@ -35,18 +35,31 @@
 
 ---
 
-## v0.9.0 强制控制面与单树一次宿主机测试
+## v0.9.6 核心升级：可配置模型/Harness、零浪费吞吐门禁与双五归零
 
-- **全图提交溯源与工作分支波次门禁（`provenance.mjs`、`gated-push.mjs`、`.githooks/pre-push`）**：`provenanceBaseline` 之上的所有提交均须来自 `PL-NNNN` 备案 hand-off 或干净波次合并（全程 `--no-replace-objects`）；`call.mjs --base` 与工作分支推送强制校验 `PL + critic + actor + 跨厂商 judge` 全链（开放 `W-NNNN` 重构窗口豁免），预审远端 CI 走 `ci/<handoff-id>` 分支。
-- **Nonce 绑定委派锁与写域收窄（`lead-guard.mjs`、`git-push-command.mjs`）**：无活跃未落盘 `call.json` 16 位 hex nonce 一律拒绝任何委派工具；`--workspaces` 写域收窄至 `<workDir>/tasks/`；词法拦截 `git push --no-verify` / `-n` / `-c core.hooksPath=...` / `--exec-path=...`；畸形 hook 输入一律 fail-closed。
-- **单树一次宿主机测试（`suite-green.mjs`、`audit-access.mjs`）**：宿主机通过 POSIX 原子 `linkSync` 单调代链对同一 `(repo, HEAD^{tree}, command, install, runtime)` **仅跑一次**（并发绿/红结果单飞共享、零 TOCTOU），向代码 Judge 与只读终审 Critic 自动注入只读 `0444` `suite-receipt.json`；`call.mjs record` 提交新树时调用 `purgeTreeReceipts` 防缓存预投毒；`gated-push.mjs` 免 `--suite-receipt` 自动查表；角色 brief 删除重复跑全量套件的指令。
-- **0 轮次原话门禁、增量 `T3` 与正门减法（`plan.mjs`、`cadence.mjs`、`t3-child.mjs`、`dispatch.mjs`）**：未蒸馏实质性 Owner 原话立即阻塞（忽略例行确认词）；祖先 `ci-absent` 经同阶段后继绿 CI 自动熄灭；`T3` 仅针对相对上次 `reviewer-architecture` 基线的新增/恶化告警触发，且异步架构审阅期间仅阻塞命中热点的包；`call.mjs record --ws <ws>` 免 `--session` 按 nonce 自动匹配，新增 `call.mjs cancel` 与 `dispatch.mjs prepare|record`。
+- **可配置模型与 Harness 解耦（`paseo.mjs`、`vendor.mjs`、`init.mjs`、`hooks.mjs`）**：一等支持 `runner: "paseo"` 及 `t3` / `claude` / `codex`；开放任意 `provider` 与显式 `adapter`（`antigravity | claude | codex | generic`）、路由前缀模型归一化（如 `openrouter/gemini-2.5-pro`）、自定义 `modelVendors` / `agent.vendor`、`judgeIndependence: "vendor" | "model" | "session"`、`ANTIGRAVITY_HOME` Hook 支持以及全参数化 `self-loop.mjs init` 脚手架。
+- **零浪费吞吐门禁与无争议 Critic 直接收敛（`lead-patch.mjs`、`lexers*.mjs`、`directives.mjs`、`arch-facts.mjs`、`ci.mjs`、`window.mjs`、`blueprint.mjs`）**：
+  - 新增有界微补丁 `self-loop.mjs patch`（硬帽 `≤ 20` 行、`≤ 3` 文件、`≤ 2` 连续次、0 散文注释、强制 `--verify`）；
+  - `VERSION`/文档变更 `pre-commit` `< 0.1s` 秒级快通 + `codeTree` 复用全绿套件回执；
+  - 诚实 `churn-hotspot`（健康缩减重构不再误杀）；
+  - 15 语言确定性词法零注释准入，彻底取消冗余 `judge-comments` 审查；
+  - **独立无争议 Critic 直接收敛**：独立 Critic 输出 `VERDICT: PASS / ACCEPTANCE: pass / DISPUTES: - / OPENED: -` 且 `0` 违规即可直接收敛并推进受保护推送，仅在真实争议或持有测试场景才调 Judge。
+- **航天双五归零（`SKILL.md`、`assets/brief-*.md`、`RECORDS.md`）**：将技术归零（定位根因、机理清楚、问题复现、措施有效、**强制全仓举一反三水平扫查**）与管理归零固化进所有角色 brief 与确定性门禁。
+- **精炼三段式 `SKILL.md`（`160` 行）与参考分离（`assets/reference-cli-and-gates.md`）**：按「意图动机与五大具体失败模式 → Step 0–5 操作流（内置强制 **`Pre-Idle Anti-Serial Check`** 并行核查，杜绝串行干等 Track 1）→ `Not for / Must Not` 红线」重组。
 
-## v0.8.0 调度与集成引擎
+<details>
+<summary>v0.9.0 – v0.9.2 与 v0.8.0 历史更新</summary>
 
-**生成引擎 → 调度与集成引擎 → 对抗引擎**。生成引擎制定计划与工作包契约。调度与集成引擎结合 `arch-facts` 的导入图与符号 glob 分析耦合，分波并行调度 Actor，并集成已交接的提交。对抗引擎由一个统一 Critic 或多个并行 Critic 审查，再由跨厂商 Judge 裁决。
+### v0.9.0 – v0.9.2
+- **全图提交溯源与工作分支波次门禁（`provenance.mjs`、`gated-push.mjs`、`.githooks/pre-push`）**：`provenanceBaseline` 之上的所有提交均须来自 `PL-NNNN` 备案 hand-off 或干净波次合并（全程 `--no-replace-objects`）；工作分支推送强制校验 `PL + critic + actor + 独立 judge/critic` 全链（开放 `W-NNNN` 重构窗口豁免），预审远端 CI 走 `ci/<handoff-id>` 分支。
+- **Nonce 绑定委派锁、Antigravity 多产品 Hook 与写域收窄（`lead-guard.mjs`、`antigravity.mjs`、`git-push-command.mjs`）**：无活跃未落盘 `call.json` 16 位 hex nonce 一律拒绝任何委派工具；解码结构化 `argumentsJson` 文件工具目标路径并收紧子线程读写域；支持多产品 `--owner-store` Hook；词法拦截 `git push --no-verify` 等绕过参数。
+- **单树一次宿主机测试（`suite-green.mjs`、`audit-access.mjs`）**：宿主机通过 POSIX 原子 `linkSync` 单调代链对同一 `(repo, HEAD^{tree}, command, install, runtime)` 仅跑一次，向代码 Judge 与只读终审 Critic 自动注入只读 `0444` `suite-receipt.json`。
+- **0 轮次原话门禁、增量 `T3` 与零摩擦记录（`plan.mjs`、`cadence.mjs`、`t3-child.mjs`、`dispatch.mjs`）**：未蒸馏实质性 Owner 原话立即阻塞；`call.mjs record --ws <ws>` 免 `--session` 按 nonce 自动匹配并自动回收完成态 worktree。
 
-使用 `self-loop.mjs dispatch analyze|waves|integrate` 分析耦合、查看调度波次或集成提交。调用角色时追加 `call.mjs --plan PL-NNNN --package <id>` 所示的两个参数，将调用绑定到已提交的工作包。
+### v0.8.0 调度与集成引擎
+**生成引擎 → 调度与集成引擎 → 对抗引擎**。结合 `arch-facts` 导入图与符号 glob 分析耦合，分波并行调度 Actor 并集成提交，再由统一或并行 Critic 与独立 Judge 收敛。使用 `self-loop.mjs dispatch analyze|waves|integrate` 与 `call.mjs --plan PL-NNNN --package <id>` 驱动。
+
+</details>
 
 ## v0.7.0 核心新特性
 
@@ -108,7 +121,7 @@
 # 1. 克隆并运行完整单元测试
 git clone https://github.com/X32Studio/self-loop.git
 cd self-loop
-git checkout v0.7.0
+git checkout v0.9.6
 npm test
 
 # 2. 运行 5 秒门禁体验 Demo（无需 API Key / 联网）

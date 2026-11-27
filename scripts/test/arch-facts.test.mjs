@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { ARCH_THRESHOLDS, buildImportGraph, collectArchFacts, structuralBreaches } from "../lib/arch-facts.mjs";
+import { ARCH_THRESHOLDS, buildImportGraph, collectArchFacts, compareArchFacts, structuralBreaches } from "../lib/arch-facts.mjs";
 import { git, repo } from "./helpers.mjs";
 
 const linesOf = (n, prefix = "export const v") =>
@@ -70,9 +70,9 @@ test("growth >= 35% from >= 100 baseline lines triggers file-growth breach; smal
   });
   const baseSha = git(r, "rev-parse", "HEAD");
   const headSha = putCommit(r, {
-    "src/growing.mjs": linesOf(280), // +40% >= 35%
-    "src/tiny.mjs": linesOf(80), // +300%, but baselineLines < 100
-    "src/steady.mjs": linesOf(240), // +20% < 35%
+    "src/growing.mjs": linesOf(280),
+    "src/tiny.mjs": linesOf(80),
+    "src/steady.mjs": linesOf(240),
   }, "grow files");
 
   const facts = collectArchFacts(r, headSha, { baselineSha: baseSha });
@@ -89,23 +89,52 @@ test("growth >= 35% from >= 100 baseline lines triggers file-growth breach; smal
   assert.equal(breaches[0].path, "src/growing.mjs");
 });
 
-test("churn >= 3 distinct commits since baselineSha triggers churn-hotspot breach", () => {
+test("D-0064 T8: churn >= 3 emits churn-hotspot only on structural degradation, never for healthy shrinking or constant-size refactors", () => {
+  const filler = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`src/pad-${String(i).padStart(2, "0")}.mjs`, linesOf(60)]));
   const r = repo({
-    "src/hot.mjs": linesOf(20),
+    ...filler,
+    "src/growing.mjs": linesOf(20),
+    "src/shrinking.mjs": linesOf(30),
+    "src/steady.mjs": linesOf(25),
+    "src/rot-shrink.mjs": linesOf(30),
     "src/calm.mjs": linesOf(20),
   });
   const baseSha = git(r, "rev-parse", "HEAD");
-  putCommit(r, { "src/hot.mjs": linesOf(21), "src/calm.mjs": linesOf(21) }, "touch 1");
-  putCommit(r, { "src/hot.mjs": linesOf(22) }, "touch 2");
-  const headSha = putCommit(r, { "src/hot.mjs": linesOf(23) }, "touch 3");
+  const baseFacts = collectArchFacts(r, baseSha);
+  putCommit(r, {
+    "src/growing.mjs": linesOf(21),
+    "src/shrinking.mjs": linesOf(28),
+    "src/steady.mjs": linesOf(25, "export const s1"),
+    "src/rot-shrink.mjs": linesOf(28),
+    "src/calm.mjs": linesOf(21),
+  }, "touch 1");
+  putCommit(r, {
+    "src/growing.mjs": linesOf(22),
+    "src/shrinking.mjs": linesOf(26),
+    "src/steady.mjs": linesOf(25, "export const s2"),
+    "src/rot-shrink.mjs": linesOf(26),
+  }, "touch 2");
+  const headSha = putCommit(r, {
+    "src/growing.mjs": linesOf(23),
+    "src/shrinking.mjs": linesOf(24),
+    "src/steady.mjs": linesOf(25, "export const s3"),
+    "src/rot-shrink.mjs": linesOf(23) + 'export const port = "localhost:8080";\n',
+  }, "touch 3");
 
   const facts = collectArchFacts(r, headSha, { baselineSha: baseSha });
-  assert.deepEqual(facts.churnHotspots, [{ path: "src/hot.mjs", commits: 3 }]);
+  assert.deepEqual(facts.churnHotspots, [
+    { path: "src/growing.mjs", commits: 3 },
+    { path: "src/rot-shrink.mjs", commits: 3 },
+    { path: "src/shrinking.mjs", commits: 3 },
+    { path: "src/steady.mjs", commits: 3 },
+  ]);
 
-  const breaches = structuralBreaches(facts);
-  assert.equal(breaches.length, 1);
-  assert.equal(breaches[0].kind, "churn-hotspot");
-  assert.equal(breaches[0].path, "src/hot.mjs");
+  for (const breaches of [structuralBreaches(facts), compareArchFacts(facts, baseFacts)]) {
+    const churnPaths = breaches.filter(b => b.kind === "churn-hotspot").map(b => b.path).sort();
+    assert.deepEqual(churnPaths, ["src/growing.mjs", "src/rot-shrink.mjs"]);
+    assert.equal(breaches.some(b => b.path === "src/shrinking.mjs"), false);
+    assert.equal(breaches.some(b => b.path === "src/steady.mjs"), false);
+  }
 });
 
 test("static ES import hubs compute fanIn/fanOut and parallelSiblings stay informational (not breaches)", () => {

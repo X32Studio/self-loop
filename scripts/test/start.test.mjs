@@ -1,24 +1,23 @@
-// start: the one entry point a fresh session of any harness reads first (design §6.2, F-0003). Whatever registered
-// product the session runs in, it shows every registered product's committed stall alarm that is still live (the
-// alarm's key is the phase and the last recorded activity, the identity `tick` and `next` use), with the action `tick`
-// took (`show`, or `resume unavailable`), and it writes nothing (R-0001-judge R1-1).
+// F-0003, F-0009, D-0016, D-0065, D-0066, D-0067, R-0001-judge
 import assert from "node:assert/strict";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { CROWDED, git, isolatedEnv, loopProduct, ownerStore, ROOMY, selfLoop, temp } from "./helpers.mjs";
+import { argv, load } from "../call.mjs";
+import { UsageError } from "../lib/args.mjs";
+import { git as plumbingGit, gitOk as plumbingGitOk, run as plumbingRun } from "../lib/git-plumbing.mjs";
+import { initLoop } from "../lib/init.mjs";
+import { CROWDED, git, isolatedEnv, loopProduct, ownerStore, repo, ROOMY, selfLoop, temp } from "./helpers.mjs";
 
 const NOW = "2026-11-21T12:00:00.000Z";
 const hoursBefore = h => new Date(Date.parse(NOW) - h * 3600_000).toISOString();
 const entry = (name, records) => ({ name, records });
 const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-/** The records HEAD and the working tree of each product: what a reader must leave as it was. */
 const snapshot = (...products) => products.map(p => `${git(p.records, "rev-parse", "HEAD")} ${git(p.records, "status", "--porcelain")}`);
 const ledger = records => {
   try { return git(records, "show", "HEAD:metrics/alarms.jsonl").split("\n").filter(Boolean).map(line => JSON.parse(line)); }
   catch { return []; }
 };
-/** Record new phase activity: one more blueprint event at `time`. */
 function activity(p, time) {
   const file = join(p.records, "metrics/blueprint.jsonl");
   writeFileSync(file, readFileSync(file, "utf8") + JSON.stringify({ feature: "F-0001", phase: "v1", status: "designing", time, by: "lead",
@@ -68,7 +67,6 @@ test("start shows a committed alarm while its idle period lasts, whatever thresh
   const env = isolatedEnv({ SELF_LOOP_OWNER_STORE: store });
   assert.equal(selfLoop(["tick", "--now", NOW, "--hours", "2"], { env }).status, 2);
   assert.equal(ledger(short.records).length, 1);
-  // The default threshold (12 h) would not call 3 h a stall; the committed alarm of this idle period is still live.
   const live = selfLoop(["start", "--now", NOW], { cwd: lead.product, env });
   assert.equal(live.status, 0, live.stderr);
   assert.match(live.stdout, new RegExp(`STALL short .*since ${escape(hoursBefore(3))}.*alarm raised ${escape(NOW)}`));
@@ -143,4 +141,154 @@ test("start --owner-store runs the session's next with that store, whatever SELF
   assert.match(host(flagged.stdout), new RegExp(`^Host over the bound: .*bound from ${escape(join(crowded, "products.json"))} minAvailableMemoryGB`));
   const reversed = selfLoop(["start", "--now", NOW, "--owner-store", roomy], { cwd: lead.product, env: isolatedEnv({ SELF_LOOP_OWNER_STORE: crowded }) });
   assert.match(host(reversed.stdout), new RegExp(`^Host within the bound: .*bound from ${escape(join(roomy, "products.json"))} maxLoadRatio, minAvailableMemoryGB`));
+});
+
+test("D-0065/D-0066/D-0067: initLoop supports Paseo, better-paseo-antigravity, and T3 Antigravity presets while preserving defaults", () => {
+  const env = isolatedEnv();
+  const expectedModels = {
+    actor: { model: "gemini-2.5-flash", effort: "high" },
+    critic: { model: "gemini-2.5-pro", effort: "xhigh" },
+    judge: { model: "gemini-2.5-pro-exp", effort: "high" },
+    reviewer: { model: "gemini-2.5-pro-exp", effort: "high" },
+  };
+
+  for (const opts of [{ harness: "paseo" }, { provider: "better-paseo-antigravity" }, { harness: "paseo", provider: "better-paseo-antigravity" }]) {
+    const product = repo({ "src/a.js": "export const a = 1;\n" });
+    const res = initLoop({ cwd: product, env, ...opts });
+    const raw = JSON.parse(readFileSync(res.config, "utf8"));
+    assert.equal(raw.judgeIndependence, "model", JSON.stringify(opts));
+    for (const [role, spec] of Object.entries(expectedModels)) {
+      assert.deepEqual(raw.agents[role], { runner: "paseo", provider: "better-paseo-antigravity", ...spec }, `${role} ${JSON.stringify(opts)}`);
+      assert.equal(argv(raw.agents[role], { confined: role === "reviewer", cwd: product, addDirs: [] }), null);
+    }
+    const loaded = load(res.config);
+    assert.equal(loaded.judgeIndependence, "model");
+  }
+
+  for (const opts of [{ harness: "t3", provider: "antigravity" }, { provider: "antigravity" }]) {
+    const product = repo({ "src/a.js": "export const a = 1;\n" });
+    const res = initLoop({ cwd: product, env, ...opts });
+    const raw = JSON.parse(readFileSync(res.config, "utf8"));
+    assert.equal(raw.judgeIndependence, "model", JSON.stringify(opts));
+    for (const [role, spec] of Object.entries(expectedModels)) {
+      assert.deepEqual(raw.agents[role], { runner: "t3", provider: "antigravity", ...spec }, `${role} ${JSON.stringify(opts)}`);
+      assert.equal(argv(raw.agents[role], { confined: role === "reviewer", cwd: product, addDirs: [] }), null);
+    }
+  }
+
+  const t3DefaultProd = repo({ "src/a.js": "export const a = 1;\n" });
+  const t3Default = JSON.parse(readFileSync(initLoop({ cwd: t3DefaultProd, env, harness: "t3" }).config, "utf8"));
+  assert.equal("judgeIndependence" in t3Default, false);
+  assert.deepEqual(t3Default.agents, {
+    critic: { runner: "t3", provider: "codex" },
+    actor: { runner: "t3", provider: "claude" },
+    judge: { runner: "t3", provider: "codex" },
+    reviewer: { runner: "t3", provider: "claude" },
+  });
+
+  const baseProd = repo({ "src/a.js": "export const a = 1;\n" });
+  const baseCfg = JSON.parse(readFileSync(initLoop({ cwd: baseProd, env }).config, "utf8"));
+  assert.equal("judgeIndependence" in baseCfg, false);
+  assert.deepEqual(baseCfg.agents, {
+    critic: { runner: "codex" },
+    actor: { runner: "claude" },
+    judge: { runner: "codex" },
+    reviewer: { runner: "claude" },
+  });
+
+  const invalidProd = repo({ "src/a.js": "export const a = 1;\n" });
+  for (const bad of [
+    { harness: "unknown" },
+    { runner: "unknown" },
+    { harness: "t3", runner: "paseo" },
+    { provider: "   " },
+    { adapter: "bogus" },
+    { independence: "none" },
+    { runner: "claude", provider: "pi" },
+    { harness: "t3", provider: "better-paseo-antigravity" },
+  ]) {
+    assert.throws(() => initLoop({ cwd: invalidProd, env, ...bad }), UsageError, JSON.stringify(bad));
+  }
+  assert.equal(existsSync(join(invalidProd, ".self-loop")), false);
+  assert.equal(existsSync(join(invalidProd, ".gitignore")), false);
+});
+
+test("D-0068: initLoop and self-loop.mjs init accept arbitrary providers, adapters, per-role models, and independence policies", () => {
+  const env = isolatedEnv();
+  const prodPi = repo({ "src/a.js": "export const a = 1;\n" });
+  const resPi = initLoop({
+    cwd: prodPi,
+    env,
+    harness: "t3",
+    provider: "pi",
+    model: "openrouter/gemini-2.5-pro-exp",
+  });
+  const cfgPi = JSON.parse(readFileSync(resPi.config, "utf8"));
+  assert.equal("judgeIndependence" in cfgPi, false);
+  for (const role of ["critic", "actor", "judge", "reviewer"]) {
+    assert.deepEqual(cfgPi.agents[role], { runner: "t3", provider: "pi", model: "openrouter/gemini-2.5-pro-exp" }, role);
+    assert.equal(argv(cfgPi.agents[role], { confined: role === "reviewer", cwd: prodPi, addDirs: [] }), null);
+  }
+
+  const prodCli = repo({ "src/a.js": "export const a = 1;\n" });
+  const cliInit = selfLoop([
+    "init",
+    "--harness", "paseo",
+    "--provider", "opencode",
+    "--adapter", "generic",
+    "--actor-model", "openrouter/gemini-2.5-flash",
+    "--critic-model", "xai/grok-4",
+    "--judge-model", "anthropic/claude-opus-4-6",
+    "--reviewer-model", "deepseek-r1",
+    "--independence", "session",
+    "--json",
+  ], { cwd: prodCli, env });
+  assert.equal(cliInit.status, 0, cliInit.stderr);
+  const parsed = JSON.parse(cliInit.stdout);
+  const cfgCli = JSON.parse(readFileSync(parsed.config, "utf8"));
+  assert.equal(cfgCli.judgeIndependence, "session");
+  assert.deepEqual(cfgCli.agents, {
+    critic: { runner: "paseo", provider: "opencode", adapter: "generic", model: "xai/grok-4" },
+    actor: { runner: "paseo", provider: "opencode", adapter: "generic", model: "openrouter/gemini-2.5-flash" },
+    judge: { runner: "paseo", provider: "opencode", adapter: "generic", model: "anthropic/claude-opus-4-6" },
+    reviewer: { runner: "paseo", provider: "opencode", adapter: "generic", model: "deepseek-r1" },
+  });
+  assert.equal(load(parsed.config).judgeIndependence, "session");
+
+  const prodRunner = repo({ "src/a.js": "export const a = 1;\n" });
+  const cliRunner = selfLoop(["init", "--runner", "claude", "--model", "claude-opus-4-6", "--independence", "model"], { cwd: prodRunner, env });
+  assert.equal(cliRunner.status, 0, cliRunner.stderr);
+  const cfgRunner = JSON.parse(readFileSync(join(prodRunner, ".self-loop", "loop.json"), "utf8"));
+  assert.equal(cfgRunner.judgeIndependence, "model");
+  for (const role of ["critic", "actor", "judge", "reviewer"]) {
+    assert.deepEqual(cfgRunner.agents[role], { runner: "claude", model: "claude-opus-4-6" }, role);
+  }
+});
+
+test("D-0067: git-plumbing defaults GIT_TERMINAL_PROMPT=0 across run, git, and gitOk while allowing explicit override", () => {
+  const saved = process.env.GIT_TERMINAL_PROMPT;
+  delete process.env.GIT_TERMINAL_PROMPT;
+  try {
+    const outDefault = plumbingRun(process.execPath, ["-e", "process.stdout.write(process.env.GIT_TERMINAL_PROMPT ?? '')"], { encoding: "utf8" });
+    assert.equal(outDefault, "0");
+
+    const outCustomBase = plumbingRun(process.execPath, ["-e", "process.stdout.write(JSON.stringify([process.env.GIT_TERMINAL_PROMPT, process.env.ONLY_TEST]))"], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, ONLY_TEST: "yes" },
+    });
+    assert.deepEqual(JSON.parse(outCustomBase), ["0", "yes"]);
+
+    const outOverride = plumbingRun(process.execPath, ["-e", "process.stdout.write(process.env.GIT_TERMINAL_PROMPT ?? '')"], {
+      encoding: "utf8",
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "1" },
+    });
+    assert.equal(outOverride, "1");
+
+    const r = repo({ "a.txt": "1\n" });
+    assert.equal(plumbingGit(r, "-c", 'alias.promptcheck=!printf "%s" "$GIT_TERMINAL_PROMPT"', "promptcheck"), "0");
+    assert.equal(plumbingGitOk(r, "-c", 'alias.promptok=!test "$GIT_TERMINAL_PROMPT" = "0"', "promptok"), true);
+  } finally {
+    if (saved === undefined) delete process.env.GIT_TERMINAL_PROMPT;
+    else process.env.GIT_TERMINAL_PROMPT = saved;
+  }
 });

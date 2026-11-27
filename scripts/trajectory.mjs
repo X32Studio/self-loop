@@ -15,6 +15,9 @@ import { checkSsot, defaultShaFor, formatSsotRefusal, ssotDriftAlarms } from "./
 import { tipProblem } from "./lib/tip.mjs";
 
 const SHA = /^[0-9a-f]{40}$/;
+const CRITIC_RECORD = /^rounds\/(\d{4})-critic(?:-[a-z0-9-]+)*\.md$/;
+const isCiCheckedRow = r => r.role === "judge" || (r.role === "critic" && r.verdict !== "-");
+const isConvergenceVerdict = verdict => verdict === "CONVERGED" || verdict === "PASS";
 
 function isCommitAncestor(repo, ancestor, descendant, cache) {
   if (!SHA.test(ancestor) || !SHA.test(descendant)) return false;
@@ -46,7 +49,7 @@ function attachExtinguished(list, extinguished) {
   return list;
 }
 
-// D-0060, D-0017, design/mandatory-control-plane.md#3
+// D-0060, D-0017, D-0064, D-0067, design/mandatory-control-plane.md#3
 export function extinguishedCiAbsent(rows, { repo = null, extinguishCiAbsent = Boolean(repo), _ancestorCache = null } = {}) {
   if (!extinguishCiAbsent) return [];
   const cache = _ancestorCache ?? new Map();
@@ -54,7 +57,7 @@ export function extinguishedCiAbsent(rows, { repo = null, extinguishCiAbsent = B
   const extinguished = [];
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-    if (!(r.role === "judge" && ["absent", "unknown"].includes(r.ci))) continue;
+    if (!(isCiCheckedRow(r) && ["absent", "unknown"].includes(r.ci))) continue;
     const by = findExtinguisher(r, i, greenRows, repo, cache);
     if (!by) continue;
     extinguished.push({
@@ -72,7 +75,7 @@ export function extinguishedCiAbsent(rows, { repo = null, extinguishCiAbsent = B
 }
 
 export const TRAJECTORY = "metrics/trajectory.jsonl";
-export const VERDICTS = ["-", "CONTINUE", "CONVERGED", "REFRAME"];
+export const VERDICTS = ["-", "CONTINUE", "CONVERGED", "PASS", "REFRAME"];
 export const CI = ["-", ...CI_WORDS];
 export const DEFAULTS = { areaRounds: 3, recur: 2, growthRatio: 2, growthMin: 300, window: 4 };
 export const COLUMNS = ["time", "round", "phase", "area", "role", "model", "verdict", "opened", "closed", "suite", "owner", "commit", "ci"];
@@ -187,12 +190,12 @@ export function alarms(rows, { sizes = {}, repo = null, extinguishCiAbsent = Boo
         message: `area ${r.area} was ruled on ${n} times and ${still.length} of its ${earlier.length} earlier blocker(s) are still open after round ${r.round}`,
         evidence: { round: r.round, stillOpen: still, closed: now("closed"), ...(shelvedHere.length ? { shelved: shelvedHere } : {}) } });
   }
-  // D-0015, D-0017, D-0060
+  // D-0015, D-0017, D-0060, D-0064
   const ancestorCache = extinguishCiAbsent ? (_ancestorCache ?? new Map()) : null;
   const greenRows = extinguishCiAbsent ? rows.map((row, idx) => ({ row, idx })).filter(({ row }) => row.ci === "success") : [];
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-    const absent = r.role === "judge" && ["absent", "unknown"].includes(r.ci);
+    const absent = isCiCheckedRow(r) && ["absent", "unknown"].includes(r.ci);
     if (!absent && (r.verdict === "-" || r.ci !== "failure")) continue;
     if (absent && extinguishCiAbsent) {
       const by = findExtinguisher(r, i, greenRows, repo, ancestorCache);
@@ -238,11 +241,12 @@ const lookup = (byCommit, commit) => {
 export const alarmsAfter = (rows, n, options) => alarms(rows.filter(r => r.round <= n), options);
 
 export function closeRow(row, records) {
+  const converging = isConvergenceVerdict(row.verdict);
   let loop = null;
   if (records) try { loop = recordsLoop(records); } catch (e) { return e.message; }
   if (!loop) {
-    if (row.verdict === "CONVERGED")
-      return `a CONVERGED row needs the loop's CI, and ${records ? `${records} holds no loop.json` : `the ledger is not ${TRAJECTORY} at the top of a records repository`}`;
+    if (converging)
+      return `a ${row.verdict} row needs the loop's CI, and ${records ? `${records} holds no loop.json` : `the ledger is not ${TRAJECTORY} at the top of a records repository`}`;
     row.ci = "absent";
     return null;
   }
@@ -250,12 +254,12 @@ export function closeRow(row, records) {
   const pushed = row.tip ?? row.commit;
   const problem = row.tip && tipProblem(loop.product, row.commit, row.tip);
   if (problem) return problem;
-  if (row.verdict === "CONVERGED" && Object.hasOwn(loop, "ssot")) {
+  if (converging && Object.hasOwn(loop, "ssot")) {
     const ssot = checkSsot({ product: loop.product, records, configFile: loop.config, ssot: loop.ssot, sha: pushed, strict: true, runChecks: true });
     if (!ssot.ok) return formatSsotRefusal(ssot);
   }
   const reading = readCi(loop, pushed);
-  if (row.verdict === "CONVERGED" && reading.ci !== "success") return notGreen("CONVERGED", loop, pushed, reading);
+  if (converging && reading.ci !== "success") return notGreen(row.verdict, loop, pushed, reading);
   if (reading.ci === "unknown") console.error(`CI of ${pushed} unreadable, written as unknown: ${readingCause(reading)}`);
   Object.assign(row, { ci: reading.ci, ciReceipt: saveReceipt(records, row.round, reading) });
   return null;
@@ -271,10 +275,11 @@ function additionOrder(records, paths) {
   return order;
 }
 
-export function roundRulings(records, round) {
+export function roundRulings(records, round, { role = "judge" } = {}) {
   const folder = join(records, "rounds");
+  const pattern = role === "critic" ? CRITIC_RECORD : JUDGE_RECORD;
   const paths = (existsSync(folder) ? readdirSync(folder, { withFileTypes: true }) : [])
-    .filter(entry => entry.isFile() && Number(JUDGE_RECORD.exec(`rounds/${entry.name}`)?.[1]) === round)
+    .filter(entry => entry.isFile() && Number(pattern.exec(`rounds/${entry.name}`)?.[1]) === round)
     .map(entry => `rounds/${entry.name}`).sort();
   const order = paths.length > 1 ? additionOrder(records, paths) : new Map();
   const rank = path => order.get(path) ?? Infinity;
@@ -286,7 +291,7 @@ export function admitBlockers(row, records) {
   const flags = Object.fromEntries(LISTS.map(f => [f, list(row[f])]));
   if (!records)
     return flags.opened.length ? `--opened ${flags.opened.join(",")}: an opened key must be named by the round's judge record, and the ledger is not ${TRAJECTORY} at the top of a records repository` : null;
-  const result = admit(row, roundRulings(records, row.round), flags, { where: records });
+  const result = admit(row, roundRulings(records, row.round, { role: row.role }), flags, { where: records });
   if (result.refusal) return result.refusal;
   for (const f of LISTS) {
     if (result.fields[f].length) row[f] = result.fields[f].join(",");
@@ -314,7 +319,7 @@ const REMOVED = ["config", "repo", "remote", "ci", "ci-receipt"];
 const FIELDS = ["commit", "tip", "area", "verdict", "opened", "closed", "shelved", "carried", "suite", "owner", "model"];
 const APPEND = ["file", "round", "phase", "role", ...FIELDS];
 const USAGE = [
-  "trajectory.mjs append --file <records>/metrics/trajectory.jsonl --round N --phase P --role judge --commit SHA [--tip SHA]",
+  "trajectory.mjs append --file <records>/metrics/trajectory.jsonl --round N --phase P --role judge|critic --commit SHA [--tip SHA]",
   "  [--area A --verdict V --suite pass/fail --owner N --model M]",
   "  [--opened class:id,... --closed class:id,... --shelved class:id,... --carried class:id,...]: the round's ruling on --commit supplies these from its",
   "  OPENED:, CLOSED:, SHELVED: and CARRIED: lines; a flag adds a key another judge record of the round names, or records a ruling without those lines",

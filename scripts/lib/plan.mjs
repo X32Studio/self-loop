@@ -1,61 +1,53 @@
-// P-0006, F-0012, D-0060, design/dispatch.md#ready-state, design/mandatory-control-plane.md#4
-import { existsSync, readFileSync } from 'node:fs';
+// P-0006, F-0012, D-0060, D-0063, D-0064, design/dispatch.md#file-ownership, design/dispatch.md#ready-state, design/mandatory-control-plane.md#4
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { git, regularFiles, run } from './git-plumbing.mjs';
-import { node as nodeCommand } from './commands.mjs';
 import { HEAVY_ROLES, normalize, preparedIn } from '../call.mjs';
 import { HANDOFFS, parseHandoffs, ROLES } from './handoff.mjs';
 import { batchesFrom } from '../decisions.mjs';
 import { isSubstantiveOwnerWord, MARKS, parseWords, wordClasses, WORDS } from './owner-words.mjs';
 import { hostLoad, resolveOwnerStore } from './registry.mjs';
 import { fileOverlap, globOverlap } from './plan-globs.mjs';
-import { parseWindows, WINDOWS, windowState } from './window.mjs';
+import {
+  criticCausalBase, HANDOFF_ID, isCodeJudge, judgeCoverageProblems, judgeJoinProblems,
+  judgeLineageProblems, packageOrder, planCallCommand, planPackageMap, reviewCoverage,
+} from './plan-lineage.mjs';
+import { parseWindows, WINDOWS, windowState } from './window-state.mjs';
 import { gunzipSync } from 'node:zlib';
 import { classify, DEFAULT_LAYOUT, parseLayout } from '../records-check.mjs';
 import { parseRows, TRAJECTORY } from '../trajectory.mjs';
 
+export {
+  criticCausalBase, HANDOFF_ID, isCodeJudge, judgeCoverageProblems, judgeJoinProblems,
+  judgeLineageProblems, packageOrder, planCallCommand, planPackageMap, reviewCoverage,
+};
+
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 export const PLAN_ID = /^PL-\d{4}$/;
-export const HANDOFF_ID = /^R-(\d{4})-(reviewer|critic|actor|judge)((?:-[a-z]+)*)$/;
 const recordPointer = /^(?:PL|D|P|F|B|I|L)-\d{4}$|^R-\d{4}-[a-z]+(?:-[a-z]+)*$/;
 
 export function snapshot(records, revision = 'HEAD') {
-  records = resolve(records);
-  const head = git(records, 'rev-parse', `${revision}^{commit}`);
-  const files = new Set(regularFiles(records, head).map(f => f.path)), cache = new Map();
-  const bytes = path => {
-    if (!files.has(path)) return null;
-    if (!cache.has(path)) cache.set(path, run('git', ['-C', records, 'show', `${head}:${path}`]));
-    return cache.get(path);
-  };
+  records = realpathSync(resolve(records));
+  const head = git(records, 'rev-parse', `${revision}^{commit}`), files = new Set(regularFiles(records, head).map(f => f.path)), cache = new Map();
+  const bytes = path => !files.has(path) ? null : (cache.has(path) ? cache.get(path) : cache.set(path, run('git', ['-C', records, 'show', `${head}:${path}`])).get(path));
   return { records, revision: head, files, bytes, read: path => bytes(path)?.toString('utf8') ?? '' };
 }
 
-function jsonList(value) {
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed : null;
-  } catch { return null; }
-}
+const jsonList = value => { try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : null; } catch { return null; } };
 
 function list(value) {
-  if (Array.isArray(value)) return value;
-  if (typeof value !== 'string') return value;
-  if (!value.trim()) return [];
-  if (value.trim().startsWith('[')) {
-    const parsed = jsonList(value);
-    if (parsed) return parsed;
-  }
-  const parts = [], chars = Array.from(value);
+  if (Array.isArray(value) || typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith('[')) { const parsed = jsonList(value); if (parsed) return parsed; }
+  const parts = [];
   let start = 0, depth = 0;
-  chars.forEach((c, i) => {
-    if ('[{'.includes(c)) depth++;
-    if (']}'.includes(c)) depth--;
-    if (c === ',' && depth === 0) { parts.push(chars.slice(start, i).join('').trim()); start = i + 1; }
+  Array.from(value).forEach((c, i, chars) => {
+    if ('[{'.includes(c)) depth++; else if (']}'.includes(c)) depth--;
+    else if (c === ',' && depth === 0) { parts.push(chars.slice(start, i).join('').trim()); start = i + 1; }
   });
-  parts.push(chars.slice(start).join('').trim());
-  return parts;
+  return [...parts, Array.from(value).slice(start).join('').trim()];
 }
 
 export function parsePlan(source) {
@@ -65,9 +57,7 @@ export function parsePlan(source) {
     plan = { packages: [] };
     let current = plan;
     for (const line of source.split('\n')) {
-      const title = /^# (PL-\d{4})(?:\s|$)/.exec(line);
-      const section = /^## (?:Package\s+)?([\w.-]+)\s*$/.exec(line);
-      const field = /^([a-z][a-zA-Z-]*):\s*(.*?)\s*$/.exec(line);
+      const title = /^# (PL-\d{4})(?:\s|$)/.exec(line), section = /^## (?:Package\s+)?([\w.-]+)\s*$/.exec(line), field = /^([a-z][a-zA-Z-]*):\s*(.*?)\s*$/.exec(line);
       if (title) plan.id = title[1];
       else if (section) { current = { id: section[1] }; plan.packages.push(current); }
       else if (field) {
@@ -77,9 +67,7 @@ export function parsePlan(source) {
     }
   }
   if (!object(plan)) throw new Error('plan must be an object');
-  if (typeof plan.time === 'string') {
-    try { plan.time = JSON.parse(plan.time); } catch {  }
-  }
+  if (typeof plan.time === 'string') { try { plan.time = JSON.parse(plan.time); } catch {} }
   if (object(plan.packages)) plan.packages = Object.entries(plan.packages).map(([id, p]) => ({ ...p, id }));
   if (Array.isArray(plan.packages)) plan.packages = plan.packages.map(p => {
     if (!object(p)) throw new Error('package must be an object');
@@ -148,57 +136,37 @@ function decisionAuthorityProblem(id, state, { batches, handoffIds, hasHandoffs 
   const committedHandoff = hid => Boolean(recordPath(hid) && state.files.has(recordPath(hid)) && (!hasHandoffs || handoffIds.has(hid)));
   if (/^owner\b/i.test(by)) {
     const byBatches = [...new Set([...by.matchAll(BATCH_CITE)].map(m => m[0]))];
-    if (byBatches.length && !byBatches.some(answeredBatch)) {
-      return `${id} claims owner batch ${byBatches.join(', ')} with no verbatim answer in owner/answers.jsonl`;
-    }
-    return null;
+    return byBatches.length && !byBatches.some(answeredBatch) ? `${id} claims owner batch ${byBatches.join(', ')} with no verbatim answer in owner/answers.jsonl` : null;
   }
   const batchRefs = [...new Set([...doc.matchAll(BATCH_CITE)].map(m => m[0]))];
   const handoffRefs = [...new Set([...doc.matchAll(REVIEW_OR_JUDGE_CITE)].map(m => m[0]))];
   if (batchRefs.some(answeredBatch) || handoffRefs.some(committedHandoff)) return null;
-  const details = [];
-  if (batchRefs.length) details.push(`unanswered batch ${batchRefs.join(', ')}`);
-  if (handoffRefs.length) details.push(`uncommitted handoff ${handoffRefs.join(', ')}`);
+  const details = [...(batchRefs.length ? [`unanswered batch ${batchRefs.join(', ')}`] : []), ...(handoffRefs.length ? [`uncommitted handoff ${handoffRefs.join(', ')}`] : [])];
   return `${id} lacks owner or generation-engine authority${by ? ` (by: ${by})` : ''}${details.length ? `: ${details.join('; ')}` : ': requires by: owner, a verbatim-answered B-NNNN batch, or a committed R-NNNN-reviewer-* / R-NNNN-judge-* handoff'}`;
+}
+
+// P-0012, D-0059, D-0060, design/parallel-dispatch.md#3
+export function readPlanWindow(state, phase, nextRound = 1, { handoffs = null, rows = null } = {}) {
+  if (!state.files.has(WINDOWS)) return { mode: 'normal', active: null, actorBlocked: false };
+  const windows = parseWindows(state.read(WINDOWS), WINDOWS);
+  const phaseHandoffs = (handoffs ?? (state.files.has(HANDOFFS) ? parseHandoffs(state.read(HANDOFFS)) : []))
+    .filter(h => h.phase === phase && state.files.has(h.record));
+  const phaseRows = (rows ?? (state.files.has(TRAJECTORY) ? parseRows(state.read(TRAJECTORY)) : []))
+    .filter(r => r.phase === phase);
+  return windowState({ windows, handoffs: phaseHandoffs, rows: phaseRows, phase, nextRound });
 }
 
 // D-0060, design/mandatory-control-plane.md#4
 function hasOpenRefactorWindow(plan, state, handoffs) {
-  if (!state.files.has(WINDOWS)) return false;
-  const windows = parseWindows(state.read(WINDOWS), WINDOWS);
-  const rows = state.files.has(TRAJECTORY) ? parseRows(state.read(TRAJECTORY)).filter(r => r.phase === plan.phase) : [];
-  const phaseHandoffs = handoffs.filter(h => h.phase === plan.phase && state.files.has(h.record));
-  const win = windowState({ windows, handoffs: phaseHandoffs, rows, phase: plan.phase });
+  const win = readPlanWindow(state, plan.phase, 1, { handoffs });
   return Boolean(win.active && (win.mode === 'slack' || win.mode === 'converging'));
 }
 
-// D-0060, design/mandatory-control-plane.md#4
+// D-0060, D-0064, design/mandatory-control-plane.md#4
 function checkActorCoverage(plan, state, handoffs, fail) {
-  const actors = plan.packages.filter(p => p.role === 'actor');
-  if (!actors.length || hasOpenRefactorWindow(plan, state, handoffs)) return;
-  const critics = plan.packages.filter(p => p.role === 'critic');
-  const judges = plan.packages.filter(p => p.role === 'judge');
-  const byId = new Map(plan.packages.map(p => [p.id, p]));
-  const reachable = startId => {
-    const seen = new Set(), stack = [...(byId.get(startId)?.needs ?? [])];
-    while (stack.length) {
-      const id = stack.pop();
-      if (seen.has(id) || !byId.has(id)) continue;
-      seen.add(id);
-      for (const dep of byId.get(id).needs ?? []) stack.push(dep);
-    }
-    return seen;
-  };
-  const covered = new Set();
-  for (const c of critics) {
-    const reach = reachable(c.id);
-    for (const a of actors) {
-      if ((a.needs ?? []).includes(c.id) || (c.reviews ?? []).includes(a.id) || reach.has(a.id)) covered.add(a.id);
-    }
-  }
-  const uncovered = actors.filter(a => !covered.has(a.id));
-  if (uncovered.length) fail(`${plan.id}: actor package(s) lack critic coverage outside an open W-NNNN window: ${uncovered.map(a => a.id).join(', ')}`);
-  if (!judges.length) fail(`${plan.id}: actor packages require at least one judge package in the same plan outside an open W-NNNN window`);
+  if (!plan.packages.some(p => p.role === 'actor') || hasOpenRefactorWindow(plan, state, handoffs)) return;
+  const { uncoveredActors } = reviewCoverage(plan);
+  if (uncoveredActors.length) fail(`${plan.id}: actor package(s) lack critic coverage outside an open W-NNNN window: ${uncoveredActors.join(', ')}`);
 }
 
 export function validatePlan(plan, state) {
@@ -239,16 +207,15 @@ export function validatePlan(plan, state) {
     }
     for (const field of ['files', 'needs']) if (!Array.isArray(p[field]) || !p[field].every(text)) fail(`${p.id}: ${field} must be a list (empty is allowed)`);
     if (p.reviews !== undefined && (!Array.isArray(p.reviews) || !p.reviews.every(text))) fail(`${p.id}: reviews must be a list of package ids`);
-    if (Array.isArray(p.files)) for (const path of p.files) {
-      try { globOverlap(path, path); } catch (e) { fail(`${p.id}: ${e.message}`); }
-    }
+    if (Array.isArray(p.files)) for (const path of p.files) { try { globOverlap(path, path); } catch (e) { fail(`${p.id}: ${e.message}`); } }
     if (p.settings !== undefined && p.settings !== 'current' && !object(p.settings)) fail(`${p.id}: settings must be current or a JSON object`);
     for (const field of ['interface', 'acceptance']) {
       const pointer = typeof p[field] === 'string' && /^((?:PL|D|P|F|B|I|L)-\d{4}|R-\d{4}-[a-z]+(?:-[a-z]+)*)(?:#\S+)?$/.exec(p[field]);
       if (pointer) reference(pointer[1], `${p.id} ${field}`);
     }
   }
-  for (const p of plan.packages) for (const need of Array.isArray(p.needs) ? p.needs : []) if (!packages.has(need)) reference(need, `${p.id} needs`);
+  const byRef = planPackageMap(plan);
+  for (const p of plan.packages) for (const need of Array.isArray(p.needs) ? p.needs : []) if (!byRef.has(need)) reference(need, `${p.id} needs`);
   for (const p of plan.packages) for (const target of Array.isArray(p.reviews) ? p.reviews : []) {
     if (target === p.id) fail(`${p.id}: reviews cannot reference itself`);
     else if (!packages.has(target)) fail(`${p.id} reviews: unknown in-plan package ${target}`);
@@ -258,14 +225,22 @@ export function validatePlan(plan, state) {
     if (visiting.has(id)) { fail(`needs cycle at ${id}`); return; }
     if (visited.has(id)) return;
     visiting.add(id);
-    for (const dep of packages.get(id)?.needs ?? []) if (packages.has(dep)) visit(dep);
+    for (const dep of packages.get(id)?.needs ?? []) {
+      const target = byRef.get(dep);
+      if (target) visit(target.id);
+    }
     visiting.delete(id); visited.add(id);
   }
   if (plan.packages.every(p => Array.isArray(p.needs))) for (const id of packages.keys()) visit(id);
   checkActorCoverage(plan, state, handoffs, fail);
-  if (!errors.length) for (let i = 0; i < plan.packages.length; i++) for (let j = i + 1; j < plan.packages.length; j++) {
-    const a = plan.packages[i], b = plan.packages[j], overlap = fileOverlap(a.files, b.files);
-    if (overlap) fail(`${a.id} and ${b.id} share overlapping files: ${overlap.left} / ${overlap.right}`);
+  if (!errors.length) {
+    const { ordered } = packageOrder(plan);
+    for (let i = 0; i < plan.packages.length; i++) for (let j = i + 1; j < plan.packages.length; j++) {
+      const a = plan.packages[i], b = plan.packages[j];
+      if (ordered(a.id, b.id)) continue;
+      const overlap = fileOverlap(a.files, b.files);
+      if (overlap) fail(`${a.id} and ${b.id} share overlapping files: ${overlap.left} / ${overlap.right}`);
+    }
   }
   const all = plansFrom(state).filter(p => p.id !== plan.id), prior = all.find(p => p.id === plan.supersedes);
   if (plan.supersedes) {
@@ -273,8 +248,7 @@ export function validatePlan(plan, state) {
     if (plan.supersedes === plan.id) fail('supersedes cycle');
     if (prior && (prior.scope !== plan.scope || prior.phase !== plan.phase)) fail('supersedes must name the same scope and phase');
   }
-  const sameScope = all.filter(p => p.scope === plan.scope && p.phase === plan.phase);
-  const descendants = new Set();
+  const sameScope = all.filter(p => p.scope === plan.scope && p.phase === plan.phase), descendants = new Set();
   for (const p of sameScope) {
     let current = p; const seen = new Set();
     while (current?.supersedes && !seen.has(current.id)) {
@@ -285,12 +259,9 @@ export function validatePlan(plan, state) {
   }
   const heads = sameScope.filter(p => !sameScope.some(q => q.supersedes === p.id) && !descendants.has(p.id));
   if (heads.some(p => p.id !== plan.supersedes)) fail(`scope ${plan.scope} already has a plan; supersedes must name its current head`);
-  let ancestor = plan;
-  const chain = new Set();
-  while (ancestor?.supersedes) {
+  for (let ancestor = plan, chain = new Set(); ancestor?.supersedes; ancestor = ancestor.supersedes === plan.id ? plan : all.find(p => p.id === ancestor.supersedes)) {
     if (chain.has(ancestor.id)) { fail('supersedes cycle'); break; }
     chain.add(ancestor.id);
-    ancestor = ancestor.supersedes === plan.id ? plan : all.find(p => p.id === ancestor.supersedes);
   }
   if (prior) for (const p of plan.packages) {
     const previous = prior.packages.find(q => q.handoff === p.handoff);
@@ -336,11 +307,13 @@ export function releaseOf(release, { state, batches, host, now = Date.now() }) {
   return { computed: true, met: conditions.every(c => c.met), conditions };
 }
 
-export function readyPlan(state, plan, { context = planContext(state, plan), host, base, now = Date.now() } = {}) {
+export function readyPlan(state, plan, { context = planContext(state, plan), host, base, window = null, now = Date.now() } = {}) {
   const { cfg, handoffs, batches, plans, prepared } = context;
   if (plans.some(p => p.supersedes === plan.id)) throw new Error(`${plan.id} is superseded; request the current plan`);
   host ??= hostLoad({ cfg, store: resolveOwnerStore() });
-  const completed = id => handoffs.some(h => h.id === id && h.phase === plan.phase && state.files.has(h.record));
+  const phaseHandoffs = handoffs.filter(h => h.phase === plan.phase && state.files.has(h.record));
+  const win = window ?? readPlanWindow(state, plan.phase, 1, { handoffs: phaseHandoffs, rows: context.trajectory });
+  const completed = id => phaseHandoffs.some(h => h.id === id);
   const pending = prepared.filter(p => (!p.phase || p.phase === plan.phase) && !completed(p.id));
   const matching = id => pending.filter(p => p.id === id);
   const active = pending.filter(p => p.liveWorkspace);
@@ -348,6 +321,7 @@ export function readyPlan(state, plan, { context = planContext(state, plan), hos
   const rows = plan.packages.map(p => ({ id: p.id, handoff: p.handoff, role: p.role,
     settings: !p.settings || p.settings === 'current' ? cfg.agents[p.role] : { ...cfg.agents[p.role], ...p.settings },
     status: completed(p.handoff) ? 'done' : matching(p.handoff).some(w => w.liveWorkspace) || leases(p.handoff).length ? 'running' : 'ready', holds: [] }));
+  const byRef = planPackageMap(plan);
   const byId = new Map(rows.map(row => [row.id, row]));
   const hold = (row, kind, target, release) => { row.holds.push({ kind, target, release }); row.status = 'waiting'; };
   for (let i = 0; i < plan.packages.length; i++) {
@@ -358,8 +332,10 @@ export function readyPlan(state, plan, { context = planContext(state, plan), hos
       continue;
     }
     for (const need of p.needs) {
-      if (byId.has(need)) {
-        if (byId.get(need).status !== 'done') hold(row, 'package', need, `record successful handoff ${byId.get(need).handoff}`);
+      const dep = byRef.get(need);
+      if (dep) {
+        const depRow = byId.get(dep.id);
+        if (depRow.status !== 'done') hold(row, 'package', dep.id, `record successful handoff ${depRow.handoff}`);
       } else if (/^B-/.test(need) && !batches.find(b => b.id === need)?.answered)
         hold(row, 'batch', need, `commit the owner's answer to ${need}`);
     }
@@ -385,22 +361,30 @@ export function readyPlan(state, plan, { context = planContext(state, plan), hos
       if (release.computed && release.met) row.released = { hold: text(p.hold) ? p.hold.trim() : null, release: p.release.trim() };
       else {
         hold(row, 'hold', why, p.release.trim());
-        if (!release.computed) {
-          row.holds.at(-1).computed = false;
-          row.unchecked = { hold: why, release: p.release.trim(), review: RELEASE_IN_WORDS };
-        }
+        if (!release.computed) { row.holds.at(-1).computed = false; row.unchecked = { hold: why, release: p.release.trim(), review: RELEASE_IN_WORDS }; }
       }
     } else if (text(p.hold)) row.unheld = { hold: p.hold.trim(), why: 'names no release condition, so it is not a hold (A3)' };
     if (object(p.settings) && Object.entries(p.settings).some(([k, v]) => cfg.agents[p.role]?.[k] !== v))
       hold(row, 'settings', 'loop.json settings', `configure the authorized ${p.role} settings before preparation`);
-    if (p.role === 'judge' && base === null) hold(row, 'merge', 'integration SHA', 'merge the diverged hand-off heads that loop.mjs next names; the judge rules on one integration SHA');
+    let pinnedBase = null;
+    if (p.role === 'critic' && !row.holds.some(h => h.kind === 'package')) {
+      const cb = criticCausalBase(plan, p, { repo: cfg.product, handoffs: phaseHandoffs, base });
+      if (!cb.ok) hold(row, 'merge', cb.target, cb.release);
+      else if (cb.pinned) pinnedBase = cb.base;
+    }
+    if (p.role === 'judge') {
+      if (base === null) hold(row, 'merge', 'integration SHA', 'merge the diverged hand-off heads that loop.mjs next names; the judge rules on one integration SHA');
+      if (isCodeJudge(p)) {
+        for (const jp of judgeJoinProblems(plan, { repo: cfg.product, handoffs: phaseHandoffs, base, window: win })) {
+          hold(row, jp.kind, jp.target, jp.release);
+        }
+      }
+    }
     const task = resolve(cfg.workDir, p.task ?? `tasks/${p.handoff}.md`);
     if (!existsSync(task)) hold(row, 'task', task, 'write the package task with features, goal, interface and acceptance');
     if (row.status === 'ready') {
-      const [, round, role, suffix] = HANDOFF_ID.exec(p.handoff);
-      const prepare = cfg.agents[p.role]?.runner === 't3' ? ['--prepare'] : [];
-      const judged = p.role === 'judge' && base ? ['--base', base] : [];
-      row.command = nodeCommand('call.mjs', cfg.configFile, role, '--round', String(Number(round)), '--step', role + suffix, ...judged, '--task', task, ...prepare);
+      const cmdBase = p.role === 'judge' && base ? base : pinnedBase;
+      row.command = planCallCommand(cfg, plan.id, p, { base: cmdBase });
     }
   }
   return summarize({ plan: plan.id, scope: plan.scope, revision: state.revision, packages: rows, host,

@@ -231,11 +231,18 @@ export function collectArchFacts(
   const parallelSiblings = collectParallelSiblings(currentEntries);
   const antiRot = scanAntiRot({ sourceFiles, testFiles, thresholds: antiRotThresholds });
 
+  const fileLines = Object.fromEntries(fileMetrics.map(f => [f.path, f.lines]));
+  const baselineFileLines = validBaseline
+    ? Object.fromEntries(fileMetrics.filter(f => f.baselineLines !== null).map(f => [f.path, f.baselineLines]))
+    : null;
+
   return {
     sha,
     baselineSha: validBaseline,
     sourceFileCount: currentEntries.length,
     thresholds: limits,
+    fileLines,
+    ...(baselineFileLines ? { baselineFileLines } : {}),
     largestFiles,
     growthFiles,
     churnHotspots,
@@ -245,7 +252,32 @@ export function collectArchFacts(
   };
 }
 
-// P-0011, D-0058, design/two-loop-rhythm.md#6
+function lineMapsOf(facts) {
+  const curLinesByPath = new Map();
+  const baseLinesByPath = new Map();
+  if (facts?.fileLines && typeof facts.fileLines === "object") {
+    for (const [p, n] of Object.entries(facts.fileLines)) {
+      if (typeof n === "number") curLinesByPath.set(p, n);
+    }
+  }
+  if (facts?.baselineFileLines && typeof facts.baselineFileLines === "object") {
+    for (const [p, n] of Object.entries(facts.baselineFileLines)) {
+      if (typeof n === "number") baseLinesByPath.set(p, n);
+    }
+  }
+  for (const f of [...(facts?.growthFiles ?? []), ...(facts?.largestFiles ?? [])]) {
+    if (!curLinesByPath.has(f.path) && typeof f.lines === "number") curLinesByPath.set(f.path, f.lines);
+    if (!baseLinesByPath.has(f.path) && typeof f.baselineLines === "number") baseLinesByPath.set(f.path, f.baselineLines);
+  }
+  return { curLinesByPath, baseLinesByPath };
+}
+
+function hasChurnDegradation(path, curLines, baseLines, degradedPaths) {
+  if (degradedPaths.has(path)) return true;
+  return typeof curLines === "number" && typeof baseLines === "number" && curLines > baseLines;
+}
+
+// P-0011, D-0058, D-0064, design/two-loop-rhythm.md#6
 export function structuralBreaches(facts, thresholds = null) {
   if (!facts) return [];
   const limits = { ...ARCH_THRESHOLDS, ...(facts.thresholds ?? {}), ...(thresholds ?? {}) };
@@ -275,21 +307,24 @@ export function structuralBreaches(facts, thresholds = null) {
     }
   }
 
+  breaches.push(...antiRotBreaches(facts.antiRot));
+
+  const degradedPaths = new Set(breaches.map(b => b.path));
+  const { curLinesByPath, baseLinesByPath } = lineMapsOf(facts);
   for (const spot of facts.churnHotspots ?? []) {
-    if (spot.commits >= limits.churnCommits) {
-      breaches.push({
-        kind: "churn-hotspot",
-        path: spot.path,
-        detail: `touched in ${spot.commits} commits (limit ${limits.churnCommits})`,
-      });
-    }
+    if (spot.commits < limits.churnCommits) continue;
+    if (!hasChurnDegradation(spot.path, curLinesByPath.get(spot.path), baseLinesByPath.get(spot.path), degradedPaths)) continue;
+    breaches.push({
+      kind: "churn-hotspot",
+      path: spot.path,
+      detail: `touched in ${spot.commits} commits (limit ${limits.churnCommits})`,
+    });
   }
 
-  breaches.push(...antiRotBreaches(facts.antiRot));
   return breaches;
 }
 
-// D-0060, D-0058, design/mandatory-control-plane.md#3
+// D-0060, D-0058, D-0064, design/mandatory-control-plane.md#3
 export function compareArchFacts(currentFacts, baselineFacts, thresholds = null) {
   if (!currentFacts) return [];
   if (!baselineFacts) return structuralBreaches(currentFacts, thresholds);
@@ -298,6 +333,11 @@ export function compareArchFacts(currentFacts, baselineFacts, thresholds = null)
 
   const baseLinesByPath = new Map();
   const baseGrowthByPath = new Map();
+  if (baselineFacts.fileLines && typeof baselineFacts.fileLines === "object") {
+    for (const [p, n] of Object.entries(baselineFacts.fileLines)) {
+      if (typeof n === "number") baseLinesByPath.set(p, n);
+    }
+  }
   for (const f of [...(baselineFacts.growthFiles ?? []), ...(baselineFacts.largestFiles ?? [])]) {
     if (!baseLinesByPath.has(f.path)) baseLinesByPath.set(f.path, f.lines);
     if (f.baselineLines !== null && f.baselineLines !== undefined && f.baselineLines >= 100
@@ -338,19 +378,6 @@ export function compareArchFacts(currentFacts, baselineFacts, thresholds = null)
           detail: `grew ${file.growthPct}% (${file.baselineLines} -> ${file.lines} lines, limit ${limits.growthPct}%)`,
         });
       }
-    }
-  }
-
-  const baseChurnByPath = new Map((baselineFacts.churnHotspots ?? []).map(s => [s.path, s.commits]));
-  for (const spot of currentFacts.churnHotspots ?? []) {
-    if (spot.commits < limits.churnCommits) continue;
-    const baseCommits = baseChurnByPath.get(spot.path);
-    if (baseCommits === undefined || baseCommits < limits.churnCommits || spot.commits > baseCommits) {
-      breaches.push({
-        kind: "churn-hotspot",
-        path: spot.path,
-        detail: `touched in ${spot.commits} commits (limit ${limits.churnCommits})`,
-      });
     }
   }
 
@@ -407,5 +434,23 @@ export function compareArchFacts(currentFacts, baselineFacts, thresholds = null)
     testRot: deltaTestRot,
     commentBloat: deltaCommentBloat,
   }));
+
+  const degradedPaths = new Set(breaches.map(b => b.path));
+  const { curLinesByPath, baseLinesByPath: curBaseLinesByPath } = lineMapsOf(currentFacts);
+  const baseChurnByPath = new Map((baselineFacts.churnHotspots ?? []).map(s => [s.path, s.commits]));
+  for (const spot of currentFacts.churnHotspots ?? []) {
+    if (spot.commits < limits.churnCommits) continue;
+    const baseCommits = baseChurnByPath.get(spot.path);
+    if (!(baseCommits === undefined || baseCommits < limits.churnCommits || spot.commits > baseCommits)) continue;
+    const curLines = curLinesByPath.get(spot.path);
+    const baseLines = baseLinesByPath.get(spot.path) ?? curBaseLinesByPath.get(spot.path);
+    if (!hasChurnDegradation(spot.path, curLines, baseLines, degradedPaths)) continue;
+    breaches.push({
+      kind: "churn-hotspot",
+      path: spot.path,
+      detail: `touched in ${spot.commits} commits (limit ${limits.churnCommits})`,
+    });
+  }
+
   return breaches;
 }

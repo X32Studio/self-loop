@@ -88,7 +88,7 @@ function makeCallFixture(t, { ssot, productFiles = {}, t3 = false } = {}) {
 const runCallCli = (args, env = isolatedEnv({ SELF_LOOP_TEST: "1" })) =>
   spawnSync(process.execPath, [join(scripts, "call.mjs"), ...args], { encoding: "utf8", env });
 
-test("1. Configured ssot injects read-only ssot-status.md + prompt pointer for actor/judge (CLI --dry-run and T3 --prepare), never runs custom check or reads dirty tree", t => {
+test("1. Configured ssot injects read-only ssot-status.md + prompt pointer for actor/critic/judge (CLI --dry-run and T3 --prepare), never runs custom check or reads dirty tree", t => {
   const markerRoot = temp("self-loop-ssot-marker-");
   t.after(() => rmSync(markerRoot, { recursive: true, force: true }));
   const markerFile = join(markerRoot, "check-ran.txt");
@@ -122,7 +122,7 @@ test("1. Configured ssot injects read-only ssot-status.md + prompt pointer for a
   write(fx.product, "src/clean/mod.mjs", "export const c = 999;\n");
 
   const planOpts = role => role === "reviewer" ? {} : { plan: role === "judge" ? "PL-0002" : "PL-0001", package: role };
-  for (const [role, verb] of [["actor", "editing"], ["judge", "ruling"]]) {
+  for (const [role, verb] of [["actor", "editing"], ["critic", "reviewing"], ["judge", "ruling"]]) {
     const r = call(load(fx.config), role, { round: 2, task: "features: F-0001\nWork.\n", base: baseSha, dry: true, ...planOpts(role) });
     assert.equal(r.code, EXIT.done, r.message);
     const statusPath = join(r.ws, "ssot-status.md");
@@ -140,7 +140,7 @@ test("1. Configured ssot injects read-only ssot-status.md + prompt pointer for a
   }
   assert.equal(existsSync(markerFile), false, "custom Rung-2 check command must NEVER run during call.mjs workspace prep");
 
-  for (const role of ["critic", "reviewer"]) {
+  for (const role of ["reviewer"]) {
     const r = call(load(fx.config), role, { round: 2, task: "features: F-0001\nReview.\n", base: baseSha, dry: true, ...planOpts(role) });
     assert.equal(r.code, EXIT.done, r.message);
     assert.equal(existsSync(join(r.ws, "ssot-status.md")), false, `${role} must NOT receive ssot-status.md`);
@@ -159,7 +159,7 @@ test("1. Configured ssot injects read-only ssot-status.md + prompt pointer for a
     },
   });
   const t3Base = commitFile(t3Fx.product, "src/api/handler.mjs", "export const v = 2;\n", "drift api");
-  for (const [role, verb] of [["actor", "editing"], ["judge", "ruling"]]) {
+  for (const [role, verb] of [["actor", "editing"], ["critic", "reviewing"], ["judge", "ruling"]]) {
     const planId = role === "judge" ? "PL-0002" : "PL-0001";
     const cliRes = runCallCli([t3Fx.config, role, "--round", "2", "--plan", planId, "--package", role, "--task", t3Fx.taskFile, "--base", t3Base, "--prepare"]);
     assert.equal(cliRes.status, 0, cliRes.stderr);
@@ -174,12 +174,6 @@ test("1. Configured ssot injects read-only ssot-status.md + prompt pointer for a
     }
     git(t3Fx.product, "worktree", "remove", "--force", prepared.wt);
   }
-  const criticPrep = runCallCli([t3Fx.config, "critic", "--round", "2", "--plan", "PL-0001", "--package", "critic", "--task", t3Fx.taskFile, "--base", t3Base, "--prepare"]);
-  assert.equal(criticPrep.status, 0, criticPrep.stderr);
-  const cPrepared = JSON.parse(criticPrep.stdout);
-  assert.equal(existsSync(join(cPrepared.ws, "ssot-status.md")), false);
-  assert.doesNotMatch(readFileSync(join(cPrepared.ws, "t3-prompt.md"), "utf8"), /ssot-status\.md|SSOT status/i);
-  git(t3Fx.product, "worktree", "remove", "--force", cPrepared.wt);
   assert.equal(existsSync(markerFile), false);
 });
 

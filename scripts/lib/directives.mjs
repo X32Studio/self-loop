@@ -1,4 +1,4 @@
-// D-0016, D-0023, R-0006-judge, design/driver.md#directives
+// D-0016, D-0023, D-0064, D-0067, R-0006-judge, design/driver.md#directives
 
 const ID = String.raw`(?:(?:D|P|F|L|I|B|T|PR)-\d{4,}|R-\d{4,}(?:-[a-z]+)*|SL-\d{2,}|W-[0-9a-f]{10})`;
 const ANCHOR = String.raw`(?:design|docs)\/(?:[\w.-]+\/)*[\w.-]+\.md#[\p{L}\p{N}_.-]+`;
@@ -35,12 +35,32 @@ const SQLFLUFF_NOQA = String.raw`noqa(?:\s*:\s*(?:(?:disable|enable)=[\w.,*]+|[\
 const TYPE_COMMENT = /^[\w.[\], ()\->|*'"]+$/;
 const SPDX_LICENSE = String.raw`\(*[\w.+:-]+\)*`;
 const SPDX_EXPRESSION = String.raw`${SPDX_LICENSE}(?:\s+(?:AND|OR|WITH|and|or|with)\s+${SPDX_LICENSE})*`;
+const GO_BUILD_TAG = String.raw`[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*`;
+const GO_BUILD_TERM = String.raw`(?:\([ \t]*|![ \t]*)*${GO_BUILD_TAG}(?:[ \t]*\))*`;
+const GO_BUILD_EXPR = String.raw`${GO_BUILD_TERM}(?:[ \t]*(?:&&|\|\|)[ \t]*${GO_BUILD_TERM})*`;
+const GO_PLUS_BUILD = String.raw`!?${GO_BUILD_TAG}(?:,!?${GO_BUILD_TAG})*(?:[ \t]+!?${GO_BUILD_TAG}(?:,!?${GO_BUILD_TAG})*)*`;
+const GO_LINTERS = String.raw`[\w-]+(?:[ \t]*,[ \t]*[\w-]+)*`;
+const CLANG_TIDY_CHECKS = String.raw`-?[\w.*-]+(?:\s*,\s*-?[\w.*-]+)*`;
+const KTLINT_RULE = String.raw`(?:[a-z][a-z0-9-]*:[a-z][a-z0-9-]*|[a-z][a-z0-9]*-[a-z0-9-]+|annotation|filename|indent|wrapping)`;
+const CHECKSTYLE_CHECK = String.raw`(?:[A-Z]\w*|\.\*)`;
+const CHECKSTYLE_CHECKS = String.raw`${CHECKSTYLE_CHECK}(?:[ \t]*[,|][ \t]*${CHECKSTYLE_CHECK})*`;
 
 const JS_FILES = /(?:\.[mc]?js|(?:^|\/)[^./]+)$/;
+const ALL_LANGUAGES = ["js", "swift", "shell", "yaml", "python", "sql", "css", "html", "go", "rust", "c", "cpp", "java", "kotlin", "toml"];
+const LINE_LANGUAGES = ALL_LANGUAGES.filter(lang => lang !== "html");
+
+const balancedParens = expr => {
+  let depth = 0;
+  for (const ch of expr) {
+    if (ch === "(") depth++;
+    else if (ch === ")" && --depth < 0) return false;
+  }
+  return depth === 0;
+};
 
 export const DIRECTIVES = [
   { id: "interpreter", tool: "the kernel's execve and each language's hashbang grammar", cite: "man 2 execve, Interpreter scripts; ECMAScript Hashbang Grammar",
-    languages: ["js", "shell", "python", "swift"], kinds: ["hashbang"], where: "line1", pattern: /^#!.*$/ },
+    languages: ["js", "shell", "python", "swift", "rust", "kotlin"], kinds: ["hashbang"], where: "line1", pattern: /^#!.*$/ },
 
   { id: "ts-ignore-line", tool: "TypeScript", cite: "typescriptlang.org/docs/handbook/release-notes/typescript-3-9.html#-ts-expect-error-comments; typescript scanner commentDirectiveRegExSingleLine",
     languages: ["js"], kinds: ["line"], where: "any", pattern: /^\/\/\/?\s*@ts-(?:expect-error|ignore)(?<tail>.*)$/ },
@@ -100,11 +120,38 @@ export const DIRECTIVES = [
   { id: "test-environment", tool: "Jest and Vitest environments", cite: "jestjs.io/docs/configuration#testenvironment-string; vitest.dev/guide/environment.html#environments-for-specific-files",
     languages: ["js"], kinds: ["line", "block"], where: "any", body: /^\*?\s*@(?:jest|vitest)-environment\s+[\w./@-]+\s*$/ },
   { id: "clang-format", tool: "clang-format", cite: "clang.llvm.org/docs/ClangFormatStyleOptions.html#disabling-formatting-on-a-piece-of-code",
-    languages: ["js"], kinds: ["line", "block"], where: "any", pattern: /^(?:\/\/ clang-format (?:off|on)(?<tail>:.*)?|\/\* clang-format (?:off|on) \*\/)$/ },
+    languages: ["js", "c", "cpp", "java"], kinds: ["line", "block"], where: "any", pattern: /^(?:\/\/ clang-format (?:off|on)(?<tail>:.*)?[ \t]*|\/\* clang-format (?:off|on) \*\/)$/ },
   { id: "biome", tool: "Biome", cite: "biomejs.dev/analyzer/suppressions/",
     languages: ["js", "css"], kinds: ["line", "block"], where: "any", body: /^\s*biome-ignore(?:-all|-start|-end)?(?:\s+[\w/()-]+)+\s*:(?<tail>[\s\S]*)$/ },
   { id: "deno", tool: "Deno", cite: "docs.deno.com/runtime/reference/cli/lint/#ignore-directives; docs.deno.com/runtime/reference/cli/fmt/#ignoring-code",
     languages: ["js"], kinds: ["line"], where: "any", pattern: /^\/\/\s*deno-(?:lint-ignore(?:-file)?(?:[ \t]+[\w-]+)*|fmt-ignore(?:-file)?)[ \t]*$/ },
+
+  { id: "go-generate", tool: "go generate", cite: "pkg.go.dev/cmd/go#hdr-Generate_Go_files_by_processing_source",
+    languages: ["go"], kinds: ["line"], where: "own", pattern: /^\/\/go:generate[ \t]+\S.*$/ },
+  { id: "go-embed", tool: "Go embed", cite: "pkg.go.dev/embed#hdr-Directives",
+    languages: ["go"], kinds: ["line"], where: "own", pattern: /^\/\/go:embed[ \t]+\S.*$/ },
+  { id: "go-build", tool: "Go build constraints", cite: "pkg.go.dev/go/build#hdr-Build_Constraints; pkg.go.dev/cmd/go#hdr-Build_constraints",
+    languages: ["go"], kinds: ["line"], where: "head",
+    pattern: re(String.raw`^(?:\/\/go:build[ \t]+(?<expr>${GO_BUILD_EXPR})|\/\/[ \t]+\+build[ \t]+${GO_PLUS_BUILD})[ \t]*$`),
+    accept: groups => !groups.expr || balancedParens(groups.expr) },
+  { id: "go-nolint", tool: "golangci-lint", cite: "golangci-lint.run/usage/false-positives/#nolint-directive",
+    languages: ["go"], kinds: ["line"], where: "any",
+    pattern: re(String.raw`^\/\/[ \t]*nolint(?::[ \t]*${GO_LINTERS})?(?:(?:[ \t]*\/\/|[ \t]+--)[ \t]*(?<tail>.*))?[ \t]*$`) },
+
+  { id: "clang-tidy-nolint", tool: "clang-tidy", cite: "clang.llvm.org/extra/clang-tidy/#suppressing-undesired-diagnostics",
+    languages: ["c", "cpp"], kinds: ["line", "block"], where: "any",
+    body: re(String.raw`^\s*NOLINT(?:NEXTLINE|BEGIN|END)?(?:\s*\(\s*${CLANG_TIDY_CHECKS}\s*\))?(?<tail>(?:[\s:;/-][\s\S]*)?)$`) },
+
+  { id: "ktlint", tool: "ktlint", cite: "pinterest.github.io/ktlint/latest/faq/#how-do-i-suppress-an-error-for-a-lineblockfile",
+    languages: ["kotlin"], kinds: ["line", "block"], where: "any",
+    body: re(String.raw`^\s*ktlint-(?:disable|enable)(?:[ \t]+${KTLINT_RULE}(?:[ \t]+${KTLINT_RULE})*)?(?:[ \t]+-{2,}[ \t]+(?<tail>[\s\S]*?))?\s*$`) },
+  { id: "checkstyle", tool: "Checkstyle", cite: "checkstyle.org/filters/suppressioncommentfilter.html",
+    languages: ["java"], kinds: ["line", "block"], where: "any",
+    body: re(String.raw`^\s*(?:CHECKSTYLE:(?:OFF|ON)|checkstyle:(?:off|on))(?::[ \t]*${CHECKSTYLE_CHECKS}|[ \t]+${CHECKSTYLE_CHECKS})?(?:[ \t]+-{2,}[ \t]+(?<tail>[\s\S]*?))?\s*$`) },
+
+  { id: "rustfmt-skip", tool: "rustfmt", cite: "rust-lang.github.io/rustfmt/#tips",
+    languages: ["rust"], kinds: ["line"], where: "any",
+    pattern: /^\/\/\s*rustfmt::skip(?:[ \t]+-{2,}[ \t]+(?<tail>.*?))?[ \t]*$/ },
 
   { id: "swift-tools-version", tool: "Swift Package Manager", cite: "github.com/swiftlang/swift-package-manager/blob/main/Documentation/Usage.md#swift-tools-version-specification",
     languages: ["swift"], kinds: ["line"], where: "line1", files: /(?:^|\/)Package(?:@swift-[\d.]+)?\.swift$/, pattern: /^\/\/\s*swift-tools-version\s*:\s*\d+(?:\.\d+){0,2}(?:\s*;\s*[\w.-]+)?\s*$/i },
@@ -170,18 +217,18 @@ export const DIRECTIVES = [
     languages: ["sql"], kinds: ["line"], where: "col0", pattern: /^--\s?sqlfluff(?::[\w.,-]+)+\s*$/ },
 
   { id: "vim-modeline", tool: "Vim modelines", cite: "vimhelp.org/options.txt.html#modeline (the first and last 5 lines)",
-    languages: ["js", "swift", "shell", "yaml", "python", "sql", "css", "html"], kinds: ["line", "block"], where: "vim", segment: "whole",
+    languages: ALL_LANGUAGES, kinds: ["line", "block"], where: "vim", segment: "whole",
     body: /^\s+(?:vim?|Vim|ex):\s*(?:set?\s+[^:]*:|\w+(?:=[^\s:]*)?(?:[\s:]+\w+(?:=[^\s:]*)?)*:?)\s*$/ },
   { id: "emacs-file-variables", tool: "Emacs file variables", cite: "gnu.org/software/emacs/manual/html_node/emacs/Specifying-File-Variables.html (the first line, or the second after an interpreter line)",
-    languages: ["js", "swift", "shell", "yaml", "python", "sql", "css", "html"], kinds: ["line", "block"], where: "emacs", segment: "whole",
+    languages: ALL_LANGUAGES, kinds: ["line", "block"], where: "emacs", segment: "whole",
     body: /^\s*-\*-\s*(?:[\w-]+|(?:[\w-]+\s*:\s*[^;\s][^;]*?\s*;\s*)*[\w-]+\s*:\s*[^;\s][^;]*?\s*;?)\s*-\*-\s*$/ },
   { id: "spdx", tool: "SPDX and REUSE file tags", cite: "spdx.github.io/spdx-spec/v2.3/using-SPDX-short-identifiers-in-source-files/; spdx.github.io/spdx-spec/v2.3/SPDX-license-expressions/; reuse.software/spec-3.3/ (comment headers, snippets, ignore blocks); D-0029",
-    languages: ["js", "swift", "shell", "yaml", "python", "sql", "css", "html"], kinds: ["line", "block"], where: "any", segment: "whole",
+    languages: ALL_LANGUAGES, kinds: ["line", "block"], where: "any", segment: "whole",
     lines: re(String.raw`^(?:SPDX-(?:License-Identifier:\s*${SPDX_EXPRESSION}|(?:File|Snippet)CopyrightText:\s*\S.*|FileContributor:\s*\S.*|Snippet(?:Begin|End))|REUSE-Ignore(?:Start|End))\s*$`) },
   { id: "noinspection", tool: "JetBrains IDE inspections", cite: "jetbrains.com/help/idea/disabling-and-enabling-inspections.html#suppress-in-editor",
-    languages: ["js", "swift", "shell", "yaml", "python", "sql", "css"], kinds: ["line"], where: "own", segment: "whole", body: /^\s*noinspection\s+\w+(?:\s*,\s*\w+)*\s*$/ },
+    languages: LINE_LANGUAGES, kinds: ["line"], where: "own", segment: "whole", body: /^\s*noinspection\s+\w+(?:\s*,\s*\w+)*\s*$/ },
   { id: "cspell", tool: "CSpell", cite: "cspell.org/docs/Configuration/document-settings",
-    languages: ["js", "swift", "shell", "yaml", "python", "sql", "css", "html"], kinds: ["line", "block"], where: "any", segment: "whole",
+    languages: ALL_LANGUAGES, kinds: ["line", "block"], where: "any", segment: "whole",
     body: /^\s*(?:cspell|spell-checker):\s*(?:disable|enable|disable-next-line|disable-line|(?:ignore|words|flagWords|ignoreRegExp|locale|dictionaries)\s+\S.*)\s*$/ },
 ];
 
@@ -221,7 +268,7 @@ function matches(rule, text, open, close) {
 
 const applies = (rule, ctx, kind) => rule.languages.includes(ctx.language) && rule.kinds.includes(kind) && (!rule.files || rule.files.test(ctx.path)) && placed(rule.where, ctx);
 
-const HASH_LANGUAGES = new Set(["shell", "python", "yaml"]);
+const HASH_LANGUAGES = new Set(["shell", "python", "yaml", "toml"]);
 
 export function directiveOf(span, raw, ctx) {
   const candidates = DIRECTIVES.filter(rule => applies(rule, ctx, span.kind));

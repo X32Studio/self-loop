@@ -1,5 +1,4 @@
-// F-0003, F-0009, D-0010, D-0052, R-0033-judge-hooks
-import { spawnSync } from "node:child_process";
+// F-0003, F-0009, D-0010, D-0052, D-0065, D-0066, D-0067, D-0068, R-0033-judge-hooks
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -7,11 +6,20 @@ import { check } from "../records-check.mjs";
 import { UsageError } from "./args.mjs";
 import { ensureExcludeEntry, ensureGitignoreEntry, gitIgnoreTarget, gitTopLevel, isGitIgnored, isPathTracked } from "./git-exclude.mjs";
 import { git, gitOk } from "./git-plumbing.mjs";
+import { ADAPTERS, isAdapter, isAntigravityProvider, isPreparedRunner, PREPARED_RUNNERS } from "./paseo.mjs";
 import { canonical, commonGitDir } from "./path-canonical.mjs";
 import { addProduct, DEFAULT_RECORDS_DIR, initStore, loadRegistry, LOOP, PRODUCT_NAME, real, REGISTRY, resolveOwnerStore } from "./registry.mjs";
+import { validateJudgeIndependence } from "./vendor.mjs";
 
 export const RECORDS_EXCLUDE_MARKER = "# self-loop managed: in-repo records";
 export const DEFAULT_WORKING_BRANCH = "loop/v1";
+
+const ANTIGRAVITY_MODEL_ROLES = Object.freeze({
+  critic: Object.freeze({ model: "gemini-2.5-pro", effort: "xhigh" }),
+  actor: Object.freeze({ model: "gemini-2.5-flash", effort: "high" }),
+  judge: Object.freeze({ model: "gemini-2.5-pro-exp", effort: "high" }),
+  reviewer: Object.freeze({ model: "gemini-2.5-pro-exp", effort: "high" }),
+});
 
 export class InitError extends Error {
   constructor(message, code = 2) { super(message); this.code = code; }
@@ -25,8 +33,11 @@ export function sanitizeProductName(raw) {
 }
 
 function currentBranch(repo) {
-  const r = spawnSync("git", ["-C", repo, "symbolic-ref", "--quiet", "--short", "HEAD"], { encoding: "utf8" });
-  return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+  try {
+    return git(repo, "symbolic-ref", "--quiet", "--short", "HEAD") || null;
+  } catch {
+    return null;
+  }
 }
 
 function highestMissingDir(dir) {
@@ -65,7 +76,121 @@ function buildRecordsConfig() {
   };
 }
 
-function buildLoopConfig({ productField, branch, protectedBranches, workDir }) {
+const CLI_RUNNERS = Object.freeze(["claude", "codex"]);
+const ALL_RUNNERS = Object.freeze([...CLI_RUNNERS, ...PREPARED_RUNNERS]);
+
+function requireNonEmptyString(flag, value) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new UsageError(`${flag} must be a non-empty string, got ${JSON.stringify(value)}`);
+  }
+  return value.trim();
+}
+
+function resolveAgentPreset({
+  harness = null,
+  runner = null,
+  provider = null,
+  adapter = null,
+  model = null,
+  actorModel = null,
+  criticModel = null,
+  judgeModel = null,
+  reviewerModel = null,
+  independence = null,
+} = {}) {
+  const hasHarness = harness !== null && harness !== undefined;
+  const hasRunner = runner !== null && runner !== undefined;
+  const hasProvider = provider !== null && provider !== undefined;
+  const hasAdapter = adapter !== null && adapter !== undefined;
+  const hasIndependence = independence !== null && independence !== undefined;
+
+  if (hasHarness && !isPreparedRunner(harness)) {
+    throw new UsageError(`--harness must be one of ${PREPARED_RUNNERS.join(", ")}, got ${JSON.stringify(harness)}`);
+  }
+  if (hasRunner && !ALL_RUNNERS.includes(runner)) {
+    throw new UsageError(`--runner must be one of ${ALL_RUNNERS.join(", ")}, got ${JSON.stringify(runner)}`);
+  }
+  if (hasHarness && hasRunner && harness !== runner) {
+    throw new UsageError(`--harness ${JSON.stringify(harness)} conflicts with --runner ${JSON.stringify(runner)}`);
+  }
+  if (hasAdapter && !isAdapter(adapter)) {
+    throw new UsageError(`--adapter must be one of ${ADAPTERS.join(", ")}, got ${JSON.stringify(adapter)}`);
+  }
+  if (hasIndependence) {
+    const v = validateJudgeIndependence(independence);
+    if (!v.ok) throw new UsageError(v.error);
+  }
+  const cleanProvider = hasProvider ? requireNonEmptyString("--provider", provider) : null;
+  const baseModel = model !== null && model !== undefined ? requireNonEmptyString("--model", model) : null;
+  const roleModels = {
+    actor: actorModel !== null && actorModel !== undefined ? requireNonEmptyString("--actor-model", actorModel) : baseModel,
+    critic: criticModel !== null && criticModel !== undefined ? requireNonEmptyString("--critic-model", criticModel) : baseModel,
+    judge: judgeModel !== null && judgeModel !== undefined ? requireNonEmptyString("--judge-model", judgeModel) : baseModel,
+    reviewer: reviewerModel !== null && reviewerModel !== undefined ? requireNonEmptyString("--reviewer-model", reviewerModel) : baseModel,
+  };
+
+  const explicitRunner = hasRunner ? runner : (hasHarness ? harness : null);
+  if (explicitRunner && !isPreparedRunner(explicitRunner) && hasProvider) {
+    throw new UsageError(`--provider requires a prepared runner (${PREPARED_RUNNERS.join(" or ")}), got ${JSON.stringify(explicitRunner)}`);
+  }
+  if (explicitRunner === "t3" && cleanProvider === "better-paseo-antigravity") {
+    throw new UsageError('provider "better-paseo-antigravity" requires harness "paseo"');
+  }
+
+  let defaultIndependence = null;
+  let agents;
+  if (!explicitRunner && !hasProvider) {
+    agents = {
+      critic: { runner: "codex" },
+      actor: { runner: "claude" },
+      judge: { runner: "codex" },
+      reviewer: { runner: "claude" },
+    };
+  } else if (explicitRunner && !isPreparedRunner(explicitRunner)) {
+    agents = {
+      critic: { runner: explicitRunner },
+      actor: { runner: explicitRunner },
+      judge: { runner: explicitRunner },
+      reviewer: { runner: explicitRunner === "codex" ? "claude" : explicitRunner },
+    };
+  } else if (explicitRunner === "t3" && !hasProvider) {
+    agents = {
+      critic: { runner: "t3", provider: "codex" },
+      actor: { runner: "t3", provider: "claude" },
+      judge: { runner: "t3", provider: "codex" },
+      reviewer: { runner: "t3", provider: "claude" },
+    };
+  } else if ((explicitRunner === "paseo" && !hasProvider) || (hasProvider && isAntigravityProvider(cleanProvider))) {
+    const resolvedRunner = explicitRunner ?? (cleanProvider === "better-paseo-antigravity" ? "paseo" : "t3");
+    const resolvedProvider = cleanProvider ?? "better-paseo-antigravity";
+    defaultIndependence = "model";
+    agents = Object.fromEntries(
+      Object.entries(ANTIGRAVITY_MODEL_ROLES).map(([role, spec]) => [
+        role,
+        { runner: resolvedRunner, provider: resolvedProvider, model: spec.model, effort: spec.effort },
+      ]),
+    );
+  } else {
+    const resolvedRunner = explicitRunner ?? "t3";
+    agents = Object.fromEntries(
+      ["critic", "actor", "judge", "reviewer"].map(role => [
+        role,
+        { runner: resolvedRunner, provider: cleanProvider },
+      ]),
+    );
+  }
+
+  for (const [role, spec] of Object.entries(agents)) {
+    if (hasAdapter && isPreparedRunner(spec.runner)) spec.adapter = adapter;
+    if (roleModels[role]) spec.model = roleModels[role];
+  }
+  return {
+    judgeIndependence: hasIndependence ? independence : defaultIndependence,
+    agents,
+  };
+}
+
+function buildLoopConfig({ productField, branch, protectedBranches, workDir, preset }) {
   return {
     product: productField,
     ...(branch ? { branch } : {}),
@@ -73,6 +198,7 @@ function buildLoopConfig({ productField, branch, protectedBranches, workDir }) {
     records: ".",
     workDir,
     phase: "v1",
+    ...(preset.judgeIndependence ? { judgeIndependence: preset.judgeIndependence } : {}),
     purpose: [],
     briefs: {
       shared: "engines/shared.md",
@@ -85,12 +211,7 @@ function buildLoopConfig({ productField, branch, protectedBranches, workDir }) {
       critic: [],
       actor: [],
     },
-    agents: {
-      critic: { runner: "codex" },
-      actor: { runner: "claude" },
-      judge: { runner: "codex" },
-      reviewer: { runner: "claude" },
-    },
+    agents: preset.agents,
     setup: [],
     sealed: [],
     gates: {
@@ -106,6 +227,16 @@ export function initLoop({
   records = null,
   name = null,
   branch = null,
+  harness = null,
+  runner = null,
+  provider = null,
+  adapter = null,
+  model = null,
+  actorModel = null,
+  criticModel = null,
+  judgeModel = null,
+  reviewerModel = null,
+  independence = null,
   localExclude = false,
   register = false,
   ownerStore = null,
@@ -113,6 +244,18 @@ export function initLoop({
   cwd = process.cwd(),
   home = env?.HOME || homedir(),
 } = {}) {
+  const preset = resolveAgentPreset({
+    harness,
+    runner,
+    provider,
+    adapter,
+    model,
+    actorModel,
+    criticModel,
+    judgeModel,
+    reviewerModel,
+    independence,
+  });
   const targetDir = product ? resolve(cwd, product) : resolve(cwd);
   if (!existsSync(targetDir)) throw new UsageError(`product directory does not exist: ${targetDir}`);
   const productRoot = gitTopLevel(targetDir);
@@ -245,7 +388,7 @@ export function initLoop({
     const productField = isInRepo ? relative(recordsDir, productRoot).split(sep).join("/") : productRoot;
     const workDir = defaultWorkDir(home, productName, recordsDir);
     const recordsCfg = buildRecordsConfig();
-    const loopCfg = buildLoopConfig({ productField, branch: resolvedBranch, protectedBranches, workDir });
+    const loopCfg = buildLoopConfig({ productField, branch: resolvedBranch, protectedBranches, workDir, preset });
     const readme = `# ${productName} self-loop records\n\nManaged loop records for \`${productName}\` (\`RECORDS.md\` layout).\n`;
     const recordsIgnore = ".DS_Store\n*.tmp\n";
 

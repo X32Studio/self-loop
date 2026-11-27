@@ -7,9 +7,13 @@ const prose = (path, text) => commentLines(text, languageOf(path, text), { path 
 
 test("languages come from the extension, a .githooks folder, or the interpreter line of an extensionless file", () => {
   const cases = [
-    ["a/b.mjs", "", "js"], ["a/b.cjs", "", "js"], ["a/b.ts", "", "js"], ["App.swift", "", "swift"], ["run.sh", "", "shell"],
+    ["a/b.mjs", "", "js"], ["a/b.cjs", "", "js"], ["a/b.ts", "", "js"], ["a/b.tsx", "", "js"], ["a/b.jsx", "", "js"],
+    ["a/b.mts", "", "js"], ["a/b.cts", "", "js"], ["App.swift", "", "swift"], ["run.sh", "", "shell"],
     [".githooks/pre-push", "", "shell"], ["ci.yml", "", "yaml"], ["tool.py", "", "python"], ["q.sql", "", "sql"],
-    ["s.css", "", "css"], ["p.html", "", "html"], ["bin/run", "#!/usr/bin/env node\n", "js"], ["bin/run", "#!/usr/bin/env -S node --x\n", "js"],
+    ["s.css", "", "css"], ["p.html", "", "html"], ["main.go", "", "go"], ["lib.rs", "", "rust"],
+    ["mod.c", "", "c"], ["mod.h", "", "c"], ["mod.cc", "", "cpp"], ["mod.cpp", "", "cpp"], ["mod.cxx", "", "cpp"], ["mod.hpp", "", "cpp"],
+    ["App.java", "", "java"], ["App.kt", "", "kotlin"], ["build.gradle.kts", "", "kotlin"], ["Cargo.toml", "", "toml"],
+    ["bin/run", "#!/usr/bin/env node\n", "js"], ["bin/run", "#!/usr/bin/env -S node --x\n", "js"],
     ["bin/run", "#!/bin/bash\n", "shell"], ["bin/run", "#!/usr/bin/python3\n", "python"], ["bin/run", "plain text\n", null],
     ["README.md", "", null], ["data.json", "", null], ["VERSION", "1.0.0\n", null],
   ];
@@ -263,4 +267,271 @@ test("a YAML comment is in a document's header only before that document's conte
 test("in a Python f-string a backslash never escapes a brace, and \\N{name} is a name only where the string is not raw", () => {
   assert.deepEqual(prose("a.py", 's = rf"\\{{"  # Explain the raw brace.\nt = f"\\N{EM DASH} {1}"  # Explain the dash.\nu = rf"\\N{x}"  # Explain the field.\nv = f"\\{x}"  # Explain the escape.\n'),
     [[1, "Explain the raw brace."], [2, "Explain the dash."], [3, "Explain the field."], [4, "Explain the escape."]]);
+});
+
+// D-0016, D-0064
+test("TSX generic arrow functions do not swallow subsequent comments", () => {
+  const text = [
+    "export const id = <T,>(x: T) => <span>{x}</span>; // Explain id.",
+    "export const map = <T extends Record<string, () => void>>(x: T) => x; // Explain map.",
+    "export const def = <T = string>(x: T) => x; // Explain def.",
+  ].join("\n") + "\n";
+  assert.deepEqual(prose("generic.tsx", text), [[1, "Explain id."], [2, "Explain map."], [3, "Explain def."]]);
+});
+
+test("Go, Rust, C/C++, Java, Kotlin and TOML strings hide comment markers while real comments are detected on exact lines", () => {
+  const go = [
+    "package main",
+    'const a = "https://example.test/a // b"',
+    "const b = `line 1",
+    "/* raw backtick */ // raw \\",
+    "` // Explain Go.",
+    "const r = '/' /* Block Go. */",
+  ].join("\n") + "\n";
+  assert.deepEqual(prose("main.go", go), [[5, "Explain Go."], [6, "Block Go."]]);
+
+  const rust = [
+    "#![allow(unused)]",
+    "fn f<'a, 'b>(x: &'a str, y: &'static str) -> char {",
+    '  let a = r#"raw " // /* not a comment */"#;',
+    '  let b = br##"nested "# // still raw"##;',
+    '  let c = "multi\n// line";',
+    "  let d = '\\''; let e = '/'; let f = '🦀'; // Explain Rust.",
+    "  /* D-0016",
+    "     /* Nested Rust. */",
+    "     P-0001 */",
+    "  e",
+    "}",
+  ].join("\n") + "\n";
+  assert.deepEqual(prose("lib.rs", rust), [[7, "Explain Rust."], [9, "Nested Rust."]]);
+
+  const cpp = [
+    'const char* a = "http://x // y";',
+    'const char* b = R"delim(a )" // raw /* raw */)delim";',
+    "int n = 1'000'000; // Explain Cpp.",
+    "/* Block Cpp. */",
+  ].join("\n") + "\n";
+  assert.deepEqual(prose("mod.cpp", cpp), [[3, "Explain Cpp."], [4, "Block Cpp."]]);
+
+  const java = [
+    "class App {",
+    '  String a = "a // b";',
+    '  String b = """',
+    '    // inside text block \\"\\"\\"',
+    '    /* still text block */',
+    '    """; // Explain Java.',
+    "}",
+  ].join("\n") + "\n";
+  assert.deepEqual(prose("App.java", java), [[6, "Explain Java."]]);
+
+  const kotlin = [
+    "#!/usr/bin/env kotlin",
+    'fun `test // name`() {',
+    '  val a = "hello ${foo("// data")}" // Explain Kotlin.',
+    '  val b = """raw // """"',
+    "  /* D-0016 /* Nested Kotlin. */ */",
+    "}",
+  ].join("\n") + "\n";
+  assert.deepEqual(prose("App.kts", kotlin), [[3, "Explain Kotlin."], [5, "D-0016 /* Nested Kotlin."]]);
+
+  const toml = [
+    'title = "app # not a comment"',
+    "path = 'C:\\Users\\# not a comment'",
+    'escaped = "quote \\" # still string" # Explain TOML.',
+    'multi = """',
+    '# inside basic \\"\\"\\"',
+    '""""" # After five quotes.',
+    "raw = '''",
+    "\\ # literal",
+    "''' # After literal.",
+  ].join("\n") + "\n";
+  assert.deepEqual(prose("Cargo.toml", toml), [[3, "Explain TOML."], [6, "After five quotes."], [9, "After literal."]]);
+});
+
+test("D-0064 T10: zero-comment, pointer-only and directive-only files pass deterministically across all supported languages", () => {
+  const clean = [
+    ["a.js", 'export const x = "https://example.test";\n'],
+    ["a.mjs", "export const x = 1;\n"],
+    ["a.cjs", "module.exports = 1;\n"],
+    ["a.ts", "export const x: number = 1;\n"],
+    ["a.mts", "export type Id = string;\n"],
+    ["a.cts", "export type Id = string;\n"],
+    ["a.tsx", "export const App = <T,>(p: { x: T }) => <div>{String(p.x)}</div>;\n"],
+    ["a.jsx", "export const App = () => <div title=\"// literal\">hi</div>;\n"],
+    ["a.py", 'x = "# literal"\n'],
+    ["a.pyi", "def f(x: int) -> str: ...\n"],
+    ["a.swift", 'let x = #"// literal"#\n'],
+    ["a.sh", 'echo "# literal"\n'],
+    ["a.yml", 'key: "value # literal"\n'],
+    ["a.yaml", "key: value\n"],
+    ["a.css", 'a::after { content: "/* literal */"; }\n'],
+    ["a.html", "<p>hello</p>\n"],
+    ["a.sql", "SELECT 'value -- literal', 1;\n"],
+    ["a.go", "package main\nvar s = `// literal`\n"],
+    ["a.rs", "#![allow(unused)]\nfn f<'a>(s: &'a str) -> &'a str { s }\n"],
+    ["a.c", 'const char *s = "// literal";\n'],
+    ["a.h", 'extern const char *s;\n'],
+    ["a.cpp", 'auto s = R"(// literal)"; int n = 1\'000;\n'],
+    ["a.java", 'class A { String s = "// literal"; }\n'],
+    ["a.kt", 'val s = """// literal"""\n'],
+    ["a.toml", 'title = "app # literal"\n'],
+  ];
+  for (const [path, src] of clean) {
+    assert.deepEqual(proseLines(path, src), [], `0-comment ${path}`);
+    assert.deepEqual(addedProse([{ path, before: null, after: src }]), [], `addedProse ${path}`);
+  }
+
+  const pointersAndDirectives = [
+    ["a.ts", "// D-0016\n// @ts-expect-error\nexport const x: number = 'a';\n"],
+    ["a.py", "# P-0001\nimport os  # noqa\n"],
+    ["a.swift", "// D-0016\n// swiftlint:disable:next force_cast\nlet x = y as! Z\n"],
+    ["a.yml", "# yaml-language-server: $schema=./schema.json\n# D-0016\nkey: value\n"],
+    ["a.sh", "#!/usr/bin/env bash\n# shellcheck disable=SC2086\n# D-0016\necho $x\n"],
+    ["a.css", "/* D-0016 */\n/* stylelint-disable */\na {}\n"],
+    ["a.html", "<!-- D-0016 -->\n<!-- prettier-ignore -->\n<div></div>\n"],
+    ["a.sql", "-- D-0016\nSELECT 1 -- noqa\n;\n"],
+    ["a.go", "// SPDX-License-Identifier: MIT\n// D-0016\npackage main\n"],
+    ["a.rs", "#!/usr/bin/env -S cargo +nightly -Zscript\n// SPDX-License-Identifier: Apache-2.0\n// D-0016\nfn main() {}\n"],
+    ["a.c", "// clang-format off\n// D-0016\nint x = 1;\n"],
+    ["a.java", "// SPDX-License-Identifier: MIT\n// D-0016\nclass A {}\n"],
+    ["a.kt", "// SPDX-License-Identifier: MIT\n// D-0016\nval x = 1\n"],
+    ["a.toml", "# SPDX-License-Identifier: MIT\n# P-0001\ntitle = 'x'\n"],
+  ];
+  for (const [path, src] of pointersAndDirectives) {
+    assert.deepEqual(proseLines(path, src), [], `pointers/directives ${path}`);
+  }
+
+  assert.equal(proseLines("a.go", "// @ts-expect-error\npackage main\n")[0].line, 1);
+  assert.equal(proseLines("a.toml", "# shellcheck disable=SC2086\ntitle = 'x'\n")[0].line, 1);
+
+  const realProse = [
+    ["a.ts", "const x = 1;\n// Explain this.\n", 2, "Explain this."],
+    ["a.tsx", "export const A = () => <div/>;\n// Explain this.\n", 2, "Explain this."],
+    ["a.py", "x = 1\n# Explain this.\n", 2, "Explain this."],
+    ["a.swift", "let x = 1\n// Explain this.\n", 2, "Explain this."],
+    ["a.yml", "key: 1\n# Explain this.\n", 2, "Explain this."],
+    ["a.sh", "echo 1\n# Explain this.\n", 2, "Explain this."],
+    ["a.css", "a {}\n/* Explain this. */\n", 2, "Explain this."],
+    ["a.html", "<p>1</p>\n<!-- Explain this. -->\n", 2, "Explain this."],
+    ["a.sql", "SELECT 1;\n-- Explain this.\n", 2, "Explain this."],
+    ["a.go", "package main\n// Explain this.\n", 2, "Explain this."],
+    ["a.rs", "fn main() {}\n// Explain this.\n", 2, "Explain this."],
+    ["a.c", "int x = 1;\n// Explain this.\n", 2, "Explain this."],
+    ["a.java", "class A {}\n// Explain this.\n", 2, "Explain this."],
+    ["a.kt", "val x = 1\n// Explain this.\n", 2, "Explain this."],
+    ["a.toml", "a = 1\n# Explain this.\n", 2, "Explain this."],
+  ];
+  for (const [path, src, line, text] of realProse) {
+    const [hit] = proseLines(path, src);
+    assert.equal(hit.scope, "comment", path);
+    assert.equal(hit.line, line, path);
+    assert.equal(hit.text, text, path);
+    assert.deepEqual(proseLines(path, src, { resolutions: [{ ...hit, verdict: "directive", evidence: "consumer fact" }] }), [], path);
+    assert.deepEqual(proseLines(path, src, { resolutions: [{ ...hit, verdict: "prose", evidence: "explanatory prose" }] }), [{ line, text }], path);
+  }
+});
+
+test("TSX generic defaults, nested generic types, and const type parameters lex as generics while JSX elements with attributes keep JSX children literal", () => {
+  const genericProse = [
+    'export type A = <T = "ok">(x: T) => T; // After string default.',
+    "export type B = <T = 'a > b'>(x: T) => T; // After single-quoted default.",
+    "export type C = <T = { a: number }>(x: T) => T; // After object default.",
+    "export type D = <T extends Foo = Bar>(x: T) => T; // After constrained default.",
+    'export type E = <T extends { a: string } = { a: "ok" }>(x: T) => T; // After object constraint.',
+    "export type F = <T = Record<string, number>>(x: T) => T; // After nested generic.",
+    'export type G = <T = <U = "a">(u: U) => U>(x: T) => T; // After generic fn default.',
+    "export const h = <const T = string>(x: T) => x; // After const string.",
+    'export const i = <const T = "ok">(x: T) => x; // After const literal.',
+    "export const j = <const T = { a: number }>(x: T) => x; // After const object.",
+    "export const k = <const T extends Foo = Bar>(x: T) => x; // After const extends.",
+    "export const l = <const T>(x: T) => x; // After bare const.",
+    "export const m = () => <List<string> items={xs} />; // After generic self-closing JSX.",
+    "export type N = <T = { /* Explain inside default. */ a: number }>(x: T) => T;",
+  ].join("\n") + "\n";
+  assert.deepEqual(prose("generic-defaults.tsx", genericProse), [
+    [1, "After string default."],
+    [2, "After single-quoted default."],
+    [3, "After object default."],
+    [4, "After constrained default."],
+    [5, "After object constraint."],
+    [6, "After nested generic."],
+    [7, "After generic fn default."],
+    [8, "After const string."],
+    [9, "After const literal."],
+    [10, "After const object."],
+    [11, "After const extends."],
+    [12, "After bare const."],
+    [13, "After generic self-closing JSX."],
+    [14, "Explain inside default."],
+  ]);
+
+  const jsxControls = [
+    'export const V1 = () => <div className="x">// jsx text</div>; // After div.',
+    "export const V2 = () => <Card data={{ a: 1 }}>/* jsx text */</Card>; // After Card.",
+    'export const V3 = () => <Box title="a = b" subtitle=\'c = d\'>// text = ok</Box>; // After Box.',
+    'export const V4 = () => <Box extends="foo">// extends attr text</Box>; // After extends attr.',
+    "export const V5 = () => <List<Record<string, number>> items={xs}>// generic jsx text</List>; // After List.",
+    "export const V6 = () => <Box>{/* Inside jsx expr. */ 1}</Box>;",
+  ].join("\n") + "\n";
+  assert.deepEqual(prose("jsx-controls.tsx", jsxControls), [
+    [1, "After div."],
+    [2, "After Card."],
+    [3, "After Box."],
+    [4, "After extends attr."],
+    [5, "After List."],
+    [6, "Inside jsx expr."],
+  ]);
+
+  const jsxClean = [
+    'export type Clean = <T = "ok">(x: T) => T;',
+    'export const View = () => <div className="x"><Card data={{ a: 1 }}><Box title="a = b">// literal text</Box></Card></div>;',
+  ].join("\n") + "\n";
+  assert.deepEqual(proseLines("clean.tsx", jsxClean), []);
+});
+
+// D-0016, D-0064, D-0067
+test("Go, C/C++, Java, Kotlin and Rust directives pass only in their consuming language and reject prose or cross-language misuse", async () => {
+  const lexers = await import("../lib/lexers.mjs");
+  for (const name of [
+    "establishedJs", "lexicalCoverage", "lexJs", "lexSwift", "lexCFamily",
+    "lexGo", "lexRust", "lexC", "lexCpp", "lexJava", "lexKotlin",
+    "lexShell", "lexYaml", "lexPython", "SQL_READINGS", "lexSql", "lexCss", "lexHtml", "lexToml", "LEXERS",
+  ]) {
+    assert.ok(name in lexers, `missing export ${name}`);
+  }
+  assert.equal(lexers.lexHtml("<script>\n// inside script\n</script>\n").length, 1);
+
+  const admitted = [
+    ["main.go", "//go:build linux && amd64\n// +build linux,amd64\npackage main\n//go:generate stringer -type=Mode\n//go:embed data/*.txt\nvar s string\nfunc f() { _ = s } //nolint:errcheck // D-0016\n"],
+    ["mod.c", "// clang-format off\n/* clang-format on */\nint x = 1; // NOLINT(readability-magic-numbers)\n// NOLINTNEXTLINE\nint y = 2;\n"],
+    ["mod.cpp", "// NOLINTBEGIN(cppcoreguidelines-*)\nint a = 1; /* NOLINT(bugprone-*) */\n// NOLINTEND(cppcoreguidelines-*)\n// clang-format off\n// clang-format on\n"],
+    ["App.java", "// CHECKSTYLE:OFF: MagicNumber\n// checkstyle:off\nint x = 42;\n// checkstyle:on\n// CHECKSTYLE:ON\n// clang-format off\n// clang-format on\n"],
+    ["App.kt", "// ktlint-disable no-wildcard-imports\nimport a.*\n// ktlint-enable no-wildcard-imports\n// ktlint-disable standard:max-line-length -- D-0016\n"],
+    ["lib.rs", "#!/usr/bin/env -S cargo +nightly -Zscript\n// SPDX-License-Identifier: MIT\n// cspell:ignore rustc\n// rustfmt::skip\nfn main() {}\n"],
+  ];
+  for (const [path, src] of admitted) {
+    assert.deepEqual(proseLines(path, src), [], `admitted ${path}`);
+  }
+
+  const refused = [
+    ["main.go", "//nolint:errcheck // ignore the error here\npackage main\n", 1],
+    ["main.go", "package main\n//go:build linux\n", 2],
+    ["main.go", "// NOLINT\npackage main\n", 1],
+    ["main.go", "// rustfmt::skip\npackage main\n", 1],
+    ["mod.cpp", "// NOLINT because of legacy\nint x = 1;\n", 1],
+    ["mod.cpp", "//nolint:errcheck\nint x = 1;\n", 1],
+    ["mod.c", "//go:generate foo\nint x = 1;\n", 1],
+    ["App.java", "// ktlint-disable no-wildcard-imports\nclass App {}\n", 1],
+    ["App.java", "// CHECKSTYLE:OFF because this class is long\nclass App {}\n", 1],
+    ["App.kt", "// CHECKSTYLE:OFF\nval x = 1\n", 1],
+    ["App.kt", "// ktlint-disable because this line is long\nval x = 1\n", 1],
+    ["lib.rs", "// rustfmt::skip keep this aligned\nfn main() {}\n", 1],
+    ["lib.rs", "// NOLINT\nfn main() {}\n", 1],
+    ["a.mjs", "//go:build linux\nexport {};\n", 1],
+  ];
+  for (const [path, src, line] of refused) {
+    const hits = proseLines(path, src);
+    assert.equal(hits.length, 1, `refused ${path}`);
+    assert.equal(hits[0].line, line, `line ${path}`);
+  }
 });

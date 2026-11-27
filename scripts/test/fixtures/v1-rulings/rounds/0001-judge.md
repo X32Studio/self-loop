@@ -2,7 +2,7 @@
 
 phase: v1
 role: judge
-agent: t3 gpt-6.2-astra
+agent: t3 gpt-5.4-pro
 view: records@129c7b54cac2d31a54c3ef7e07c7128c4a863892
 briefs: engines/shared.md, engines/judge.md
 product: b4ed5490ff28720817261673e2fb06b828d4b079

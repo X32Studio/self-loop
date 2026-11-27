@@ -1,7 +1,4 @@
-// suite-green.mjs: the full suite on an exact commit in a clean checkout. Admission evidence (fixtures/suite-green/):
-// real runs of this skill's own suite through the gate, red on c7e7c50 (the lead committed it with 2 failing tests)
-// and green on a4db050 and 4748705; each recorded log is re-judged here by the same rule. Live cases use small
-// repositories built in the test.
+// D-0020, D-0061, D-0064
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -9,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync
 import { join } from "node:path";
 import test from "node:test";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { parseSummary, suiteGreen, suiteStore, verdict } from "../suite-green.mjs";
+import { codeTreeOf, lookupSuiteReceipt, parseSummary, purgeTreeReceipts, suiteGreen, suiteStore, verdict } from "../suite-green.mjs";
 import { tipProblem } from "../lib/tip.mjs";
 import { fixtures, git, repo, scripts, skill, temp } from "./helpers.mjs";
 
@@ -54,7 +51,6 @@ test("live: a passing suite is green, with the exact SHA, counts and duration", 
 });
 
 test("live: a file present only in the working tree (untracked or modified) does not make the commit green", () => {
-  // the v0.2 review's B1 case: an untracked src/cli.js made the entry point pass outside the delivered tree
   const dir = project(`import { ok } from "./cli.mjs";\ntest("entry", () => assert.equal(ok, true));`, { "cli.mjs": "export const ok = false;\n" });
   writeFileSync(join(dir, "cli.mjs"), "export const ok = true;\n");
   assert.equal(spawnSync(process.execPath, ["--test"], { cwd: dir, env: { ...process.env, NODE_TEST_CONTEXT: "" } }).status, 0, "green in the dirty working tree");
@@ -146,11 +142,24 @@ test("--vary-version measures the commit's tree with VERSION replaced; only a VE
   assert.equal(tipProblem(dir, parent, tip), null);
   const reused = suiteGreen({ repo: dir, sha: tip, command: "node --test", format: "node-test" });
   assert.deepEqual([reused.green, reused.sha, Boolean(reused.reusedFrom), reused.versionVaried, runs().length], [true, tip, true, undefined, 1]);
-  suiteGreen({ repo: dir, sha: child("1.1.0-rc.3\n"), command: "node --test", format: "node-test" });
-  suiteGreen({ repo: dir, sha: child("1.1.0-rc.2"), command: "node --test", format: "node-test" });
-  assert.deepEqual(runs(), ["1.1.0-rc.2", "1.1.0-rc.3", "1.1.0-rc.2"], "another VERSION, or other bytes, runs the suite");
-  suiteGreen({ repo: dir, sha: parent, command: "node --test", format: "node-test" });
-  assert.equal(runs().length, 4, "the varied run does not stand for the parent's own tree");
+  const tip3 = child("1.1.0-rc.3\n");
+  const codeReused = suiteGreen({ repo: dir, sha: tip3, command: "node --test", format: "node-test" });
+  assert.deepEqual([codeReused.green, codeReused.sha, Boolean(codeReused.reusedFrom), codeReused.versionVaried, runs().length], [true, tip3, true, "1.1.0-rc.3", 1]);
+  const lookupHit = lookupSuiteReceipt({ repo: dir, sha: tip3, command: "node --test", format: "node-test" });
+  assert.ok(lookupHit);
+  assert.equal(lookupHit.receipt.sha, tip3);
+  assert.equal(lookupHit.receipt.versionVaried, "1.1.0-rc.3");
+  assert.equal(lookupHit.receipt.codeTree, codeTreeOf(dir, tip3));
+  writeFileSync(join(dir, "README.md"), "# changed\n");
+  git(dir, "add", "README.md");
+  const codeChanged = commitTree(dir, git(dir, "write-tree"), "code change");
+  git(dir, "reset", "-q", "--hard", parent);
+  assert.notEqual(codeTreeOf(dir, codeChanged), codeTreeOf(dir, parent));
+  const rerun = suiteGreen({ repo: dir, sha: codeChanged, command: "node --test", format: "node-test" });
+  assert.deepEqual([rerun.green, rerun.reusedFrom, runs().length], [true, undefined, 2]);
+  assert.equal(lookupSuiteReceipt({ repo: dir, sha: child("not-a-version\n"), command: "node --test", format: "node-test" }), null);
+  purgeTreeReceipts(dir, varied.tree);
+  assert.equal(lookupSuiteReceipt({ repo: dir, sha: tip3, command: "node --test", format: "node-test" }), null);
 });
 
 test("the suite measures the tree Git publishes: a local replacement neither satisfies a run nor changes it", () => {

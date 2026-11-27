@@ -2,9 +2,16 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { antigravityAppDirs, appDirFromTranscriptPath, conversationIdFromPath, decodeToolCallArgs, extractHookDirs, readConversationSummaries, resolveAuthoritativeTranscript, unwrapAntigravityUserText } from "./antigravity.mjs";
-import { DELEGATED_NOTICE, T3_AGENT_NOTICE, LeadSends, captureOwnerText, delegatedThread, handoffMessage, inside, isLeadPrompt, numberWords, ownerPrompt } from "./owner-words-core.mjs";
+import { DELEGATED, DELEGATED_NOTICE, T3_AGENT_NOTICE, LeadSends, captureOwnerText, delegatedThread, handoffMessage, inside, numberWords, ownerPrompt } from "./owner-words-core.mjs";
+import { isPaseoFramed, unwrapPaseoAgentMessage } from "./paseo.mjs";
 
 const TRUNCATED_REASON = "compact transcript has truncated USER_INPUT without transcript_full.jsonl";
+const PASEO_CHILD_HEADER = /^(?:Act as the (?:critic|actor|judge|reviewer)\.(?:\r?\n){1,2})?self-loop call R-\d{4}-[a-z]+(?:-[a-z]+)* · nonce [0-9a-f]{16}(?:\r?\n|$)/;
+const isStructuralChildPrompt = text => {
+  const trimmed = text.trim();
+  return T3_AGENT_NOTICE.test(trimmed) || DELEGATED_NOTICE.test(trimmed)
+    || DELEGATED.test(trimmed) || PASEO_CHILD_HEADER.test(trimmed);
+};
 const isChildSummary = summary => Boolean(summary && (summary.parent_conversation_id || summary.nesting_depth > 0));
 const isExplicitUserRow = row => row?.type === "USER_INPUT" && row.source === "USER_EXPLICIT";
 const isUserRow = row => isExplicitUserRow(row) && typeof row.content === "string";
@@ -45,18 +52,32 @@ function parseFirstPrompt(rows, parseErrors = 0) {
   return { ok: true, unresolved: false, unparseableFirstPrompt: false, truncatedFirstPrompt: false, reason: null, text: unwrapped };
 }
 
+function firstPromptForChild(text) {
+  const unwrapped = unwrapHandoffText(text.trim());
+  if (isPaseoFramed(unwrapped)) return unwrapPaseoAgentMessage(unwrapped)?.body ?? null;
+  return text;
+}
+
 function antigravityAgent(rows, summary = null, { parseErrors = 0 } = {}) {
   const res = (agent, extra = {}) => ({ agent, unresolved: false, unparseableFirstPrompt: false, truncatedFirstPrompt: false, reason: null, firstPrompt: null, ...extra });
   const parsed = parseFirstPrompt(rows, parseErrors);
-  if (isChildSummary(summary)) return res(true, { firstPrompt: parsed.ok ? parsed.text : null });
+  if (isChildSummary(summary)) return res(true, { firstPrompt: parsed.ok ? firstPromptForChild(parsed.text) : null });
   if (!parsed.ok) {
     if (parsed.unresolved) return res(false, { unresolved: true, unparseableFirstPrompt: parsed.unparseableFirstPrompt, truncatedFirstPrompt: parsed.truncatedFirstPrompt, reason: parsed.reason });
     return Number.isInteger(summary?.last_user_input_step_index) && summary.last_user_input_step_index >= 0
       ? res(false, { unresolved: true, reason: "transcript is missing first USER_INPUT step" })
       : res(false);
   }
-  const trimmed = unwrapHandoffText(parsed.text.trim());
-  if (T3_AGENT_NOTICE.test(trimmed) || DELEGATED_NOTICE.test(trimmed) || isLeadPrompt(ownerPrompt(parsed.text)?.text ?? "")) {
+  const unwrapped = unwrapHandoffText(parsed.text.trim());
+  if (isPaseoFramed(unwrapped)) {
+    const paseo = unwrapPaseoAgentMessage(unwrapped);
+    const body = paseo?.body ?? "";
+    if (paseo && isStructuralChildPrompt(unwrapHandoffText(body.trim()))) {
+      return res(true, { firstPrompt: body });
+    }
+    return res(false, { firstPrompt: parsed.text });
+  }
+  if (isStructuralChildPrompt(unwrapped)) {
     return res(true, { firstPrompt: parsed.text });
   }
   return res(false, { firstPrompt: parsed.text });

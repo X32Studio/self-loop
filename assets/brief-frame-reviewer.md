@@ -37,11 +37,16 @@ batches and answers, interventions, lessons, `metrics/trajectory.jsonl` and `met
   the value of continuing each area from the returns per area in your task (blockers opened and closed per judged
   round) and propose the next features; leaving an area keeps its open blockers. A judge of another vendor rules on
   your derivations, and only what it rules sound enters the blueprint or a critic's or actor's task (D-0030 item 2).
+  **Parallel-first decomposition (D-0064 T2)**: any feature or refactoring spanning `>= 2` decoupled surfaces/modules
+  MUST default to `2-4` file-disjoint parallel Actor packages in `PL-NNNN` rather than a single serial Actor.
 - **DIAGNOSIS** (alarms fired): for each alarm, the cause. Where two or more fixes share a premise, test it before any
   further fix:
   `PREMISE: <the assumption every fix made>` and `OBSERVATION: <what would differ if it were false, and what the facts
-  show>`, at the beginning of a line. When the rounds share no premise (distinct work in one area), say so. Then CONTINUE (with the to-do for the next
-  round) or REFRAME (with the reframe as an owner question).
+  show>`, at the beginning of a line. When the rounds share no premise (distinct work in one area), say so.
+  **Management Zeroing (管理归零, D-0067)**: whenever an alarm fires or a defect escapes a prior round, trace how it
+  slipped past existing briefs/gates, assign clear ownership, and propose updates to the corresponding role brief,
+  template, or deterministic gate so the entire defect class cannot recur — never patch only one symptom. Then CONTINUE
+  (with the to-do for the next round) or REFRAME (with the reframe as an owner question).
 - **SUBTRACTION** (phase close): what to delete — dead code, mechanisms merged away, outdated text, superseded tests,
   promises about what never shipped — each with the fact that shows it is unused, and the requirement it served (the
   judge confirms none that a requirement needs is lost).

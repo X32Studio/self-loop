@@ -58,8 +58,8 @@ function taskText(p) {
 
 function fixture(t) {
   const w = round6B(t);
-  const codex = { runner: "t3", provider: "codex", model: "gpt-6.2-sol", effort: "xhigh" };
-  const claude = { runner: "t3", provider: "claude", model: "claude-opus-5-5", effort: "xhigh" };
+  const codex = { runner: "t3", provider: "codex", model: "gpt-5.4", effort: "xhigh" };
+  const claude = { runner: "t3", provider: "claude", model: "claude-opus-4-6", effort: "xhigh" };
   const p = phase(w, "dispatch", { agents: { actor: claude, critic: codex, judge: codex }, files: {
     "scripts/lib/plan.mjs": "export const contract = 1;\n",
     "scripts/plan.mjs": "export const cli = 1;\n",

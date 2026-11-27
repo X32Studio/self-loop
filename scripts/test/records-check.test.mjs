@@ -1,17 +1,16 @@
-// Admission of the records check's hard failures, and behaviour of its screening and index. Inputs are frozen fixtures;
-// no test reads a live records directory (the v0.1 tests that did broke when a new file appeared there).
+// D-0016, D-0064, D-0067
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { parseHandoffs, ROLES, validateHandoff, validateLeadPatchHandoff } from "../lib/handoff.mjs";
 import { check, classify, DEFAULT_LAYOUT, inspect, openWords, parseLayout } from "../records-check.mjs";
 import { fixtures, git, here, repo, scripts } from "./helpers.mjs";
 
 const layoutText = readFileSync(DEFAULT_LAYOUT, "utf8");
 const layout = parseLayout(layoutText);
-// lessons/L-0001.md of example-loop at b2ca438, frozen.
 const L0001 = readFileSync(join(fixtures, "l-0001.md"), "utf8");
 
 test("the layout is parsed from RECORDS.md, the one source", () => {
@@ -29,8 +28,7 @@ test("the layout is parsed from RECORDS.md, the one source", () => {
   assert.equal(classify(layout, "notes.md"), null);
 });
 
-// Gate 1: a file outside every declared kind and path.
-test("undeclared files, red and green on the real example-loop file list (b2ca438)", () => {
+test("undeclared files, red and green on the real example-app-loop file list (b2ca438)", () => {
   const [legit, baseline] = readFileSync(join(fixtures, "example-loop-files.txt"), "utf8").split("# baseline sample\n").map(s => s.split("\n").filter(Boolean));
   assert.ok(legit.length > 250 && baseline.length > 150);
   const falseKills = legit.filter(p => !classify(layout, p));
@@ -39,10 +37,6 @@ test("undeclared files, red and green on the real example-loop file list (b2ca43
   assert.equal(caught.length, baseline.length, "every path of the unmanaged rescue copy is undeclared");
 });
 
-// Screening (was a hard gate in v0.1): a record ID cited that no record carries. The real defect: lesson L-0001 cites
-// "lead ruling T", which lived only in the scratch copy of lead-rulings.md. A citation in prose cannot be told apart
-// from a template's example ID (the bundled shared brief's `D-0007` failed round one in the v0.1 review), so it is
-// reported, never blocking.
 test("dangling ID: reported for the lesson that cites a ruling the repository lacks; gone once the decision exists", () => {
   const lesson = L0001.replace("lead ruling T", "decision D-0020");
   assert.notEqual(lesson, L0001);
@@ -56,9 +50,6 @@ test("dangling ID: reported for the lesson that cites a ruling the repository la
   assert.deepEqual(inspect(green, { layoutText }).screening.filter(f => f.rule === "dangling-id"), []);
 });
 
-// Screening (was a hard gate in v0.1): material for a role that may not read sealed records names a sealed path. The
-// v0.1 gate refused a judge-only engine brief naming its own file; isolation is by construction (role views), so this
-// is reported for the lead.
 test("sealed path: reported for actor and reviewer material, never for the judge's own brief or round", () => {
   const sealedRepo = repo({ "case-07.mjs": "export default {}\n" });
   const files = {
@@ -147,7 +138,6 @@ test("undeclared files: hard in the checked set only; elsewhere screening", () =
   assert.deepEqual(handoff.screening.filter(f => f.rule === "undeclared").map(f => f.path), ["notes.txt"]);
 });
 
-// Gate 4: the generated index. Real red: example-loop has no INDEX.md yet.
 test("index: missing or drifted fails with the fix command; --write makes it pass; the check is read-only", () => {
   const dir = repo({ "README.md": "# r\n", "decisions/D-0001.md": "# D-0001 First\n\nby: owner\n", "decisions/D-0002.md": "# D-0002 Second\n\nby: lead\nsupersedes: D-0001\n" });
   const before = check(dir, { layoutText });
@@ -212,11 +202,10 @@ test("CLI: exit 1 with the finding on a certain failure, exit 0 with screening o
   assert.equal(run("--json").status, 0);
 });
 
-test("no test reads the live example-loop directory; its inputs are frozen fixtures", () => {
-  // red on a8d6043: 38 pass / 2 fail after a new file appeared in example-loop (the v0.1 reviewer's own run)
+test("no test reads the live example-app-loop directory; its inputs are frozen fixtures", () => {
   assert.match(readFileSync(join(fixtures, "v0.1-post-report-test.log"), "utf8"), /ℹ fail 2/);
   for (const f of readdirSync(here).filter(f => f.endsWith(".mjs")))
-    assert.ok(f === "records-check.test.mjs" || !/example-loop["/]|EXAMPLE_LOOP/.test(readFileSync(join(here, f), "utf8")), f);
+    assert.ok(f === "records-check.test.mjs" || !/example-app-loop["/]|EXAMPLE_APP_LOOP/.test(readFileSync(join(here, f), "utf8")), f);
 });
 
 test("the check screens old designs until an actor hand-off writes them in the current phase", () => {
@@ -332,5 +321,99 @@ test("AC-28: AWS secret screening flags ASIA/AKIA keys and AWS secret access key
     const state = inspect(dir, { layoutText });
     const secrets = state.screening.filter(f => f.rule === "secret");
     assert.deepEqual(secrets, [], `${label}: unexpected secret hit: ${JSON.stringify(secrets)}`);
+  }
+});
+
+test("D-0064 T5 & D-0067: handoff.mjs and records-check.mjs admit valid role: lead-patch entries and reject malformed ones", () => {
+  assert.deepEqual(ROLES, ["reviewer", "critic", "actor", "judge"]);
+  const shaA = "a".repeat(40), shaB = "b".repeat(40), shaC = "c".repeat(40);
+  const lp1 = {
+    id: "LP-0001", time: "2026-11-27T00:00:00Z", phase: "v1", role: "lead-patch",
+    product: { base: shaA, commit: shaB }, files: ["scripts/fix.mjs"],
+    lines: { added: 2, deleted: 1, total: 3 }, reason: "fix typo",
+    verify: { command: "node --test scripts/test/fix.test.mjs", exit: 0 }, audit: { violations: 0 },
+  };
+  const lp2 = {
+    id: "LP-0002", time: "2026-11-27T00:05:00Z", phase: "v1", role: "lead-patch", record: null,
+    product: { base: shaB, commit: shaC }, files: ["scripts/a.mjs", "scripts/b.mjs"],
+    reason: "sync second patch", verify: { command: "node --test", exit: 0 }, audit: { violations: 0 },
+  };
+  const actor = {
+    id: "R-0001-actor", time: "2026-11-27T00:10:00Z", phase: "v1", round: 1, step: "actor", role: "actor",
+    attempt: 1, view: shaA, agent: { runner: "t3" }, product: { base: shaC, commit: shaC },
+    audit: { violations: 0 }, record: "rounds/0001-actor.md", files: ["rounds/0001-actor.md"],
+  };
+
+  assert.equal(validateLeadPatchHandoff(lp1), lp1);
+  assert.equal(validateHandoff(lp1), lp1);
+  assert.equal(validateHandoff(lp2), lp2);
+  const parsed = parseHandoffs([lp1, lp2, actor].map(row => JSON.stringify(row)).join("\n") + "\n");
+  assert.equal(parsed.length, 3);
+
+  const validRepo = repo({
+    "README.md": "# r\n",
+    "loop.json": '{"phase":"v1"}\n',
+    "rounds/0001-actor.md": "# R-0001-actor\n",
+    "metrics/handoffs.jsonl": [lp1, lp2, actor].map(row => JSON.stringify(row)).join("\n") + "\n",
+  });
+  check(validRepo, { layoutText, write: true });
+  const okState = inspect(validRepo, { layoutText });
+  assert.deepEqual(okState.failures, []);
+
+  const dupRepo = repo({
+    "README.md": "# r\n",
+    "metrics/handoffs.jsonl": [lp1, { ...lp2, id: "LP-0001" }].map(row => JSON.stringify(row)).join("\n") + "\n",
+  });
+  const dupState = inspect(dupRepo, { layoutText });
+  assert.equal(dupState.failures.some(f => f.rule === "handoff" && /two hand-offs for LP-0001/.test(f.detail)), true);
+
+  const malformedCases = [
+    ["bad-id", { ...lp1, id: "R-0001-actor" }],
+    ["round-record", { ...lp1, record: "rounds/0001-lead-patch.md" }],
+    ["equal-shas", { ...lp1, product: { base: shaA, commit: shaA } }],
+    ["too-many-files", { ...lp1, files: ["a.mjs", "b.mjs", "c.mjs", "d.mjs"] }],
+    ["empty-files", { ...lp1, files: [] }],
+    ["traversal-file", { ...lp1, files: ["../escape.mjs"] }],
+    ["blank-reason", { ...lp1, reason: "   " }],
+    ["failed-verify", { ...lp1, verify: { command: "node --test", exit: 1 } }],
+    ["missing-verify-cmd", { ...lp1, verify: { command: "", exit: 0 } }],
+    ["nonzero-audit", { ...lp1, audit: { violations: 1 } }],
+    ["over-line-cap", { ...lp1, lines: { added: 21, deleted: 0, total: 21 } }],
+    ["mismatched-lines", { ...lp1, lines: { added: 2, deleted: 1, total: 4 } }],
+    ["bad-time", { ...lp1, time: "not-a-date" }],
+  ];
+  for (const [label, bad] of malformedCases) {
+    assert.throws(() => validateHandoff(bad), Error, `${label}: validateHandoff must throw`);
+    const badRepo = repo({
+      "README.md": "# r\n",
+      "metrics/handoffs.jsonl": `${JSON.stringify(bad)}\n`,
+    });
+    const badState = inspect(badRepo, { layoutText });
+    assert.equal(badState.failures.some(f => f.rule === "handoff"), true, `${label}: records-check must fail closed`);
+  }
+});
+
+test("D-0064 T10: records-check validates ciReceipt offline on PASS trajectory rows identically to CONVERGED rows", () => {
+  const sha = "a".repeat(40);
+  const ciPath = "evidence/0002/ci.json";
+  const goodReceipt = { repository: "example/p", sha, ci: "success", ok: true, missing: [], conclusions: { "github-actions/verify": "success" } };
+  const row = { round: 2, phase: "v1", role: "critic", area: "core", verdict: "PASS", commit: sha, suite: "3/0", ci: "success", ciReceipt: ciPath };
+
+  const valid = repo({
+    "README.md": "# r\n",
+    [ciPath]: JSON.stringify(goodReceipt),
+    "metrics/trajectory.jsonl": `${JSON.stringify(row)}\n`,
+  });
+  check(valid, { layoutText, write: true });
+  assert.deepEqual(inspect(valid, { layoutText }).failures, []);
+
+  for (const tampered of [
+    { ...goodReceipt, sha: "0".repeat(40) },
+    { ...goodReceipt, ok: false },
+    { ...goodReceipt, ci: "failure" },
+  ]) {
+    writeFileSync(join(valid, ciPath), JSON.stringify(tampered));
+    const state = inspect(valid, { layoutText });
+    assert.equal(state.failures.some(f => f.rule === "trajectory" && f.path === "metrics/trajectory.jsonl"), true);
   }
 });

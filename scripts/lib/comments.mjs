@@ -14,6 +14,8 @@ const EXTENSIONS = {
   js: "js", jsx: "js", tsx: "js", mjs: "js", cjs: "js", ts: "js", mts: "js", cts: "js", swift: "swift",
   sh: "shell", bash: "shell", zsh: "shell", ksh: "shell", yml: "yaml", yaml: "yaml", py: "python", pyi: "python",
   sql: "sql", css: "css", html: "html", htm: "html",
+  go: "go", rs: "rust", c: "c", h: "c", cc: "cpp", cpp: "cpp", cxx: "cpp", hpp: "cpp",
+  java: "java", kt: "kotlin", kts: "kotlin", toml: "toml",
 };
 const INTERPRETERS = [[/^(?:node|nodejs|deno|bun)$/, "js"], [/^(?:sh|bash|zsh|dash|ksh)$/, "shell"], [/^python[\d.]*$/, "python"]];
 
@@ -51,7 +53,21 @@ function normalize(piece, open, close, first, last) {
   return text;
 }
 
-const TYPESCRIPT = /\.[mc]?ts$/;
+const TYPESCRIPT = /\.[mc]?ts$/i;
+const UNIVERSAL_DIRECTIVES = new Set(["interpreter", "vim-modeline", "emacs-file-variables", "spdx", "noinspection", "cspell"]);
+const CLANG_FORMAT_LANGUAGES = new Set(["c", "cpp", "java"]);
+const UNIVERSAL_PROXY = { go: "js", rust: "js", c: "js", cpp: "js", java: "js", kotlin: "js", toml: "shell" };
+
+function resolveDirective(span, raw, ctx) {
+  const direct = directiveOf(span, raw, ctx);
+  if (direct) return direct;
+  const proxy = UNIVERSAL_PROXY[ctx.language];
+  if (!proxy) return null;
+  const candidate = directiveOf(span, raw, { ...ctx, language: proxy });
+  if (!candidate) return null;
+  return UNIVERSAL_DIRECTIVES.has(candidate.id) || (candidate.id === "clang-format" && CLANG_FORMAT_LANGUAGES.has(ctx.language))
+    ? candidate : null;
+}
 
 export function commentLines(text, language, { path = "", spans: establishedSpans } = {}) {
   const lexer = LEXERS[language];
@@ -76,7 +92,7 @@ export function commentLines(text, language, { path = "", spans: establishedSpan
     previous = Math.max(previous, span.end);
     const firstIndex = lineOf(span.start), lastIndex = lineOf(span.end - 1);
     const raw = text.slice(span.start, span.end).replace(/\r(?=\n)|\r$/g, "");
-    const directive = directiveOf(span, raw, { path, language: span.language ?? language, line: firstIndex + 1, lines: starts.length,
+    const directive = resolveDirective(span, raw, { path, language: span.language ?? language, line: firstIndex + 1, lines: starts.length,
       column: span.start - starts[firstIndex], own: !text.slice(starts[firstIndex], span.start).trim(), head: span.head ?? !code, firstLine });
     for (let n = firstIndex; n <= lastIndex; n++) {
       const lineStart = starts[n], lineStop = n + 1 < starts.length ? starts[n + 1] - 1 : text.length;

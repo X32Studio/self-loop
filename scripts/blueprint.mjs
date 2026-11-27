@@ -1,11 +1,16 @@
 #!/usr/bin/env node
+// F-0001, D-0015, D-0016, D-0064, D-0067
 import "./lib/unbind-git.mjs";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
-import { addEvent, FEATURE_EVENTS, FEATURE_ID, inspectBlueprint, renderBlueprint, STATUSES } from "./lib/blueprint.mjs";
+import { addEvent, FEATURE_EVENTS, FEATURE_ID, inspectBlueprint, parseRoundRef, renderBlueprint, STATUSES } from "./lib/blueprint.mjs";
 import { ownerAlarms, phaseMoveAlarms } from "./lib/blueprint-alarms.mjs";
+import { criticConvergedAccepted } from "./lib/ci.mjs";
 import { notGreen, readCi, recordsLoop } from "./lib/ci-receipt.mjs";
+import { gitOk } from "./lib/git-plumbing.mjs";
+import { HANDOFFS, parseHandoffs } from "./lib/handoff.mjs";
+import { evaluateCertifiedWaveCoverage } from "./lib/provenance.mjs";
 import { listFiles } from "./records-check.mjs";
 import { readRows, TRAJECTORY } from "./trajectory.mjs";
 
@@ -21,25 +26,55 @@ function load(repo) {
   return inspectBlueprint(repo, { files: recordsFiles(repo), read: readIn(repo) });
 }
 
-/**
- * The commit and CI a `done` citing a judge round takes from that round's last judge row in the trajectory: CONVERGED,
- * with the receipt of the reading the append made (`ciReceipt`, for its pushed SHA: the tip when it names one). Nothing
- * is supplied by the caller and nothing is read here; the append made the reading when it wrote the row.
- */
+// D-0015, D-0064, D-0067
 function roundEvidence(repo, round) {
   let rows;
   try { rows = readRows(join(repo, TRAJECTORY)); } catch (e) { return { problem: e.message }; }
-  const row = rows.findLast(r => r.role === "judge" && `R-${String(r.round).padStart(4, "0")}-judge` === round);
-  if (row?.verdict !== "CONVERGED") return { problem: `done --round ${round} needs that round's CONVERGED row in ${TRAJECTORY}; ${row ? `its last judge row says ${row.verdict}` : "it has none"}` };
-  if (!row.ciReceipt) return { problem: `${round}'s CONVERGED row names no ciReceipt (it predates the append's own CI reading), so it carries no CI receipt for a done` };
+  const ref = parseRoundRef(round);
+  if (!ref) return { problem: `done --round ${round} must name an existing judge or critic round` };
+  if (ref.role === "judge") {
+    const row = rows.findLast(r => r.role === "judge" && r.round === ref.round);
+    if (row?.verdict !== "CONVERGED") return { problem: `done --round ${round} needs that round's CONVERGED row in ${TRAJECTORY}; ${row ? `its last judge row says ${row.verdict}` : "it has none"}` };
+    if (!row.ciReceipt) return { problem: `${round}'s CONVERGED row names no ciReceipt (it predates the append's own CI reading), so it carries no CI receipt for a done` };
+    return { evidence: { commit: row.commit, ...(row.tip ? { tip: row.tip } : {}), ci: row.ciReceipt } };
+  }
+  const handoffPath = join(repo, HANDOFFS);
+  if (!existsSync(handoffPath)) return { problem: `done --round ${round} requires a committed critic hand-off in ${HANDOFFS}` };
+  let handoffs;
+  try { handoffs = parseHandoffs(readFileSync(handoffPath, "utf8")); } catch (e) { return { problem: e.message }; }
+  const handoff = handoffs.findLast(h => h.id === round && h.role === "critic");
+  if (!handoff) return { problem: `done --round ${round} has no critic hand-off in ${HANDOFFS}` };
+  const has = p => existsSync(join(repo, p));
+  const read = p => (has(p) ? readFileSync(join(repo, p), "utf8") : "");
+  if (!criticConvergedAccepted(handoff, { has, read }))
+    return { problem: `done --round ${round} requires a no-dispute critic PASS/CONVERGED hand-off with ACCEPTANCE: pass and audit.violations === 0` };
+  const certSha = handoff.product?.commit || handoff.product?.base || null;
+  const row = rows.findLast(r => r.role === "critic" && r.round === ref.round && (!certSha || r.commit === certSha || r.tip === certSha))
+    ?? rows.findLast(r => r.role === "critic" && r.round === ref.round);
+  if (!row || (row.verdict !== "PASS" && row.verdict !== "CONVERGED"))
+    return { problem: `done --round ${round} needs that round's PASS/CONVERGED row in ${TRAJECTORY}; ${row ? `its last critic row says ${row.verdict}` : "it has none"}` };
+  if (!row.ciReceipt) return { problem: `${round}'s ${row.verdict} row names no ciReceipt, so it carries no CI receipt for a done` };
+  let rawLoop = null, loop = null;
+  try { if (has("loop.json")) rawLoop = JSON.parse(read("loop.json")); } catch {}
+  try { loop = recordsLoop(repo); } catch {}
+  if (loop?.product) {
+    if (handoff.product?.base && handoff.product?.commit && handoff.product.base !== handoff.product.commit
+      && !gitOk(loop.product, "--no-replace-objects", "merge-base", "--is-ancestor", handoff.product.base, handoff.product.commit))
+      return { problem: `done --round ${round} critic base is not an ancestor of its commit` };
+    const files = new Set(recordsFiles(repo));
+    const cov = evaluateCertifiedWaveCoverage({
+      repo: loop.product, records: repo, files, read, cfg: rawLoop, phase: handoff.phase,
+      targetCommit: row.commit, targetRuling: row, judge: handoff,
+      allHandoffs: handoffs, allRows: rows, requireActor: false,
+    });
+    if (!cov.ok) return { problem: `done --round ${round} failed critic/actor independence (${cov.problem})` };
+    if (cov.actors.some(a => !handoff.product?.base || !gitOk(loop.product, "--no-replace-objects", "merge-base", "--is-ancestor", a.product.commit, handoff.product.base)))
+      return { problem: `done --round ${round} critic base does not cover all wave actor commits` };
+  }
   return { evidence: { commit: row.commit, ...(row.tip ? { tip: row.tip } : {}), ci: row.ciReceipt } };
 }
 
-/**
- * A baseline `done` (`--acceptance`, no round) cites a receipt in these records and is confirmed by one reading of the
- * cited commit now, where a push to the gates.remote of these records' loop.json goes, over its gates.require.
- * Without a loop.json there is no destination, so no done.
- */
+// D-0015
 function baselineProblem(repo, evidence) {
   let loop;
   try { loop = recordsLoop(repo); } catch (e) { return e.message; }

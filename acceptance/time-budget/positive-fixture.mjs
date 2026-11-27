@@ -1,7 +1,7 @@
 // D-0060
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { gzipSync } from 'node:zlib';
 import { join, dirname, basename } from 'node:path';
@@ -13,7 +13,7 @@ export const at = x => `2026-11-22T${x}:00Z`;
 export const canonical = x => x === null || typeof x !== 'object' ? JSON.stringify(x) : Array.isArray(x) ? `[${x.map(canonical).join(',')}]` : `{${Object.keys(x).sort().map(k => `${JSON.stringify(k)}:${canonical(x[k])}`).join(',')}}`;
 export const specIds = ['positive-on-time','positive-late','optional-deferral','timely-forecast-publication','late-publication-earlier-delivery','wrong-candidate','wrong-repository','wrong-host','missing-check','red-gate','wrong-suite-tree','incomplete-criterion','wrong-criterion-bytes','unavailable-artifact','wrong-recipient','required-deferral','self-optional-list','backdated-publication','untrusted-time','wrong-event-subject','gate-finished-after-event','unassigned-issuer','archive-mismatch','missing-history','foreign-promise','late-historical-handoff-proof','conflicting-assessments','current-regression'];
 export function positiveFixture(t, id = 'positive-on-time', { external = false, crossRepo = false } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'self-loop-positive-'));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'self-loop-positive-')));
   t.after(() => rmSync(dir, {recursive:true, force:true}));
   const records = join(dir, 'records'), product = join(dir, 'product'), archiveRepo = crossRepo ? join(dir, 'archive') : records;
   const env = {...process.env, HOME:dir, GIT_CONFIG_NOSYSTEM:'1', GIT_CONFIG_GLOBAL:'/dev/null', GIT_TERMINAL_PROMPT:'0', GIT_NO_REPLACE_OBJECTS:'1', GIT_AUTHOR_NAME:'Synthetic archival root', GIT_COMMITTER_NAME:'Synthetic archival root', GIT_AUTHOR_EMAIL:'fixture@example.invalid', GIT_COMMITTER_EMAIL:'fixture@example.invalid'};

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// F-0008, D-0015, D-0016, D-0058, D-0060, D-0061, design/mandatory-control-plane.md#5, design/suite-once.md#2
+// F-0008, D-0015, D-0016, D-0058, D-0060, D-0061, D-0066, D-0068, design/mandatory-control-plane.md#5, design/suite-once.md#2
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,11 +18,12 @@ import { addedProse, commentResolutions } from "./lib/comments.mjs";
 import { undiagnosedAlarms } from "./lib/diagnosis.mjs";
 import { validateDispatchCall } from "./lib/dispatch.mjs";
 import { blobs, git, gitOk, regularFiles, writeFiles } from "./lib/git-plumbing.mjs";
-import { HANDOFFS, hasPhaseFrame, idOf, parseHandoffs, recordOf, ROLES, validateHandoff } from "./lib/handoff.mjs";
+import { HANDOFFS, hasPhaseFrame, idOf, recordOf, ROLES, validateHandoff } from "./lib/handoff.mjs";
 import { isSubstantiveOwnerWord } from "./lib/owner-words.mjs";
+import { ADAPTERS, isAdapter, isPreparedRunner, resolveAdapter } from "./lib/paseo.mjs";
 import { snapshot as planSnapshot } from "./lib/plan.mjs";
 import { globMatch } from "./lib/plan-globs.mjs";
-import { verifyProvenance } from "./lib/provenance.mjs";
+import { parseProvenanceHandoffs as parseHandoffs, verifyProvenance } from "./lib/provenance.mjs";
 import { appendJsonLines, commitRecords, RecordsConflict } from "./lib/records-commit.mjs";
 import { DISPLAY_SHA_LEN, renderSsotStatusMarkdown } from "./lib/ssot.mjs";
 import {
@@ -36,6 +37,7 @@ import {
   transcriptEvents,
 } from "./lib/t3-child.mjs";
 import { parseWindows, windowAlarmKey, WINDOWS, windowState } from "./lib/window.mjs";
+import { validateJudgeIndependence, validateModelVendors } from "./lib/vendor.mjs";
 import { classify, DEFAULT_LAYOUT, inspect, isPublicKind, openWords, parseLayout, renderIndex } from "./records-check.mjs";
 import { purgeTreeReceipts, stageSuiteWorkspace } from "./suite-green.mjs";
 import { parseRows, TRAJECTORY } from "./trajectory.mjs";
@@ -64,6 +66,10 @@ export function load(configPath) {
 
 export function normalize(cfg, base = process.cwd()) {
   for (const key of ["product", "records", "workDir", "phase", "briefs", "agents"]) if (!cfg[key]) throw new Stop(EXIT.usage, `config needs "${key}"`);
+  const pol = validateJudgeIndependence(cfg.judgeIndependence);
+  if (!pol.ok) throw new Stop(EXIT.usage, pol.error);
+  const mv = validateModelVendors(cfg.modelVendors);
+  if (!mv.ok) throw new Stop(EXIT.usage, mv.error);
   const out = { ...cfg, product: resolve(base, cfg.product), records: resolve(base, cfg.records), workDir: resolve(base, cfg.workDir) };
   out.sealed = (cfg.sealed ?? []).map(p => resolve(base, p));
   out.owns = cfg.owns ?? {};
@@ -117,15 +123,20 @@ export function argv(agent, { confined, cwd, addDirs }) {
   if (agent.runner === "codex") return ["codex", ["exec", "--json", "--skip-git-repo-check", "-C", cwd,
     "-c", `sandbox_mode="${agent.sandbox ?? "workspace-write"}"`, ...addDirs.flatMap(d => ["--add-dir", d]),
     ...(agent.model ? ["-m", agent.model] : []), ...(agent.effort ? ["-c", `model_reasoning_effort="${agent.effort}"`] : []), "-"]];
-  if (agent.runner === "t3") {
-    if (!["codex", "claude", "antigravity"].includes(agent.provider)) throw new Stop(EXIT.usage, "a t3 agent needs provider codex, claude or antigravity");
+  if (isPreparedRunner(agent.runner)) {
+    if (typeof agent.provider !== "string" || !agent.provider.trim()) {
+      throw new Stop(EXIT.usage, "a t3/paseo agent needs a non-empty provider string");
+    }
+    if (agent.adapter !== undefined && agent.adapter !== null && !isAdapter(agent.adapter)) {
+      throw new Stop(EXIT.usage, `unknown adapter ${JSON.stringify(agent.adapter)} (expected ${ADAPTERS.join(", ")})`);
+    }
     return null;
   }
   if (agent.runner === "cmd") {
     if (process.env.SELF_LOOP_TEST !== "1") throw new Stop(EXIT.usage, "the cmd runner is a test stand-in and is refused unless SELF_LOOP_TEST=1; use claude or codex");
     return [agent.cmd[0], agent.cmd.slice(1)];
   }
-  throw new Stop(EXIT.usage, `unknown runner ${agent.runner} (claude, codex, t3 or cmd)`);
+  throw new Stop(EXIT.usage, `unknown runner ${agent.runner} (claude, codex, t3, paseo or cmd)`);
 }
 
 function prompt({ role, step = role, round, phase, ws, view, base, owns, sealed, wt = null, ssotHint = null, suiteHint = null }) {
@@ -180,7 +191,17 @@ function indexHandOff(records, own, { tree, add, read }, { layoutText, extraKind
 
 function walk(dir, prefix = "") {
   if (!existsSync(dir)) return [];
-  return readdirSync(dir).flatMap(n => (statSync(join(dir, n)).isDirectory() ? walk(join(dir, n), `${prefix}${n}/`) : [`${prefix}${n}`]));
+  return readdirSync(dir).flatMap(n => {
+    if (n === ".git") return [];
+    const full = join(dir, n);
+    const st = lstatSync(full, { throwIfNoEntry: false });
+    if (!st) return [];
+    if (st.isDirectory()) {
+      if (prefix === "" && n === "tmp") return [];
+      return walk(full, `${prefix}${n}/`);
+    }
+    return st.isFile() ? [`${prefix}${n}`] : [];
+  });
 }
 
 function designOutputs(ws, role, layout) {
@@ -214,11 +235,11 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
   const agent = cfg.agents[role];
   if (!agent) throw new Stop(EXIT.usage, `config needs agents.${role}`);
   if (role === "reviewer" && agent.runner === "codex") throw new Stop(EXIT.usage, "the frame reviewer cannot run on codex: its sandbox does not confine reads (DEBT.md)");
-  if (role === "reviewer" && agent.runner === "t3" && agent.provider === "codex")
-    throw new Stop(EXIT.usage, "the frame reviewer cannot run on t3:codex: Codex transcripts use shell command_execution rather than structured file-only tools and cannot be strictly file-confined");
-  if ((agent.runner === "t3") !== Boolean(prepare) && !dry) throw new Stop(EXIT.usage, agent.runner === "t3"
-    ? `agents.${role} runs as a T3 child thread: prepare it with --prepare, start the child with the printed prompt, then \`record --ws\``
-    : "--prepare is only for a role whose runner is t3");
+  if (role === "reviewer" && isPreparedRunner(agent.runner) && resolveAdapter(agent) === "codex")
+    throw new Stop(EXIT.usage, `the frame reviewer cannot run on ${agent.runner}:codex: Codex transcripts use shell command_execution rather than structured file-only tools and cannot be strictly file-confined`);
+  if (isPreparedRunner(agent.runner) !== Boolean(prepare) && !dry) throw new Stop(EXIT.usage, isPreparedRunner(agent.runner)
+    ? `agents.${role} runs as a ${agent.runner === "paseo" ? "Paseo child agent" : "T3 child thread"}: prepare it with --prepare, start the child with the printed prompt, then \`record --ws\``
+    : "--prepare is only for a role whose runner is t3 or paseo");
   argv(agent, { confined: true, cwd: ".", addDirs: [] });
   const id = idOf(round, step);
   const record = recordOf(round, step);
@@ -328,16 +349,17 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
       }
     }
     let ssotHint = null;
-    if ((role === "actor" || role === "judge") && Object.hasOwn(cfg, "ssot")) {
+    if ((role === "actor" || role === "critic" || role === "judge") && Object.hasOwn(cfg, "ssot")) {
       const status = renderSsotStatusMarkdown(cfg, { configFile: cfg.configFile, sha: base });
       if (status) {
         const statusFile = join(ws, "ssot-status.md");
         writeFileSync(statusFile, status.markdown);
         chmodSync(statusFile, 0o444);
-        ssotHint = `SSOT status at ${base.slice(0, DISPLAY_SHA_LEN)}: read ssot-status.md before ${role === "actor" ? "editing" : "ruling"} (${status.summary}).`;
+        const verb = role === "actor" ? "editing" : role === "critic" ? "reviewing" : "ruling";
+        ssotHint = `SSOT status at ${base.slice(0, DISPLAY_SHA_LEN)}: read ssot-status.md before ${verb} (${status.summary}).`;
       }
     }
-    const text = prompt({ role, step, round, phase: cfg.phase, ws, view, base, owns, sealed: cfg.sealed, wt: agent.runner === "t3" || isArchReviewer ? wt : null, ssotHint, suiteHint });
+    const text = prompt({ role, step, round, phase: cfg.phase, ws, view, base, owns, sealed: cfg.sealed, wt: isPreparedRunner(agent.runner) || isArchReviewer ? wt : null, ssotHint, suiteHint });
     writeFileSync(join(ws, "prompt.md"), text);
     if (dry) return { code: EXIT.done, message: `dry run: ${ws} (view ${view.slice(0, DISPLAY_SHA_LEN)}, ${holds.length} records); nothing called or recorded`, ws };
 
@@ -346,7 +368,7 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
       ...(suiteReceipt ? { suiteReceipt } : {}) };
     if (prepare) {
       const nonce = createHash("sha256").update(`${ws}\n${now().toISOString()}\n${Math.random()}`).digest("hex").slice(0, 16);
-      const childPrompt = t3Prompt({ id, nonce, wt, ws, text });
+      const childPrompt = t3Prompt({ id, nonce, wt, ws, text, runner: agent.runner });
       const manifest = `${JSON.stringify({ version: 2, ...ctx, nonce, preparedAt: now().getTime() }, null, 1)}\n`;
       const snapshot = preparationFile(cfg, ws);
       mkdirSync(dirname(snapshot), { recursive: true, mode: 0o700 });
@@ -355,8 +377,9 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
       writeFileSync(join(ws, "t3-prompt.md"), childPrompt);
       writeFileSync(join(ws, "call.json"), manifest);
       keep = true;
-      return { code: EXIT.done, message: `${id} prepared for a T3 child in ${ws}; start it with t3-prompt.md, then: call.mjs <config> record --ws ${ws}`,
-        prepared: { id, ws, wt, nonce, prompt: childPrompt, target: { provider: agent.provider, model: agent.model ?? null, effort: agent.effort ?? null }, ...(suiteReceipt ? { suiteReceipt } : {}) } };
+      const childLabel = agent.runner === "paseo" ? "Paseo child" : "T3 child";
+      return { code: EXIT.done, message: `${id} prepared for a ${childLabel} in ${ws}; start it with t3-prompt.md, then: call.mjs <config> record --ws ${ws}`,
+        prepared: { id, ws, wt, nonce, prompt: childPrompt, target: { provider: agent.provider, model: agent.model ?? null, effort: agent.effort ?? null, ...(agent.adapter ? { adapter: agent.adapter } : {}) }, ...(suiteReceipt ? { suiteReceipt } : {}) } };
     }
     const confined = role === "reviewer";
     const cwd = confined ? ws : wt;
@@ -371,9 +394,14 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
         env: { ...process.env, SELF_LOOP_WORKSPACE: ws } });
     } finally { release(); }
     const events = eventsOf(role, r.stdout ?? "");
+    const cliModels = [...new Set(events.map(({ event: e }) =>
+      e?.type === "system" && e.subtype === "init" ? e.model
+        : e?.type === "assistant" ? e.message?.model : e?.type === "turn_context" ? e.payload?.model : null)
+      .filter(m => typeof m === "string" && m.trim()).map(m => m.trim()))];
     const run = { status: r.status, error: r.error ?? null, log: `${r.stdout ?? ""}\n${r.stderr ?? ""}`, events, cwd,
       facts: { runner: agent.runner, model: agent.model ?? null, effort: agent.effort ?? null,
-        observedModel: events.find(e => e.event.type === "system" && e.event.subtype === "init")?.event.model ?? null,
+        ...(agent.vendor ? { vendor: agent.vendor } : {}),
+        observedModel: cliModels[0] ?? null, ...(cliModels.length ? { observedModels: cliModels } : {}),
         costUsd: events.find(e => e.event.type === "result")?.event.total_cost_usd ?? null, seconds: Math.round((Date.now() - started) / 100) / 10 } };
     keep = true;
     return finish(cfg, ctx, run, { log, now });
@@ -390,7 +418,7 @@ function refuseUndiagnosed(cfg, view, round) {
   const letters = "bcdefghijklmnopqrstuvwxyz";
   let step = "reviewer-diagnosis";
   for (let i = 0; gitOk(cfg.records, "cat-file", "-e", `HEAD:${recordOf(round, step)}`) && i < letters.length; i++) step = `reviewer-diagnosis-${letters[i]}`;
-  const prepareFlag = cfg.agents.reviewer?.runner === "t3" ? ["--prepare"] : [];
+  const prepareFlag = isPreparedRunner(cfg.agents.reviewer?.runner) ? ["--prepare"] : [];
   throw new Stop(EXIT.records, [
     `phase ${cfg.phase} has ${open.length} alarm(s) that no reviewer-diagnosis hand-off recorded after them names (records ${view.slice(0, DISPLAY_SHA_LEN)}; no model was called):`,
     ...open.map(a => `  ${a.key}  (row of round ${a.round}: ${a.message})`),
@@ -473,7 +501,7 @@ function refuseOuterLoopOverdue(cfg, view, viewPaths, base, round, win, packageF
   const reasons = [];
   if (outer.t1Due) reasons.push(`T1 delivery cadence (${outer.deliveriesSince}/${outer.deliveries} committed deliveries, grace +${outer.outerGrace} exceeded)`);
   if (outer.t3Due) reasons.push(`T3 arch-facts breach (${outer.archBreaches.map(b => `${b.kind} ${b.path}: ${b.detail}`).join("; ")})`);
-  const prepareFlag = cfg.agents.reviewer?.runner === "t3" ? ["--prepare"] : [];
+  const prepareFlag = isPreparedRunner(cfg.agents.reviewer?.runner) ? ["--prepare"] : [];
   throw new Stop(EXIT.records, [
     `outer loop is hard-due in phase ${cfg.phase}: ${reasons.join("; ")}; further actor calls are refused until reviewer-architecture commits (no model was called).`,
     `Run read-only architectural review:`,
@@ -485,7 +513,7 @@ function refuseOuterLoopOverdue(cfg, view, viewPaths, base, round, win, packageF
 function refuseUndistilledOwnerWords(cfg, view, round) {
   const pending = openWords(cfg.records, view).filter(w => isSubstantiveOwnerWord(w.text));
   if (!pending.length) return;
-  const prepareFlag = cfg.agents.reviewer?.runner === "t3" ? ["--prepare"] : [];
+  const prepareFlag = isPreparedRunner(cfg.agents.reviewer?.runner) ? ["--prepare"] : [];
   throw new Stop(EXIT.records, [
     `phase ${cfg.phase} has ${pending.length} un-distilled substantive owner word(s) (0-turn grace; no model was called):`,
     ...pending.map(w => `  ${w.id} (${w.time}): ${w.text.replace(/\s+/g, " ").slice(0, 120)}`),
@@ -568,11 +596,13 @@ export function recordCall(cfg, wsDir, { transcript = null, session = null, log 
     }
     const { ctx, expected, binding } = readPreparation(cfg, ws);
     const runner = ctx.agent.provider;
+    const adapter = resolveAdapter(ctx.agent);
+    const runnerPrefix = isPreparedRunner(ctx.agent.runner) ? ctx.agent.runner : "t3";
     const bound = existsSync(binding) ? readFileSync(binding, "utf8") : null;
     if (bound && session && bound !== session) throw new Stop(EXIT.records, "the call is already bound to a different provider session");
     session ??= bound;
-    const match = resolveChildSession(runner, ctx.nonce, ctx.preparedAt, session, transcript);
-    const t = transcriptEvents(ctx.id, match);
+    const match = resolveChildSession(ctx.agent, ctx.nonce, ctx.preparedAt, session, transcript);
+    const t = transcriptEvents(ctx.id, { ...match, adapter, session });
     if (t.nonAuthoritative || t.truncated)
       throw new Stop(EXIT.records, t.refusalReason ?? `the transcript is not authoritative (${match.file})`);
     if (!t.firstPrompt.includes(expected)) throw new Stop(EXIT.records, `the child's first prompt does not hold t3-prompt.md verbatim: start the child with exactly that text (${match.file})`);
@@ -586,10 +616,12 @@ export function recordCall(cfg, wsDir, { transcript = null, session = null, log 
     }
     if (t.status === "pending") throw new Stop(EXIT.failure, `the child's transcript has no terminal event yet; its ${ctx.wt ? "worktree" : "workspace"} is still available`);
     const run = { status: t.status === "failed" ? 1 : 0, error: null, log: t.text, events: t.events, cwd: t.cwd ?? ctx.wt ?? null,
-      facts: { runner: `t3:${runner}`, session: resolvedSession, model: ctx.agent.model ?? null, effort: ctx.agent.effort ?? null,
+      facts: { runner: `${runnerPrefix}:${runner}`, session: resolvedSession, model: ctx.agent.model ?? null, effort: ctx.agent.effort ?? null,
+        ...(ctx.agent.vendor ? { vendor: ctx.agent.vendor } : {}),
+        ...(ctx.agent.adapter ? { adapter: ctx.agent.adapter } : {}),
         observedModel: t.observedModel, ...(t.observedModels ? { observedModels: t.observedModels } : {}),
         costUsd: null, seconds: t.seconds } };
-    log(`${ctx.id}: recording the T3 child's transcript ${match.file}`);
+    log(`${ctx.id}: recording the ${runnerPrefix === "paseo" ? "Paseo" : "T3"} child's transcript ${match.file}`);
     return finish(cfg, ctx, run, { log, now });
   } catch (e) {
     if (e instanceof Stop || Number.isInteger(e?.code)) return { code: e.code, message: e.message };
@@ -612,7 +644,7 @@ function finish(cfg, ctx, run, { log, now }) {
   const archWtMutated = Boolean(isArchReviewer && wt && (git(wt, "rev-parse", "HEAD") !== base || changedPaths(wt).length > 0));
   let failure = audit.violations.length ? [EXIT.violation, `${role} accessed what it may not see: ${audit.violations.slice(0, 3).map(v => `${v.tool} ${v.path}`).join("; ")}`]
     : archWtMutated ? [EXIT.violation, `${step} modified the read-only product worktree`]
-    : confined && agent.runner === "t3" && (audit.unparsedCalls > 0 || (audit.unrecognized > 0 && audit.toolEvents === 0))
+    : confined && isPreparedRunner(agent.runner) && (audit.unparsedCalls > 0 || (audit.unrecognized > 0 && audit.toolEvents === 0))
       ? [EXIT.violation, `${role} confinement could not be verified from structured transcript events (${audit.unparsedCalls} unparsed tool calls, ${audit.unrecognized} unrecognized events, ${audit.toolEvents} tool events)`]
     : run.error ? [EXIT.failure, `${role} could not run: ${run.error.message}`]
     : run.status !== 0 ? [EXIT.failure, `${role} exited ${run.status}`]
@@ -622,17 +654,17 @@ function finish(cfg, ctx, run, { log, now }) {
     .map(path => [path, readFileSync(join(ws, "out", path))]);
   const agentFacts = run.facts;
   const product = { base, commit: base };
-  const retry = agent.runner === "t3";
+  const retry = isPreparedRunner(agent.runner);
   let prose = [];
   if (!failure && commits) {
     const owned = ownedChanges(wt, base, owns);
     if (dispatch) {
+      const inPkg = p => (dispatch.files ?? []).some(pat => globMatch(pat, p));
       const allChanged = [...owned.inside, ...owned.outside];
-      const peerHits = allChanged.filter(p => (dispatch.peerFiles ?? []).some(pat => globMatch(pat, p)));
+      const peerHits = allChanged.filter(p => !inPkg(p) && (dispatch.peerFiles ?? []).some(pat => globMatch(pat, p)));
       if (peerHits.length) {
         failure = [EXIT.records, `cross-package write violation (${dispatch.plan}/${dispatch.package}): modified peer-owned path(s) ${peerHits.join(", ")}`];
       } else {
-        const inPkg = p => (dispatch.files ?? []).some(pat => globMatch(pat, p));
         owned.outside = [...owned.outside, ...owned.inside.filter(p => !inPkg(p))];
         owned.inside = owned.inside.filter(inPkg);
       }
@@ -758,7 +790,10 @@ function finish(cfg, ctx, run, { log, now }) {
 }
 
 function removeWorktree(cfg, wt) {
-  if (wt) spawnSync("git", ["-C", cfg.product, "worktree", "remove", "--force", wt], { stdio: "ignore" });
+  if (!wt) return;
+  try { spawnSync("git", ["-C", cfg.product, "worktree", "remove", "--force", wt], { stdio: "ignore" }); } catch {}
+  try { if (existsSync(wt)) rmSync(wt, { recursive: true, force: true }); } catch {}
+  try { spawnSync("git", ["-C", cfg.product, "worktree", "prune"], { stdio: "ignore" }); } catch {}
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

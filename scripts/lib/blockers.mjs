@@ -1,4 +1,4 @@
-// R-0008-judge-frame (four diagnosis proposals, 3), R-0007-judge (R7-1, R7-2), D-0024, design/round9-b.md#one-ruling-one-transition
+// R-0008-judge-frame, R-0007-judge, D-0024, D-0064, D-0067, design/round9-b.md#one-ruling-one-transition
 export const FIELDS = ["opened", "closed", "shelved", "carried"];
 export const LABELS = { opened: "OPENED", closed: "CLOSED", shelved: "SHELVED", carried: "CARRIED" };
 const FIELD_OF = Object.fromEntries(FIELDS.map(f => [LABELS[f], f]));
@@ -18,7 +18,7 @@ const idOf = key => key.slice(key.indexOf(":") + 1);
 const listOf = value => (Array.isArray(value) ? value : typeof value === "string" && value !== "-" ? value.split(",") : [])
   .map(s => String(s).trim()).filter(Boolean);
 export const dispositions = row => Object.fromEntries(FIELDS.map(f => [f, [...new Set(listOf(row?.[f]))]]));
-export const isRuling = row => row?.role === "judge" && row.verdict !== undefined && row.verdict !== "-";
+export const isRuling = row => (row?.role === "judge" || row?.role === "critic") && row.verdict !== undefined && row.verdict !== "-";
 
 // design/round9-b.md#the-transition
 export function transition(state, row) {
@@ -35,7 +35,7 @@ export function transition(state, row) {
 export function rulingRows(rows, phase) {
   const unique = new Map();
   for (const row of rows.filter(r => isRuling(r) && (phase === undefined || r.phase === phase))) {
-    const identity = JSON.stringify([row.phase, row.round, row.commit, row.area, row.verdict,
+    const identity = JSON.stringify([row.phase, row.round, row.role, row.commit, row.area, row.verdict,
       ...FIELDS.map(f => dispositions(row)[f].sort())]);
     unique.set(identity, row);
   }
@@ -125,7 +125,7 @@ export function named(key, rulings) {
 
 const matches = (commit, sha) => typeof commit === "string" && commit.length >= sha.length && commit.startsWith(sha);
 
-// R-0008-judge-frame, proposal 3
+// R-0008-judge-frame
 export function admit(row, rulings, flags, { where = "the records" } = {}) {
   const mine = rulings.filter(r => !r.phase || r.phase === row.phase);
   const candidates = mine.filter(r => r.structured && (!r.sha || matches(row.commit, r.sha)));
@@ -144,11 +144,12 @@ export function admit(row, rulings, flags, { where = "the records" } = {}) {
   for (const r of bound) for (const [f, items] of Object.entries(r.unreadable)) unreadable.set(f, [...(unreadable.get(f) ?? []), `${r.path}: ${items.map(i => `\`${i}\``).join(", ")}`]);
   const fields = Object.fromEntries(FIELDS.map(f => [f, []]));
   for (const [key, { set }] of derived) for (const f of set) fields[f].push(key);
-  const roundFiles = `rounds/${String(row.round).padStart(4, "0")}-judge*.md`;
+  const roleLabel = row.role === "critic" ? "critic" : "judge";
+  const roundFiles = `rounds/${String(row.round).padStart(4, "0")}-${roleLabel}*.md`;
   for (const f of FIELDS) {
     const given = [...new Set(flags[f] ?? [])];
     if (unreadable.has(f) && !given.length)
-      return { refusal: `the ${LABELS[f]} line of ${unreadable.get(f).join("; ")} names no class:id key that can be read; give the keys with --${f}, each named by the ruling as class:id, or a further judge call of the round (call.mjs ... judge --step judge-<word>) writes the line` };
+      return { refusal: `the ${LABELS[f]} line of ${unreadable.get(f).join("; ")} names no class:id key that can be read; give the keys with --${f}, each named by the ruling as class:id, or a further ${roleLabel} call of the round (call.mjs ... ${roleLabel} --step ${roleLabel}-<word>) writes the line` };
     const unnamed = [];
     for (const key of given) {
       const ruled = derived.get(key);
@@ -157,13 +158,13 @@ export function admit(row, rulings, flags, { where = "the records" } = {}) {
         continue;
       }
       if (f === "opened" || bound.length || unreadable.has(f)) {
-        if (!mine.length) return { refusal: `--${f} ${given.join(",")}: ${where} holds no judge record of round ${row.round}, phase ${row.phase} (${roundFiles}), so no ruling names these blockers` };
+        if (!mine.length) return { refusal: `--${f} ${given.join(",")}: ${where} holds no ${roleLabel} record of round ${row.round}, phase ${row.phase} (${roundFiles}), so no ruling names these blockers` };
         if (!named(key, mine)) unnamed.push(key);
       }
       fields[f].push(key);
     }
     if (unnamed.length)
-      return { refusal: `--${f} ${unnamed.join(",")}: not named (by class:id, or by its id) in ${mine.map(r => r.path).join(", ")}; an id alone names a key only while no other class:id of the round claims that id. Copy the keys from the ruling's ${LABELS[f]}: line; when the ruling itself lacks one, a further judge call of the round (call.mjs ... judge --step judge-<word>) names it` };
+      return { refusal: `--${f} ${unnamed.join(",")}: not named (by class:id, or by its id) in ${mine.map(r => r.path).join(", ")}; an id alone names a key only while no other class:id of the round claims that id. Copy the keys from the ruling's ${LABELS[f]}: line; when the ruling itself lacks one, a further ${roleLabel} call of the round (call.mjs ... ${roleLabel} --step ${roleLabel}-<word>) names it` };
   }
   return { fields: Object.fromEntries(FIELDS.map(f => [f, [...new Set(fields[f])]])), sources: bound.map(r => r.path), refusal: null };
 }

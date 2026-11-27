@@ -48,7 +48,7 @@ function claudeSession(home, prompt, tools, cwd) {
   return file;
 }
 
-function antigravitySession(appDir, convId, prompt, toolBatches, { model = "gemini-4-neon", extraRows = [], completed = true } = {}) {
+function antigravitySession(appDir, convId, prompt, toolBatches, { model = "gemini-2.5-flash", extraRows = [], completed = true } = {}) {
   const logs = join(appDir, "brain", convId, ".system_generated", "logs");
   mkdirSync(logs, { recursive: true });
   const ts = new Date().toISOString();
@@ -224,7 +224,7 @@ test("confined t3 reviewer rejects outside file access, shell/MCP tools, and unp
     const ts = new Date().toISOString();
     const file = antigravitySession(homes.antigravity, agId, prompt, [], {
       extraRows: [
-        { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: ts, model: "gemini-4-neon", tool_calls: [{ name: "read_file", args: { Path: join(ws, "brief.md") } }] },
+        { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: ts, model: "gemini-2.5-flash", tool_calls: [{ name: "read_file", args: { Path: join(ws, "brief.md") } }] },
       ],
     });
     coarseMtime(file, ws);

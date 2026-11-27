@@ -1,4 +1,4 @@
-// Blueprint screening for the lead. The owner view shows coverage and status gaps from the blueprint itself.
+// D-0064
 import { markdownSection, parsePointer } from "./blueprint.mjs";
 import { validateRow } from "../trajectory.mjs";
 
@@ -43,6 +43,7 @@ const TRAJECTORY = "metrics/trajectory.jsonl";
 function recentRounds({ has, read }, handoffs) {
   const byPhase = new Map();
   const addRound = ({ phase, round }) => {
+    if (!Number.isInteger(round) || round < 1) return;
     if (!byPhase.has(phase)) byPhase.set(phase, new Set());
     byPhase.get(phase).add(round);
   };
@@ -50,7 +51,7 @@ function recentRounds({ has, read }, handoffs) {
   if (has(TRAJECTORY)) for (const line of read(TRAJECTORY).split("\n")) {
     if (!line.trim()) continue;
     try { addRound(validateRow(JSON.parse(line))); }
-    catch { /* an unreadable row supplies no round evidence for this alarm */ }
+    catch {}
   }
   return new Map([...byPhase].map(([phase, rounds]) => [phase, [...rounds].sort((a, b) => b - a).slice(0, 3)]));
 }

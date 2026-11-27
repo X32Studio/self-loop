@@ -1,5 +1,4 @@
-// version-gate.mjs: every push carries a higher, tagged version; released tags never move. Live cases push to a bare
-// repository through the repository's own pre-push hook (core.hooksPath), as any harness or terminal would.
+// D-0004, D-0064
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -24,7 +23,6 @@ test("versions are X.Y.Z or X.Y.Z-<prerelease> and order by SemVer precedence", 
   assert.equal(compareVersions(v("1.2.3"), v("1.2.3")), 0);
   const order = ["0.4.3", "0.4.4-v1.5", "0.4.4-v1.6", "0.4.4-v1.10", "0.4.4", "0.5.0-v2.1"];
   assert.deepEqual(sorted([...order].reverse()), order);
-  // The SemVer 2.0 specification's own example of precedence.
   const spec = ["1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta", "1.0.0-beta.2", "1.0.0-beta.11", "1.0.0-rc.1", "1.0.0"];
   assert.deepEqual(sorted([...spec].reverse()), spec);
   assert.ok(compareVersions(v("1.0.0-1"), v("1.0.0-a")) < 0, "a numeric identifier sorts before a word");
@@ -203,7 +201,6 @@ test("an owner's unattested remote update stays open until reconciled to committ
   assert.deepEqual(JSON.parse(scan().stdout), []);
   writeFileSync(join(repo, "VERSION"), "0.4.1\n");
   git(repo, "commit", "-qam", "emergency");
-  // Update the disposable remote directly to reproduce the result of an owner push that skipped the hook.
   const unhooked = temp();
   git(unhooked, "clone", "-q", "--no-hardlinks", repo, ".");
   git(unhooked, "push", "-q", remote, "main");
@@ -337,7 +334,12 @@ for (const acceptance of [false, true]) {
     const command = `node --test ${testPath}${acceptance ? " acceptance/probe.test.mjs" : ""}`;
     const runs = () => existsSync(counter) ? readFileSync(counter, "utf8").split("\n").filter(Boolean).sort() : [];
     const measured = n => Array.from({ length: n }, () => acceptance ? ["acceptance", "unit"] : ["unit"]).flat().sort();
-    const raise = (version, ...flags) => { writeFileSync(join(repo, "VERSION"), `${version}\n`); git(repo, "commit", "-qam", version, ...flags); };
+    const raise = (version, ...flags) => {
+      writeFileSync(join(repo, "scripts/marker.mjs"), `export const v = ${JSON.stringify(version)};\n`);
+      writeFileSync(join(repo, "VERSION"), `${version}\n`);
+      git(repo, "add", "scripts/marker.mjs", "VERSION");
+      git(repo, "commit", "-qm", version, ...flags);
+    };
     const reused = (result, sha) => {
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.stderr, new RegExp(`version-gate: reused \\S+/self-loop-suite/\\S+ for ${sha.slice(0, 7)}`));
@@ -365,6 +367,49 @@ for (const acceptance of [false, true]) {
     assert.equal(git(remote, "rev-parse", "refs/tags/v0.4.3^{commit}"), git(repo, "rev-parse", "HEAD"));
   });
 }
+
+test("D-0064 T6: pre-commit fast-passes VERSION/docs-only commits and release reuses codeTree receipt", () => {
+  const counter = join(temp(), "t6-runs");
+  const probe = `import test from 'node:test'; import { appendFileSync } from 'node:fs'; test('unit', () => appendFileSync(${JSON.stringify(counter)}, 'run\\n'));\n`;
+  const { repo, remote } = setup({ suite: probe });
+  const runCount = () => existsSync(counter) ? readFileSync(counter, "utf8").split("\n").filter(Boolean).length : 0;
+
+  writeFileSync(join(repo, "scripts/code.mjs"), "export const x = 1;\n");
+  git(repo, "add", "scripts/code.mjs");
+  const codeCommit = spawnSync("git", ["-C", repo, "commit", "-m", "code change"], { encoding: "utf8", env });
+  assert.equal(codeCommit.status, 0, codeCommit.stderr);
+  assert.equal(runCount(), 1, "code change runs full pre-commit suite");
+
+  writeFileSync(join(repo, "VERSION"), "0.4.1\n");
+  git(repo, "add", "VERSION");
+  const verCommit = spawnSync("git", ["-C", repo, "commit", "-m", "bump VERSION"], { encoding: "utf8", env });
+  assert.equal(verCommit.status, 0, verCommit.stderr);
+  assert.match(verCommit.stdout + verCommit.stderr, /pre-commit: fast-pass \(VERSION\/docs-only\)/);
+  assert.equal(runCount(), 1, "VERSION-only commit fast-passes without running suite");
+
+  const rel = release(repo);
+  assert.equal(rel.status, 0, rel.stderr);
+  assert.match(rel.stderr, /version-gate: reused/);
+  assert.equal(runCount(), 1, "release reuses codeTree receipt from prior code commit");
+  assert.equal(git(remote, "rev-parse", "refs/tags/v0.4.1^{commit}"), git(repo, "rev-parse", "HEAD"));
+
+  mkdirSync(join(repo, "docs"), { recursive: true });
+  writeFileSync(join(repo, "docs/guide.md"), "# Guide\n");
+  writeFileSync(join(repo, "README.md"), "# Readme\n");
+  git(repo, "add", "docs/guide.md", "README.md");
+  const docsCommit = spawnSync("git", ["-C", repo, "commit", "-m", "docs only"], { encoding: "utf8", env });
+  assert.equal(docsCommit.status, 0, docsCommit.stderr);
+  assert.match(docsCommit.stdout + docsCommit.stderr, /pre-commit: fast-pass \(VERSION\/docs-only\)/);
+  assert.equal(runCount(), 1, "docs/markdown-only commit fast-passes");
+
+  writeFileSync(join(repo, "VERSION"), "0.4.2\n");
+  writeFileSync(join(repo, "scripts/code.mjs"), "export const x = 2;\n");
+  git(repo, "add", "VERSION", "scripts/code.mjs");
+  const mixedCommit = spawnSync("git", ["-C", repo, "commit", "-m", "mixed change"], { encoding: "utf8", env });
+  assert.equal(mixedCommit.status, 0, mixedCommit.stderr);
+  assert.doesNotMatch(mixedCommit.stdout + mixedCommit.stderr, /fast-pass/);
+  assert.equal(runCount(), 2, "mixed VERSION + code commit runs full suite");
+});
 
 test("R6-2: release and pre-push compare the suite receipt's measured tree with the tree they publish", async () => {
   const { pushReasons } = await import("../version-gate.mjs");

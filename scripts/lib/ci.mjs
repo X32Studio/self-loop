@@ -11,10 +11,11 @@ import {
 } from "./ci-destination.mjs";
 import { gitOk } from "./git-plumbing.mjs";
 import { HANDOFFS, parseHandoffs } from "./handoff.mjs";
-import { verifyProvenance } from "./provenance.mjs";
+import { evaluateCertifiedWaveCoverage, verifyProvenance } from "./provenance.mjs";
 import { recordsSnapshot } from "./records-commit.mjs";
 import { checkSsot, formatSsotRefusal, ssotDriftWarnings } from "./ssot.mjs";
 import { tipCovers, tipProblem } from "./tip.mjs";
+import { validateJudgeIndependence, validateModelVendors } from "./vendor.mjs";
 
 export { DestinationError, parseDestination, shownUrl };
 
@@ -47,9 +48,10 @@ export const FORGES = Object.freeze({
 });
 
 // design/version-tip.md#git-names-the-remote
+const gitEnv = () => ({ GIT_TERMINAL_PROMPT: "0", ...process.env });
 function pushUrls(repo, remote) {
   let out;
-  try { out = execFileSync("git", ["-C", repo, "remote", "get-url", "--push", "--all", "--", String(remote)], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); }
+  try { out = execFileSync("git", ["-C", repo, "remote", "get-url", "--push", "--all", "--", String(remote)], { encoding: "utf8", env: gitEnv(), stdio: ["ignore", "pipe", "pipe"] }); }
   catch (e) { throw new DestinationError(`${repo} has no push remote ${remote}: Git knows no remote of that name (${String(e.stderr ?? e.message).trim()})`); }
   return out.split("\n").map(url => url.trim()).filter(Boolean);
 }
@@ -100,7 +102,7 @@ export function ciDestination(repo, remote = "origin") {
 
 // design/version-tip.md#the-tree-git-publishes
 export const ORIGINAL_OBJECTS = "--no-replace-objects";
-const local = (repo, ...argv) => execFileSync("git", ["-C", repo, ...argv], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+const local = (repo, ...argv) => execFileSync("git", ["-C", repo, ...argv], { encoding: "utf8", env: gitEnv(), stdio: ["ignore", "pipe", "pipe"] }).trim();
 const git = (repo, ...argv) => local(repo, ORIGINAL_OBJECTS, ...argv);
 
 function originalObjects(read) {
@@ -220,32 +222,120 @@ export function receiptProblem(receipt, repo, full) {
   return null;
 }
 
+const REPORT_DELIMITER = "\n```\n\n## Report (verbatim)\n\n";
+const CLEAR_FIELD = /^(?:-|none)$/i;
+const PASSING_SUITE = /^[1-9]\d*\/0$/;
+const SHA = /^[0-9a-f]{40}$/;
+
+function reportBody(full) {
+  const boundary = full.indexOf(REPORT_DELIMITER);
+  return boundary < 0 ? full : full.slice(boundary + REPORT_DELIMITER.length);
+}
+
+function headerFields(report, name) {
+  return [...report.matchAll(new RegExp(`^${name}:[ \t]*(.*)$`, "gm"))].map(m => m[1].trim());
+}
+
 // D-0021, design/version-tip.md#the-protected-push
 export function judgeAccepted(handoff, { read, has }) {
   const round = String(handoff.round).padStart(4, "0");
   const file = `sealed/judge/${round}/${handoff.step}-${handoff.attempt}.md`;
   if (!has(handoff.record) || !handoff.files.includes(file) || !has(file)) return false;
-  const full = read(file);
-  const delimiter = "\n```\n\n## Report (verbatim)\n\n";
-  const boundary = full.indexOf(delimiter);
-  const report = boundary < 0 ? full : full.slice(boundary + delimiter.length);
-  const fields = name => [...report.matchAll(new RegExp(`^${name}:[ \t]*(.*)$`, "gm"))].map(m => m[1].trim());
-  const verdict = fields("VERDICT"), acceptance = fields("ACCEPTANCE");
+  const report = reportBody(read(file));
+  const verdict = headerFields(report, "VERDICT"), acceptance = headerFields(report, "ACCEPTANCE");
   return verdict.length === 1 && verdict[0] === "CONVERGED" && acceptance.length === 1 && acceptance[0] === "pass";
 }
 
-// D-0009, D-0021, design/version-tip.md#the-protected-push
-function hasConvergence(repo, records, full) {
-  const { files, read } = recordsSnapshot(records);
+// D-0064
+export function criticConvergedAccepted(handoff, { read, has }) {
+  if (!handoff || handoff.role !== "critic") return false;
+  if (handoff.audit !== undefined && handoff.audit?.violations !== 0) return false;
+  if (!Array.isArray(handoff.files) || typeof handoff.record !== "string" || !has(handoff.record)) return false;
+  const round = String(handoff.round).padStart(4, "0");
+  const sealed = `sealed/critic/${round}/${handoff.step}-${handoff.attempt}.md`;
+  const file = handoff.files.includes(sealed) ? sealed : handoff.record;
+  if (!handoff.files.includes(file) || !has(file)) return false;
+  const full = read(file);
+  if (typeof full !== "string" || !full) return false;
+  const report = reportBody(full);
+  const verdict = headerFields(report, "VERDICT"), acceptance = headerFields(report, "ACCEPTANCE");
+  const disputes = headerFields(report, "DISPUTES"), opened = headerFields(report, "OPENED");
+  return verdict.length === 1 && (verdict[0] === "CONVERGED" || verdict[0] === "PASS")
+    && acceptance.length === 1 && acceptance[0] === "pass"
+    && disputes.length <= 1 && disputes.every(v => CLEAR_FIELD.test(v))
+    && opened.length <= 1 && opened.every(v => CLEAR_FIELD.test(v));
+}
+
+// D-0064
+export function criticContradictedByTrajectory(rows, handoff, shas) {
+  const targets = new Set(shas.filter(Boolean));
+  const latest = rows.findLast(r => (!handoff.phase || r.phase === handoff.phase)
+    && (targets.has(r.commit) || targets.has(r.tip)));
+  if (!latest) return false;
+  if (latest.verdict !== "CONVERGED" && latest.verdict !== "PASS") return true;
+  return latest.suite !== undefined && !PASSING_SUITE.test(latest.suite ?? "");
+}
+
+function convergenceLoopConfig(read, cfg) {
+  let fromRecords = null;
+  const raw = read("loop.json");
+  if (raw) {
+    try { fromRecords = JSON.parse(raw); } catch { return { invalid: true }; }
+    if (!fromRecords || typeof fromRecords !== "object" || Array.isArray(fromRecords)) return { invalid: true };
+  }
+  const merged = fromRecords || cfg ? { ...(fromRecords ?? {}), ...(cfg ?? {}) } : {};
+  const pol = validateJudgeIndependence(merged.judgeIndependence);
+  if (!pol.ok) return { invalid: true };
+  if (!validateModelVendors(merged.modelVendors).ok) return { invalid: true };
+  return { invalid: false, cfg: merged, phase: merged.phase ?? null };
+}
+
+function criticCertifiedCommit(handoff) {
+  const sha = handoff?.product?.commit || handoff?.product?.base || null;
+  return typeof sha === "string" && SHA.test(sha) ? sha : null;
+}
+
+// D-0009, D-0021, D-0064, design/version-tip.md#the-protected-push
+export function hasConvergence(repo, records, full, cfg = null) {
+  const snap = recordsSnapshot(records);
+  const { files, read } = snap;
   const handoffs = parseHandoffs(read(HANDOFFS));
   const rows = parseRows(read(TRAJECTORY));
+  const loopInfo = convergenceLoopConfig(read, cfg);
   const judged = sha => {
     const row = rows.findLast(r => r.role === "judge" && r.commit === sha);
     return row?.verdict === "CONVERGED" && handoffs.some(h => h.role === "judge" && h.product?.base === sha
       && h.round === row.round && h.phase === row.phase && judgeAccepted(h, { has: path => files.has(path), read }));
   };
-  const ruled = [...new Set(rows.filter(r => r.role === "judge" && r.verdict === "CONVERGED" && r.commit !== "-").map(r => r.commit))];
-  const accepted = sha => judged(sha) || ruled.some(r => r !== sha && tipCovers(repo, r, sha) && judged(r));
+  const criticJudged = sha => {
+    if (loopInfo.invalid) return false;
+    const phase = loopInfo.phase;
+    const candidates = handoffs.filter(h => h.role === "critic"
+      && (!phase || h.phase === phase)
+      && criticCertifiedCommit(h) === sha
+      && criticConvergedAccepted(h, { has: path => files.has(path), read }));
+    for (const ch of candidates) {
+      if (ch.product?.base && ch.product?.commit && ch.product.base !== ch.product.commit
+        && !gitOk(repo, ORIGINAL_OBJECTS, "merge-base", "--is-ancestor", ch.product.base, ch.product.commit)) continue;
+      if (criticContradictedByTrajectory(rows, ch, [sha])) continue;
+      const cov = evaluateCertifiedWaveCoverage({
+        repo, records, snap, cfg: loopInfo.cfg, phase: phase ?? ch.phase ?? null,
+        targetCommit: sha, judge: ch, allHandoffs: handoffs, allRows: rows, requireActor: false,
+      });
+      if (!cov.ok) continue;
+      if (cov.actors.some(a => !ch.product?.base || !gitOk(repo, ORIGINAL_OBJECTS, "merge-base", "--is-ancestor", a.product.commit, ch.product.base))) continue;
+      return true;
+    }
+    return false;
+  };
+  const judgeRuled = rows.filter(r => r.role === "judge" && r.verdict === "CONVERGED" && r.commit !== "-").map(r => r.commit);
+  const criticRuled = loopInfo.invalid ? [] : handoffs
+    .filter(h => h.role === "critic" && (!loopInfo.phase || h.phase === loopInfo.phase)
+      && criticConvergedAccepted(h, { has: path => files.has(path), read }))
+    .map(criticCertifiedCommit)
+    .filter(Boolean);
+  const ruled = [...new Set([...judgeRuled, ...criticRuled])];
+  const accepted = sha => judged(sha) || criticJudged(sha) || ruled.some(r => r !== sha && tipCovers(repo, r, sha) && (judged(r) || criticJudged(r)));
   if (accepted(full)) return true;
   if (!gitOk(repo, "rev-parse", "--verify", "--quiet", `${full}^2`)) return false;
   const second = git(repo, "rev-parse", `${full}^2`);
@@ -264,8 +354,8 @@ export function pushCommit({ repo, records, remote = "origin", sha, branch, suit
     throw e;
   }
   const isProtected = protectedBranches.includes(branch);
+  const provCfg = cfg ? { protected: protectedBranches, ...cfg } : (protectedBranches.length ? { protected: protectedBranches } : null);
   if (records || cfg?.provenanceBaseline !== undefined) {
-    const provCfg = cfg ? { protected: protectedBranches, ...cfg } : (protectedBranches.length ? { protected: protectedBranches } : null);
     const provenance = verifyProvenance({ repo, records, sha: full, branch, cfg: provCfg, mode: "push" });
     if (!provenance.ok) return { pushed: false, provenance, refused: provenance.reasons.join("; ") };
   }
@@ -280,8 +370,8 @@ export function pushCommit({ repo, records, remote = "origin", sha, branch, suit
     if (!Array.isArray(require)) return { pushed: false, refused: `${branch} is protected and the loop does not configure gates.require (a list of app/name checks; [] requires none)` };
     if (!records) return { pushed: false, refused: `${branch} is protected and no records repository holds the judge's ruling` };
     try {
-      if (!originalObjects(() => hasConvergence(repo, records, full)))
-        return { pushed: false, refused: `${branch} is protected: no judge CONVERGED ruling and acceptance in ${records} HEAD matching a hand-off and ${TRAJECTORY} row for ${full} or its same-tree second parent` };
+      if (!originalObjects(() => hasConvergence(repo, records, full, provCfg)))
+        return { pushed: false, refused: `${branch} is protected: no judge CONVERGED ruling or independent no-dispute critic PASS/CONVERGED ruling and acceptance in ${records} HEAD for ${full} or its same-tree second parent` };
       if (require.length) verdict = ciGreen({ repo, remote, sha: full, require, ...(fetchRuns ? { fetchRuns } : {}) });
     }
     catch (e) { return { pushed: false, refused: `${branch} is protected: ${e.message}` }; }
@@ -289,7 +379,7 @@ export function pushCommit({ repo, records, remote = "origin", sha, branch, suit
     if (verdict && !verdict.ok) return { pushed: false, verdict, refused: `${branch} is protected and ${full.slice(0, 7)} has not passed every required check in ${verdict.host}/${verdict.repository}:\n  ${verdict.missing.join("\n  ")}` };
   }
   if (dry) return { pushed: false, sha: full, destination, verdict, ...(ssotResult ? { ssot: ssotResult } : {}), ...(warnings ? { warnings } : {}) };
-  const pushEnv = { ...process.env };
+  const pushEnv = gitEnv();
   if (isGrcUrl(destination)) delete pushEnv.CODE_COMMIT_ENDPOINT;
   const pushed = spawnSync("git", ["-C", repo, "push", "-q", "--", remote, `${full}:refs/heads/${branch}`], {
     encoding: "utf8",

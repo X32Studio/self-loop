@@ -1,17 +1,19 @@
-// Git plumbing shared by the call: commands that fail loudly, regular files of a tree, blob contents in one batch.
+// F-0008, D-0016, D-0066, D-0067
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+const NON_INTERACTIVE_GIT_ENV = Object.freeze({ GIT_TERMINAL_PROMPT: "0" });
+const withGitEnv = (opts = {}) => ({ ...opts, env: { ...NON_INTERACTIVE_GIT_ENV, ...(opts.env ?? process.env) } });
+
 export function run(cmd, argv, opts = {}) {
-  const r = spawnSync(cmd, argv, { maxBuffer: 1 << 30, ...opts });
+  const r = spawnSync(cmd, argv, withGitEnv({ maxBuffer: 1 << 30, ...opts }));
   if (r.status !== 0) throw new Error(`${cmd} ${argv.join(" ")}: ${r.stderr?.toString() || `exit ${r.status}`}`);
   return r.stdout;
 }
 export const git = (repo, ...argv) => run("git", ["-C", repo, ...argv], { encoding: "utf8" }).trim();
-export const gitOk = (repo, ...argv) => spawnSync("git", ["-C", repo, ...argv], { stdio: "ignore" }).status === 0;
+export const gitOk = (repo, ...argv) => spawnSync("git", ["-C", repo, ...argv], withGitEnv({ stdio: "ignore" })).status === 0;
 
-/** Regular files of a commit or tree: [{ path, sha }]. Symlinks and submodules are never listed. */
 export function regularFiles(repo, treeish) {
   const out = run("git", ["-C", repo, "ls-tree", "-r", "-z", "--full-tree", treeish], { encoding: "utf8" });
   return out.split("\0").filter(Boolean).map(entry => {
@@ -21,7 +23,6 @@ export function regularFiles(repo, treeish) {
   }).filter(e => e.regular).map(({ path, sha }) => ({ path, sha }));
 }
 
-/** The contents of blobs, by `git cat-file --batch`. */
 export function blobs(repo, shas) {
   if (!shas.length) return [];
   const out = run("git", ["-C", repo, "cat-file", "--batch"], { input: `${shas.join("\n")}\n` });

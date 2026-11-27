@@ -466,3 +466,87 @@ test("structured write destination extraction ignores embedded body file:// URIs
     ["owner missing destination", ownerTx, "write_file", { Content: "x" }],
   ]) assert.ok(callWrite(tx, name, args), `expected deny for ${label}`);
 });
+
+test("D-0064 T5: lead-guard allows self-loop.mjs patch / lead-patch.mjs commands while blocking direct product edits and git push", () => {
+  const s = setup();
+  const bash = command => refusal({ tool_name: "Bash", tool_input: { command } }, s.opts);
+  assert.equal(bash('node scripts/self-loop.mjs patch --records /tmp/rec --reason "typo" --verify "node --test"'), null);
+  assert.equal(bash('node scripts/lead-patch.mjs --records /tmp/rec --reason "typo" --verify "node --test"'), null);
+  assert.ok(bash('node scripts/self-loop.mjs patch --records /tmp/rec --reason "x" --verify "true" && git push origin main'));
+  assert.match(refusal({ tool_name: "Edit", cwd: s.product, tool_input: { file_path: join(s.product, "src/a.js") } }, s.opts), /product code/);
+});
+
+test("D-0064 T5: self-loop.mjs patch enforces <=20 lines, <=3 files, <=2 consecutive, 0 prose comments, verify exit 0, and working branch", () => {
+  const product = repo({
+    "src/a.mjs": "export const a = 1;\n",
+    "src/b.mjs": "export const b = 2;\n",
+    "src/c.mjs": "export const c = 3;\n",
+    "src/d.mjs": "export const d = 4;\n",
+  });
+  git(product, "checkout", "-qb", "loop/v1");
+  const records = repo({
+    "metrics/handoffs.jsonl": "",
+  });
+  const workDir = temp("lp-work-");
+  writeFileSync(join(records, "loop.json"), JSON.stringify({
+    product, records: ".", workDir, branch: "loop/v1", phase: "v1",
+    briefs: {}, agents: {}, protected: ["main"],
+  }, null, 2) + "\n");
+  git(records, "add", "loop.json");
+  git(records, "commit", "-qm", "init loop.json");
+
+  const runPatch = (...extra) => spawnSync(process.execPath, [
+    join(scripts, "self-loop.mjs"), "patch", "--records", records, ...extra,
+  ], { encoding: "utf8" });
+
+  assert.equal(runPatch("--reason", "empty", "--verify", "true").status, 2);
+
+  writeFileSync(join(product, "src/a.mjs"), "export const a = 10;\n");
+  const dry = runPatch("--reason", "dry check", "--verify", "node -e 'process.exit(0)'", "--dry-run", "--json");
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.equal(JSON.parse(dry.stdout).dryRun, true);
+  assert.equal(readFileSync(join(records, "metrics/handoffs.jsonl"), "utf8"), "");
+
+  const badVerify = runPatch("--reason", "failing verify", "--verify", "node -e 'process.exit(3)'");
+  assert.equal(badVerify.status, 2);
+  assert.match(badVerify.stderr, /--verify command exited 3/);
+
+  writeFileSync(join(product, "src/a.mjs"), "// prose explanation comment\nexport const a = 10;\n");
+  const proseRefused = runPatch("--reason", "with prose", "--verify", "true");
+  assert.equal(proseRefused.status, 2);
+  assert.match(proseRefused.stderr, /prose or pending comment/);
+
+  writeFileSync(join(product, "src/a.mjs"), Array.from({ length: 22 }, (_, i) => `export const v${i} = ${i};`).join("\n") + "\n");
+  const overLines = runPatch("--reason", "too many lines", "--verify", "true");
+  assert.equal(overLines.status, 2);
+  assert.match(overLines.stderr, /exceeds hard cap \(20\)/);
+
+  writeFileSync(join(product, "src/a.mjs"), "export const a = 11;\n");
+  writeFileSync(join(product, "src/b.mjs"), "export const b = 22;\n");
+  writeFileSync(join(product, "src/c.mjs"), "export const c = 33;\n");
+  writeFileSync(join(product, "src/d.mjs"), "export const d = 44;\n");
+  const overFiles = runPatch("--reason", "too many files", "--verify", "true");
+  assert.equal(overFiles.status, 2);
+  assert.match(overFiles.stderr, /changed files \(4\) exceeds hard cap \(3\)/);
+
+  const p1 = runPatch("--reason", "first patch", "--verify", "true", "--files", "src/a.mjs", "--json");
+  assert.equal(p1.status, 0, p1.stderr);
+  const res1 = JSON.parse(p1.stdout);
+  assert.equal(res1.handoff.role, "lead-patch");
+  assert.equal(res1.handoff.audit.violations, 0);
+  assert.equal(res1.handoff.verify.exit, 0);
+  assert.deepEqual(res1.handoff.files, ["src/a.mjs"]);
+  assert.match(git(product, "log", "-1", "--format=%s"), /loop\(v1\): lead-patch - first patch/);
+
+  const p2 = runPatch("--reason", "second patch", "--verify", "true", "--files", "src/b.mjs", "--json");
+  assert.equal(p2.status, 0, p2.stderr);
+
+  const p3 = runPatch("--reason", "third patch", "--verify", "true", "--files", "src/c.mjs");
+  assert.equal(p3.status, 2);
+  assert.match(p3.stderr, /consecutive lead-patch limit reached \(2\/2\)/);
+
+  git(product, "checkout", "-q", "main");
+  const onProtected = runPatch("--reason", "wrong branch", "--verify", "true");
+  assert.equal(onProtected.status, 2);
+  assert.match(onProtected.stderr, /protected/);
+});

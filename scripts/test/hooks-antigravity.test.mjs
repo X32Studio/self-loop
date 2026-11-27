@@ -1,10 +1,10 @@
-// Regression tests for F-0009 Antigravity hooks Git-clean lifecycle (J2):
-// tracked user hooks protection, multi-worktree shared exclude retention, and byte-exact exclude restoration.
+// F-0009, D-0016, D-0052, D-0066, D-0067
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { git, isolatedEnv, loopProduct, selfLoop, temp } from "./helpers.mjs";
+import { checkAntigravityHooks, checkHooks, discoverSkill, installHooks, uninstallHooks } from "../lib/hooks.mjs";
+import { git, isolatedEnv, loopProduct, ownerStore, scripts, selfLoop, temp } from "./helpers.mjs";
 
 function fixture(trackedHooksContent = null) {
   const { product, records } = loopProduct();
@@ -44,7 +44,6 @@ test("J2: install and uninstall restore a user .git/info/exclude with no trailin
   assert.equal(readFileSync(exclude, "utf8"), original);
   assert.equal(git(product, "status", "--porcelain"), "");
 
-  // If the user appends a rule after install, uninstall removes only the managed block without merging lines.
   assert.equal(runHooks("install").status, 0);
   writeFileSync(exclude, readFileSync(exclude, "utf8") + "/.local\n");
   assert.equal(runHooks("uninstall").status, 0);
@@ -64,14 +63,12 @@ test("J2: uninstall in one worktree retains shared info/exclude while sibling wo
   assert.equal(git(product, "status", "--porcelain"), "");
   assert.equal(git(sibling, "status", "--porcelain"), "");
 
-  // Uninstalling the primary checkout removes its hooks but retains shared exclude for sibling.
   assert.equal(runHooks("uninstall").status, 0);
   assert.equal(existsSync(file), false);
   assert.ok(JSON.parse(readFileSync(siblingHooks, "utf8"))["self-loop"]);
   assert.equal(git(product, "status", "--porcelain"), "");
   assert.equal(git(sibling, "status", "--porcelain"), "", "sibling worktree stays Git-clean");
 
-  // Uninstalling the last remaining worktree removes the managed exclude and restores user exclude bytes.
   assert.equal(runHooks("uninstall", sibling, ["--target", siblingHooks]).status, 0);
   assert.equal(existsSync(siblingHooks), false);
   assert.equal(git(sibling, "status", "--porcelain"), "");
@@ -130,7 +127,6 @@ test("J2: install and uninstall preserve non-UTF-8 bytes in .git/info/exclude ve
   assert.equal(git(product, "status", "--porcelain"), "");
   assert.equal(readFileSync(exclude).toString("hex"), original.toString("hex"));
 
-  // Non-UTF-8 bytes survive when user appends another rule after install (without trailing newline).
   assert.equal(runHooks("install").status, 0);
   const appended = Buffer.from("# r\xe9sum\xe9\n/.local", "latin1");
   writeFileSync(exclude, Buffer.concat([readFileSync(exclude), appended]));
@@ -139,4 +135,102 @@ test("J2: install and uninstall preserve non-UTF-8 bytes in .git/info/exclude ve
     readFileSync(exclude).toString("hex"),
     Buffer.concat([original, Buffer.from("\n"), appended]).toString("hex"),
   );
+});
+
+test("D-0066/D-0067: global install, check, skill discovery, and uninstall cover ANTIGRAVITY_HOME alongside GEMINI_HOME and T3 instances", () => {
+  const prod = loopProduct();
+  const store = ownerStore([{ name: "paseo-app", records: prod.records }]);
+  const gHome = temp("ag-home-gem-");
+  const agHome = temp("ag-home-paseo-");
+  const t3Home = temp("ag-home-t3-");
+  const t3Inst = join(t3Home, "userdata", "providers", "antigravity", "inst1111");
+  const t3Hooks = join(t3Inst, "config", "hooks.json");
+  mkdirSync(join(agHome, "config", "skills", "self-loop"), { recursive: true });
+  writeFileSync(join(agHome, "config", "skills", "self-loop", "SKILL.md"), "# self-loop\n");
+  mkdirSync(join(agHome, "config"), { recursive: true });
+  writeFileSync(join(agHome, "config", "hooks.json"), JSON.stringify({ "paseo-user": { enabled: true } }, null, 2) + "\n");
+  mkdirSync(join(gHome, "config"), { recursive: true });
+  writeFileSync(join(gHome, "config", "hooks.json"), JSON.stringify({ "gem-user": { enabled: true } }, null, 2) + "\n");
+  mkdirSync(join(t3Inst, "config"), { recursive: true });
+
+  const env = isolatedEnv({ GEMINI_HOME: gHome, ANTIGRAVITY_HOME: agHome, T3CODE_HOME: t3Home });
+  const gemHooks = join(gHome, "config", "hooks.json");
+  const agHooks = join(agHome, "config", "hooks.json");
+
+  assert.equal(discoverSkill({ env }).discovered, true);
+  assert.equal(discoverSkill({ env }).path, join(agHome, "config", "skills", "self-loop", "SKILL.md"));
+
+  const inst = installHooks({ harness: "antigravity", scope: "global", ownerStore: store, scriptsDir: scripts, env });
+  assert.deepEqual(inst.targets, [gemHooks, agHooks]);
+  assert.ok(JSON.parse(readFileSync(gemHooks, "utf8"))["self-loop"]);
+  assert.deepEqual(JSON.parse(readFileSync(gemHooks, "utf8"))["gem-user"], { enabled: true });
+  assert.ok(JSON.parse(readFileSync(agHooks, "utf8"))["self-loop"]);
+  assert.deepEqual(JSON.parse(readFileSync(agHooks, "utf8"))["paseo-user"], { enabled: true });
+
+  const missingT3 = checkHooks({ harness: "antigravity", scope: "global", ownerStore: store, env });
+  assert.equal(missingT3.ok, false);
+  assert.ok(missingT3.findings.some(f => f.includes(t3Hooks)));
+
+  installHooks({ harness: "antigravity", target: t3Hooks, ownerStore: store, scriptsDir: scripts, env });
+  const healthy = checkHooks({ harness: "antigravity", scope: "global", ownerStore: store, env });
+  assert.equal(healthy.ok, true, JSON.stringify(healthy.findings));
+
+  const badAg = JSON.parse(readFileSync(agHooks, "utf8"));
+  badAg["self-loop"].PreToolUse[0].matcher = "edit_file";
+  writeFileSync(agHooks, JSON.stringify(badAg, null, 2) + "\n");
+  const unhealthyAg = checkHooks({ harness: "antigravity", scope: "global", ownerStore: store, env });
+  assert.equal(unhealthyAg.ok, false);
+  assert.ok(unhealthyAg.findings.some(f => f.includes("ANTIGRAVITY_HOME") && f.includes(agHooks)));
+
+  rmSync(agHooks, { force: true });
+  const missingAg = checkHooks({ harness: "antigravity", scope: "global", ownerStore: store, env });
+  assert.equal(missingAg.ok, false);
+  assert.ok(missingAg.findings.some(f => f.includes("ANTIGRAVITY_HOME") && f.includes(agHooks)));
+
+  installHooks({ harness: "antigravity", scope: "global", ownerStore: store, scriptsDir: scripts, env });
+  const uninst = uninstallHooks({ harness: "antigravity", scope: "global", env });
+  assert.equal(uninst.removed, true);
+  assert.deepEqual(uninst.targets, [gemHooks, agHooks]);
+  assert.equal("self-loop" in JSON.parse(readFileSync(gemHooks, "utf8")), false);
+  assert.deepEqual(JSON.parse(readFileSync(gemHooks, "utf8"))["gem-user"], { enabled: true });
+  assert.equal(existsSync(agHooks), false);
+
+  const sameEnv = isolatedEnv({ GEMINI_HOME: agHome, ANTIGRAVITY_HOME: agHome, T3CODE_HOME: "" });
+  const sameInst = installHooks({ harness: "antigravity", scope: "global", ownerStore: store, scriptsDir: scripts, env: sameEnv });
+  assert.equal(sameInst.targets, undefined);
+  assert.equal(checkHooks({ harness: "antigravity", scope: "global", ownerStore: store, env: sameEnv }).ok, true);
+});
+
+test("D-0066/D-0067: checkAntigravityHooks detects and validates standalone ANTIGRAVITY_HOME hooks without GEMINI_HOME", () => {
+  const prod = loopProduct();
+  const store = ownerStore([{ name: "ag-only", records: prod.records }]);
+  const gHome = temp("ag-only-gem-");
+  const agHome = temp("ag-only-home-");
+  const agHooks = join(agHome, "config", "hooks.json");
+  mkdirSync(join(agHome, "config", "skills", "self-loop"), { recursive: true });
+  writeFileSync(join(agHome, "config", "skills", "self-loop", "SKILL.md"), "# self-loop\n");
+
+  const env = isolatedEnv({ GEMINI_HOME: gHome, ANTIGRAVITY_HOME: agHome, T3CODE_HOME: "", SELF_LOOP_OWNER_STORE: store });
+  assert.equal(checkAntigravityHooks({ env, cwd: prod.product }).detected, false);
+
+  installHooks({ harness: "antigravity", target: agHooks, ownerStore: store, scriptsDir: scripts, env });
+  assert.equal(existsSync(join(gHome, "config", "hooks.json")), false);
+
+  const okProbe = checkAntigravityHooks({ env, cwd: prod.product });
+  assert.equal(okProbe.detected, true);
+  assert.equal(okProbe.healthy, true, JSON.stringify(okProbe.findings));
+  assert.equal(okProbe.scope, "global");
+  assert.equal(okProbe.target, agHooks);
+
+  const broken = JSON.parse(readFileSync(agHooks, "utf8"));
+  broken["self-loop"].enabled = false;
+  writeFileSync(agHooks, JSON.stringify(broken, null, 2) + "\n");
+  const badProbe = checkAntigravityHooks({ env, cwd: prod.product });
+  assert.equal(badProbe.detected, true);
+  assert.equal(badProbe.healthy, false);
+  assert.ok(badProbe.findings.some(f => f.includes(agHooks)));
+
+  const startRes = selfLoop(["start", "--now", "2026-11-27T01:00:00.000Z"], { cwd: prod.product, env });
+  assert.equal(startRes.status, 0, startRes.stderr);
+  assert.match(startRes.stdout, /hooks \(antigravity\):/);
 });

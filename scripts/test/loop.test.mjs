@@ -321,3 +321,89 @@ test("A4 measures: the header prints the counters' figures, and every value the 
   assert.match(failed, /owner directions unknown · raised first unknown · precision of batch answers unknown · owner waiting unknown \(not computed: no window\) · returns per area: listed below/);
   assert.doesNotMatch([owner, none, blank, failed].join("\n"), /idle[^\n]* 0\b|critical path 0\b|owner waiting 0\b/);
 });
+
+test("next recognizes independent no-dispute critic convergence without nagging for a redundant judge and fails closed on invalid critics (D-0064 T10, D-0067)", async () => {
+  const s = await setup({}, { gates: { require: ["github-actions/verify"], suite: "npm test" } });
+  const base = git(s.product, "rev-parse", "loop/s5");
+  const tree = git(s.product, "rev-parse", `${base}^{tree}`);
+  const actorCommit = git(s.product, "commit-tree", tree, "-p", base, "-m", "actor change");
+  git(s.product, "update-ref", "refs/heads/loop/s5", actorCommit);
+
+  const frame = JSON.parse(git(s.records, "show", "HEAD:metrics/handoffs.jsonl"));
+  const actorRec = "rounds/0002-actor.md";
+  put(s.records, actorRec, "# R-0002-actor\n");
+  const actorHandoff = {
+    id: "R-0002-actor", time: "2026-11-24T01:00:00Z", phase, round: 2, step: "actor", role: "actor", attempt: 1,
+    agent: { runner: "claude", model: "claude-opus-4-6", session: "sess-actor" },
+    view: "a".repeat(40), product: { base, commit: actorCommit }, audit: { violations: 0 }, record: actorRec, files: [actorRec],
+  };
+  const ciPath = `evidence/0003/ci-${actorCommit.slice(0, 12)}-1/receipt.json`;
+  const suitePath = "evidence/0003/suite-1.json";
+  put(s.records, "loop.json", JSON.stringify(s.cfg));
+  put(s.records, suitePath, JSON.stringify({ repository: s.product, sha: actorCommit, tree, green: true }));
+  put(s.records, ciPath, JSON.stringify({ repository: "example/product", sha: actorCommit, ci: "success", ok: true, missing: [], conclusions: { "github-actions/verify": "success" } }));
+  put(s.records, "decisions/D-0099.md", "# D-0099 Retire F-0001\n\nid: D-0099\nby: owner\ndate: 2026-11-24\nstatus: active\n\nRetire F-0001.\n");
+  put(s.records, "metrics/blueprint.jsonl", jsonl({
+    feature: "F-0001", phase, status: "retired", time: "2026-11-24T02:05:00Z", by: "lead", note: "retired",
+    evidence: { decision: "D-0099" },
+  }));
+  put(s.dir, "gh", "#!/bin/sh\nprintf '%s\\n' '{\"app\":\"github-actions\",\"name\":\"verify\",\"status\":\"completed\",\"conclusion\":\"success\"}'\n");
+  chmodSync(join(s.dir, "gh"), 0o755);
+
+  const setCritic = ({ agent, report, violations = 0, criticBase = actorCommit, criticCommit = actorCommit, sealed = false, trajectory = null }) => {
+    const rec = "rounds/0003-critic.md";
+    const sealedFile = "sealed/critic/0003/critic-1.md";
+    const fullBody = `# R-0003-critic\n\n## Task (verbatim)\n\n\`\`\`text\nVerify\n\`\`\`\n\n## Report (verbatim)\n\n${report}\n`;
+    put(s.records, rec, sealed ? "# R-0003-critic\n\nSummary.\n" : fullBody);
+    if (sealed) put(s.records, sealedFile, fullBody);
+    const criticHandoff = {
+      id: "R-0003-critic", time: "2026-11-24T02:00:00Z", phase, round: 3, step: "critic", role: "critic", attempt: 1,
+      agent, view: "a".repeat(40), product: { base: criticBase, commit: criticCommit },
+      audit: { violations }, record: rec, files: sealed ? [rec, sealedFile] : [rec],
+    };
+    put(s.records, "metrics/handoffs.jsonl", jsonl(frame, actorHandoff, criticHandoff));
+    put(s.records, "metrics/trajectory.jsonl", trajectory ? jsonl(...trajectory) : "");
+    git(s.records, "add", "-A");
+    const rc = spawnSync(process.execPath, [join(scripts, "records-check.mjs"), "--repo", s.records, "--write"], { encoding: "utf8" });
+    assert.equal(rc.status, 0, rc.stdout + rc.stderr);
+    git(s.records, "add", "-A");
+    git(s.records, "commit", "-qm", "critic state");
+    const out = run(s, "next");
+    assert.equal(out.status, 0, out.stderr);
+    return out.stdout;
+  };
+
+  const passOut = setCritic({
+    agent: { runner: "codex", model: "gpt-5", session: "sess-critic" },
+    report: "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: -\nOPENED: -",
+  });
+  assert.doesNotMatch(passOut, /no judge ruling on the integration head/);
+  assert.match(passOut, /The recorded convergence checks are satisfied/);
+
+  const sealedOut = setCritic({
+    agent: { runner: "codex", model: "gpt-5", session: "sess-critic" },
+    report: "VERDICT: CONVERGED\nACCEPTANCE: pass\nDISPUTES: none\nOPENED: none",
+    sealed: true,
+  });
+  assert.doesNotMatch(sealedOut, /no judge ruling on the integration head/);
+  assert.match(sealedOut, /The recorded convergence checks are satisfied/);
+
+  const refusedCases = [
+    ["same-vendor critic", { agent: { runner: "claude", model: "claude-sonnet-4-6", session: "sess-critic" }, report: "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: -" }],
+    ["disputed critic", { agent: { runner: "codex", model: "gpt-5", session: "sess-critic" }, report: "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: actor disagrees" }],
+    ["opened blocker", { agent: { runner: "codex", model: "gpt-5", session: "sess-critic" }, report: "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: -\nOPENED: bug:R3-1" }],
+    ["acceptance fail", { agent: { runner: "codex", model: "gpt-5", session: "sess-critic" }, report: "VERDICT: PASS\nACCEPTANCE: fail\nDISPUTES: -" }],
+    ["shared session", { agent: { runner: "codex", model: "gpt-5", session: "sess-actor" }, report: "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: -" }],
+    ["stale critic base", { agent: { runner: "codex", model: "gpt-5", session: "sess-critic" }, report: "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: -", criticBase: base, criticCommit: actorCommit }],
+    ["contradicting trajectory row", {
+      agent: { runner: "codex", model: "gpt-5", session: "sess-critic" },
+      report: "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: -",
+      trajectory: [{ round: 3, phase, role: "judge", area: "core", verdict: "CONTINUE", commit: actorCommit, suite: "10/1", ci: "success", time: "2026-11-24T02:10:00Z" }],
+    }],
+  ];
+  for (const [label, opts] of refusedCases) {
+    const out = setCritic(opts);
+    assert.doesNotMatch(out, /The recorded convergence checks are satisfied/, label);
+    if (!opts.trajectory) assert.match(out, /no judge ruling on the integration head/, label);
+  }
+});

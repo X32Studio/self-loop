@@ -1,28 +1,5 @@
 #!/usr/bin/env node
-// The records check and generated index of RECORDS.md rule 7. The layout (kinds, paths, how each changes, citation
-// forms) is parsed from the skill's RECORDS.md table, so the table is the one source; a records repository may add
-// kinds in records.json.
-//
-// Two tiers (REQUIREMENTS item 11):
-// - failures (certain, exit 1): a file of the checked set outside every declared kind and path; an INDEX.md that
-//   differs from the generated one; a hand-off line (metrics/handoffs.jsonl) that is malformed or names a file the
-//   records do not hold; a malformed answer or replacement event (owner/answers.jsonl), or a replacement that
-//   `decisions.mjs replace` would refuse. All are decided by structured facts (paths, bytes, JSON fields). The checked
-//   set is every tracked or staged file for the command (stage new records, then --write, then commit); for a role
-//   call's hand-off it is only the paths that hand-off commits, so a stray file elsewhere never fails unrelated work.
-// - screening (reported with evidence, exit 0): untracked files; undeclared files outside the checked set; record IDs that no record
-//   carries; sealed paths named in material for roles that may not read them; edits of immutable or append-only
-//   records against HEAD; bare `file:line` citations, scratch paths, unresolved `path@commit`, digest mismatches,
-//   secret-like strings, "Round N" history inside a design file. Text can name such things legitimately (a template's
-//   example ID, a judge-only brief naming its sealed file), and none has two-way historical admission, so a person or
-//   model reviews them.
-//
-// The index lists the given set only (a role call passes the exact tree it commits, so never an ignored, staged or
-// uncommitted draft) and takes an owner batch's status from the events of owner/answers.jsonl alone (answered, replaced
-// by a later batch, or open), other records' from `status:` and `supersedes:` fields.
-//
-// node records-check.mjs --repo <records repo> [--write] [--json] [--layout <RECORDS.md>]
-//   --write regenerates INDEX.md first; without it the check is read-only and names the fix command on index drift.
+// D-0015, D-0016, D-0064, D-0067
 import "./lib/unbind-git.mjs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -31,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cli, need, parseArgs } from "./lib/args.mjs";
 import { ANSWERS, parseEvents, replacementProblems } from "./decisions.mjs";
-import { HANDOFFS, parseHandoffs } from "./lib/handoff.mjs";
+import { HANDOFFS, LEAD_PATCH_ROLE, parseHandoffs } from "./lib/handoff.mjs";
 import { BLUEPRINT, FEATURE_EVENTS, FEATURE_FILE, inspectBlueprint, renderBlueprint } from "./lib/blueprint.mjs";
 import { blueprintAlarms, ownerAlarms } from "./lib/blueprint-alarms.mjs";
 import { rowReceiptProblem } from "./lib/ci-receipt.mjs";
@@ -47,12 +24,11 @@ export const DEFAULT_LAYOUT = join(here, "..", "RECORDS.md");
 export const PUBLIC_KINDS = ["Purpose", "Decisions", "Design", "Blueprint", "Rounds", "Hand-offs", "Trajectory",
   "Windows", "Owner batches", "Owner answers", "Interventions", "Lessons", "Research", "Plan"];
 export const isPublicKind = kind => kind !== "Rounds" && PUBLIC_KINDS.includes(kind);
-// Quoted output and generated views are not processed as records' ordinary citations.
+const gitEnv = () => ({ GIT_TERMINAL_PROMPT: "0", ...process.env });
 const QUOTED = new Set(["Backtests", "Evidence", "Blueprint evidence", "Sealed", "Index", "Blueprint view"]);
 const JSONL = /\.jsonl$/i;
 const TEXT = /\.(md|tsv|json|txt|mjs|js|ts|ya?ml)$/i;
 
-/** Convert a path or citation template from the RECORDS table to a regular expression source. */
 function templateSource(template, { anchored }) {
   let source = "";
   const re = /<NNNN>|NNNN|<([a-z]+)>|[.*+?^${}()|[\]\\]|[^]/g;
@@ -66,7 +42,6 @@ function templateSource(template, { anchored }) {
   return source;
 }
 
-/** Parse the layout table of RECORDS.md (plus extra kinds) into matchers. */
 export function parseLayout(recordsMd, extraKinds = []) {
   const rows = [];
   let inTable = false;
@@ -80,7 +55,6 @@ export function parseLayout(recordsMd, extraKinds = []) {
   }
   for (const extra of extraKinds) {
     const path = `\`${extra.path}\``;
-    // Keep the legacy index ordering and display while repositories remove now-native extra kinds.
     const native = rows.findIndex(row => row.kind === extra.kind && row.path === path);
     if (native !== -1) rows.splice(native, 1);
     rows.push({
@@ -107,7 +81,6 @@ export function parseLayout(recordsMd, extraKinds = []) {
 const recordId = (cite, m) => cite ? cite.replace(/<NNNN>|NNNN/, m.groups?.n ?? "")
   .replace(/<([a-z]+)>/g, (_, name) => m.groups?.[name] ?? "") : null;
 
-/** The declared kind of a path, and the record ID the path carries when the kind is cited by ID. */
 export function classify(layout, path, { legacyLogIds = false } = {}) {
   for (const kind of layout) for (const matcher of kind.matchers) {
     const m = matcher.exec(path);
@@ -120,13 +93,9 @@ export function classify(layout, path, { legacyLogIds = false } = {}) {
   return null;
 }
 
-/**
- * The managed files: tracked (staged included) files of a repository, or every file of a plain folder (a role view).
- * With `untracked`, the new files git does not ignore instead.
- */
 export function listFiles(repo, { untracked = false } = {}) {
   if (existsSync(join(repo, ".git"))) {
-    const out = execFileSync("git", ["-C", repo, "ls-files", "-z", ...(untracked ? ["--others", "--exclude-standard"] : ["--cached"])], { encoding: "utf8", maxBuffer: 1 << 28 });
+    const out = execFileSync("git", ["-C", repo, "ls-files", "-z", ...(untracked ? ["--others", "--exclude-standard"] : ["--cached"])], { encoding: "utf8", env: gitEnv(), maxBuffer: 1 << 28 });
     return [...new Set(out.split("\0").filter(Boolean))].filter(p => existsSync(join(repo, p))).sort();
   }
   const files = [];
@@ -166,7 +135,7 @@ const idRegexOf = layout => new RegExp(`(?<![\\w-])(?:${layout.filter(k => k.idP
 const OWNER_EXTRA = path => path === HANDOFFS || path === ANSWERS || path === "loop.json" || /^owner\/B-\d{4}\.md$/.test(path);
 
 function ownerTree(repo, rev, { extra = () => false } = {}) {
-  rev = execFileSync("git", ["-C", repo, "rev-parse", "--verify", `${rev}^{commit}`], { encoding: "utf8" }).trim();
+  rev = execFileSync("git", ["-C", repo, "rev-parse", "--verify", `${rev}^{commit}`], { encoding: "utf8", env: gitEnv() }).trim();
   const all = regularFiles(repo, rev);
   const config = all.find(f => f.path === "records.json");
   const layout = parseLayout(readFileSync(DEFAULT_LAYOUT, "utf8"), config ? JSON.parse(blobs(repo, [config.sha])[0]).extraKinds : []);
@@ -226,16 +195,16 @@ function firstCommits(repo, rev = "HEAD") {
   const cache = new Map();
   try {
     rev = execFileSync("git", ["-C", repo, "rev-parse", "--verify", `${rev}^{commit}`],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      { encoding: "utf8", env: gitEnv(), stdio: ["ignore", "pipe", "ignore"] }).trim();
     if (execFileSync("git", ["-C", repo, "rev-parse", "--is-shallow-repository"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() === "true") return () => undefined;
+      { encoding: "utf8", env: gitEnv(), stdio: ["ignore", "pipe", "ignore"] }).trim() === "true") return () => undefined;
   } catch { return () => undefined; }
   return path => {
     if (!cache.has(path)) {
       let found;
       try {
         const line = execFileSync("git", ["-C", repo, "log", "--reverse", "--full-history", "--no-renames", "--diff-filter=A", "--format=%H %ct", rev, "--", path],
-          { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 1 << 28 }).split("\n")[0].trim();
+          { encoding: "utf8", env: gitEnv(), stdio: ["ignore", "pipe", "ignore"], maxBuffer: 1 << 28 }).split("\n")[0].trim();
         found = line ? { sha: line.split(" ")[0], time: Number(line.split(" ")[1]) } : null;
       } catch { found = undefined; }
       cache.set(path, found);
@@ -326,30 +295,20 @@ function sealedScreenText(record, text) {
         delete handoff.files;
         if (handoff.audit && typeof handoff.audit === "object") delete handoff.audit.file;
         return JSON.stringify(handoff);
-      } catch { return line; } // The hand-off validator reports malformed rows separately.
+      } catch { return line; }
     }).join("\n");
   }
   if (record.kind !== "Rounds") return text;
   const lines = text.split(/\r?\n/);
   const fields = ["phase", "role", "agent", "view", "briefs", "product", "audit"];
-  // call.mjs writes these metadata lines before the verbatim task or public report.
   if (lines[0] !== `# ${record.id}` || lines[1] !== "" || lines[9] !== ""
       || !/^## (?:Task \(verbatim\)|Public report \(verbatim, out\/public\.md\))$/.test(lines[10] ?? "")
       || !fields.every((field, i) => lines[i + 2]?.startsWith(field + ": "))) return text;
   return lines.map((line, i) => i < 10 ? "" : line).join("\n");
 }
 
-/** The status a non-round record carries in its own `status:` field. */
 const ownStatus = text => /^status:\s*(.+)$/mi.exec(text)?.[1]?.trim() ?? "";
 
-/**
- * Everything the check needs, computed once. Pure apart from reading the repository.
- * @param options.files the managed set (default: tracked and new files); the index lists exactly these
- * @param options.own the paths whose structure is certain to matter (default: all of `files`)
- * @param options.screenOnly screen the text of these paths only (default: every record)
- * @param options.blueprint validate the full blueprint (default true; false for partial role views)
- * @param options.read the text of a path (default: the file under `repo`); given with `files`, the set is taken as is
- */
 export function inspect(repo, { layoutText, config = {}, files, own, screenOnly, read, blueprint: includeBlueprint = true } = {}) {
   repo = resolve(repo);
   const given = Boolean(read && files);
@@ -381,7 +340,13 @@ export function inspect(repo, { layoutText, config = {}, files, own, screenOnly,
     try {
       handoffs = parseHandoffs(read(HANDOFFS));
       const seen = new Set();
+      const seenLeadPatch = new Set();
       for (const h of handoffs) {
+        if (h.role === LEAD_PATCH_ROLE) {
+          if (seenLeadPatch.has(h.id)) failures.push({ rule: "handoff", path: HANDOFFS, detail: `two hand-offs for ${h.id}` });
+          seenLeadPatch.add(h.id);
+          continue;
+        }
         if (seen.has(h.record)) failures.push({ rule: "handoff", path: HANDOFFS, detail: `two hand-offs for ${h.record}` });
         seen.add(h.record);
         for (const f of h.files) if (!has.has(f)) failures.push({ rule: "handoff", path: HANDOFFS, detail: `${h.id} names ${f}, which the records do not hold` });
@@ -392,7 +357,7 @@ export function inspect(repo, { layoutText, config = {}, files, own, screenOnly,
     try { parseWindows(read(WINDOWS), WINDOWS); }
     catch (e) { failures.push({ rule: "window", path: WINDOWS, detail: e.message }); }
   }
-  const roleView = new Set([...handoffs.map(h => h.record), ...(config.publicImports ?? [])]);
+  const roleView = new Set([...handoffs.map(h => h.record).filter(Boolean), ...(config.publicImports ?? [])]);
   const isPublicMaterial = record => record.kind !== "Sealed" && (roleView.has(record.path) || isPublicKind(record.kind));
   const supersededBy = new Map();
   const decisionCitations = new Set();
@@ -470,12 +435,12 @@ export function inspect(repo, { layoutText, config = {}, files, own, screenOnly,
     blueprint = inspectBlueprint(repo, { files, read, handoffs });
     failures.push(...blueprint.failures);
     let rows = [];
-    // D-0015 item 1; design/version-tip.md#who-reads-what
+    // D-0015, design/version-tip.md#who-reads-what
     if (has.has(TRAJECTORY)) {
       try {
         rows = parseRows(read(TRAJECTORY));
         for (const row of rows) {
-          const problem = row.verdict === "CONVERGED" && row.ciReceipt && rowReceiptProblem(row, path => has.has(path) ? read(path) : null);
+          const problem = ["CONVERGED", "PASS"].includes(row.verdict) && row.ciReceipt && rowReceiptProblem(row, path => has.has(path) ? read(path) : null);
           if (problem) failures.push({ rule: "trajectory", path: TRAJECTORY, detail: problem });
         }
       } catch (e) { failures.push({ rule: "trajectory", path: TRAJECTORY, detail: e.message }); }
@@ -488,7 +453,7 @@ export function inspect(repo, { layoutText, config = {}, files, own, screenOnly,
       for (const f of judged.failures) (checked.has(f.path) || checked.has(TRAJECTORY) ? failures : screening).push(f);
       screening.push(...judged.screening);
     }
-    screening.push(...blueprintAlarms(blueprint, handoffs));
+    screening.push(...blueprintAlarms(blueprint, handoffs.filter(h => h.role !== LEAD_PATCH_ROLE)));
     if (has.has("loop.json")) {
       const { phase } = JSON.parse(read("loop.json"));
       if (phase) {
@@ -506,17 +471,16 @@ export function inspect(repo, { layoutText, config = {}, files, own, screenOnly,
   return { repo, layout, files, records, ids, supersededBy, failures, screening, sealedRoots, answered, replaced, read, blueprint };
 }
 
-/** Immutable records edited, or append-only records not extended, against HEAD (screening: the lead reviews). */
 function screenChanged(repo, records, screening) {
   if (!existsSync(join(repo, ".git"))) return;
   let changed;
-  try { changed = new Set(execFileSync("git", ["-C", repo, "diff", "--name-only", "--diff-filter=MT", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("\n").filter(Boolean)); }
+  try { changed = new Set(execFileSync("git", ["-C", repo, "diff", "--name-only", "--diff-filter=MT", "HEAD"], { encoding: "utf8", env: gitEnv(), stdio: ["ignore", "pipe", "ignore"] }).split("\n").filter(Boolean)); }
   catch { return; }
   for (const r of records) {
     if (!changed.has(r.path) || r.changes === "editable") continue;
     if (r.changes === "append-only") {
       let before = "";
-      try { before = execFileSync("git", ["-C", repo, "show", `HEAD:${r.path}`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); } catch { continue; }
+      try { before = execFileSync("git", ["-C", repo, "show", `HEAD:${r.path}`], { encoding: "utf8", env: gitEnv(), stdio: ["ignore", "pipe", "ignore"] }); } catch { continue; }
       if (existsSync(join(repo, r.path)) && readFileSync(join(repo, r.path), "utf8").startsWith(before)) continue;
     }
     screening.push({ rule: "changed-record", path: r.path, detail: `${r.changes} record differs from HEAD other than by appending` });
@@ -533,14 +497,13 @@ const SCRATCH = /(?:^|[\s(\[`'"])((?:\/private)?\/tmp\/[^\s)\]`'"]+|\/var\/folde
 
 function screen(repo, record, text, lineOf, ids, screening) {
   const add = (rule, index, detail) => screening.push({ rule, path: record.path, line: lineOf(index), detail });
-  // A bare line number in a file that changes (RECORDS rule 4): `path.ext:123` with no `@commit` before the colon.
   for (const m of text.matchAll(/(?<![\w@/.-])((?:\/|\.{0,2}\/)?[\w.@-]+(?:\/[\w.@-]+)*\.[A-Za-z]{1,8}):(\d+)\b/g))
     if (!/@[0-9a-f]{7,40}$/.test(m[1]) && !/^\d+\.\d+$/.test(m[1])) add("bare-line-citation", m.index, `${m[1]}:${m[2]} names a line without a commit`);
   for (const m of text.matchAll(SCRATCH)) add("scratch-path", m.index, `${m[1]} lives in scratch space`);
   for (const m of text.matchAll(/(?<![\w/.-])([\w.-]+(?:\/[\w.-]+)*)@([0-9a-f]{7,40})\b/g)) {
     const [, path, commit] = m;
-    if (!existsSync(join(repo, ".git")) || !existsSync(join(repo, path.split("/")[0]))) continue; // not a records path
-    try { execFileSync("git", ["-C", repo, "cat-file", "-e", `${commit}:${path}`], { stdio: "ignore" }); }
+    if (!existsSync(join(repo, ".git")) || !existsSync(join(repo, path.split("/")[0]))) continue;
+    try { execFileSync("git", ["-C", repo, "cat-file", "-e", `${commit}:${path}`], { env: gitEnv(), stdio: "ignore" }); }
     catch { add("commit-citation", m.index, `${path}@${commit} does not resolve in the records repository`); }
   }
   for (const m of text.matchAll(/(evidence\/\d{4}\/[^\s)`'"]+)\s+sha256:([0-9a-f]{64})/g)) {
@@ -557,7 +520,6 @@ function screen(repo, record, text, lineOf, ids, screening) {
     for (const m of text.matchAll(/^#{1,6}\s.*(?:\bRound\s+\d+|第\s*\d+\s*轮)/gmi)) add("history-in-design", m.index, `history heading in a design file: ${m[0].trim()}`);
 }
 
-/** The generated index: one table per kind, sealed contents counted but not named. Deterministic (content only). */
 export function renderIndex(state, { legacyLogIds = false } = {}) {
   const { layout, records, supersededBy } = state;
   if (!state.answered) throw new Error("renderIndex needs the state from inspect");
@@ -593,10 +555,6 @@ export function renderIndex(state, { legacyLogIds = false } = {}) {
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
-/**
- * The index generated for one tree of a records repository (an automatic writer's candidate commit), reading only what
- * the index shows: Markdown titles and status fields, supersessions and the answer events.
- */
 export function indexOfTree(repo, treeish, { layoutText = readFileSync(DEFAULT_LAYOUT, "utf8") } = {}) {
   const all = regularFiles(repo, treeish).filter(e => e.path !== "INDEX.md");
   const configEntry = all.find(e => e.path === "records.json");

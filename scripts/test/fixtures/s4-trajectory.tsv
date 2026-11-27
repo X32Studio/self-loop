@@ -1,8 +1,8 @@
 time	round	phase	area	role	model	verdict	opened	closed	suite	owner	commit	ci
-2026-11-19T22:20:00Z	24	S4	-	judge	gpt-6.2-astra	CONTINUE	-	-	-	0	f899d3b3bdcc67d18c472a24421aa9fa1c957e49	success
-2026-11-19T23:11:00Z	25	S4	-	judge	gpt-6.2-astra	CONTINUE	-	-	-	0	43b93bc276bdbbc1422ae5671582f9ce3f2825c2	success
-2026-11-20T02:39:00Z	26	S4	slice2	judge	gpt-6.2-astra	CONTINUE	r26-first:R26-1,r26-second:R26-2	-	-	0	b15e5a606d41b272d24edaf939f02b8725ca87d0	success
-2026-11-20T04:20:00Z	27	S4	keyfile	judge	gpt-6.2-astra	CONTINUE	keyfile-migration:R27-1	r26-first:R26-1,r26-second:R26-2	-	0	4c9b8268eac415ba38f82617ea68fc62dd202bc1	success
-2026-11-20T05:20:00Z	28	S4	keyfile	judge	gpt-6.2-astra	CONTINUE	keyfile-migration:R28-1	keyfile-migration:R27-1	-	0	7da50ab95384313aacaf3c4f948a8036ecf5422c	failure
-2026-11-20T07:01:00Z	29	S4	keyfile	judge	gpt-6.2-astra	CONTINUE	keyfile-migration:R29-1	keyfile-migration:R28-1	-	0	c6dff1961d86033f719eec06d6a32ceeb8456681	failure
-2026-11-20T07:50:00Z	30	S4	keyfile	judge	gpt-6.2-astra	CONTINUE	keyfile-migration:R30-1,receipt-truth:R30-2	keyfile-migration:R29-1	-	0	6506fa8cfcd49c422c9c357b470c8d33a4b66b15	failure
+2026-11-19T22:20:00Z	24	S4	-	judge	gpt-5.4-pro	CONTINUE	-	-	-	0	f899d3b3bdcc67d18c472a24421aa9fa1c957e49	success
+2026-11-19T23:11:00Z	25	S4	-	judge	gpt-5.4-pro	CONTINUE	-	-	-	0	43b93bc276bdbbc1422ae5671582f9ce3f2825c2	success
+2026-11-20T02:39:00Z	26	S4	slice2	judge	gpt-5.4-pro	CONTINUE	r26-first:R26-1,r26-second:R26-2	-	-	0	b15e5a606d41b272d24edaf939f02b8725ca87d0	success
+2026-11-20T04:20:00Z	27	S4	keyfile	judge	gpt-5.4-pro	CONTINUE	keyfile-migration:R27-1	r26-first:R26-1,r26-second:R26-2	-	0	4c9b8268eac415ba38f82617ea68fc62dd202bc1	success
+2026-11-20T05:20:00Z	28	S4	keyfile	judge	gpt-5.4-pro	CONTINUE	keyfile-migration:R28-1	keyfile-migration:R27-1	-	0	7da50ab95384313aacaf3c4f948a8036ecf5422c	failure
+2026-11-20T07:01:00Z	29	S4	keyfile	judge	gpt-5.4-pro	CONTINUE	keyfile-migration:R29-1	keyfile-migration:R28-1	-	0	c6dff1961d86033f719eec06d6a32ceeb8456681	failure
+2026-11-20T07:50:00Z	30	S4	keyfile	judge	gpt-5.4-pro	CONTINUE	keyfile-migration:R30-1,receipt-truth:R30-2	keyfile-migration:R29-1	-	0	6506fa8cfcd49c422c9c357b470c8d33a4b66b15	failure

@@ -30,5 +30,5 @@ jobs:
           git config --global init.defaultBranch main
       - name: Run unit and acceptance suites
         run: |
-          node --test scripts/test/*.test.mjs
-          node --test acceptance/*.test.mjs
+          node --test scripts/test
+          node --test acceptance

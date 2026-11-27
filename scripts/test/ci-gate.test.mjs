@@ -1,14 +1,11 @@
-// Admission of the CI gate (round close and protected-branch push): the same rule turns the recorded S4 defects red and
-// keeps every commit whose workflow succeeded green. Labels come from the workflow runs, the gate reads the check runs.
-// The recorded check runs predate matching by source: every one of them came from the repository's GitHub Actions
-// workflow (the corpus was read from actions/runs and those runs' check runs), so each gets app `github-actions`.
+// D-0014, D-0016, D-0064
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { ciWord, requiredChecks } from "../lib/check-runs.mjs";
-import { ciDestination, ciGreen, DestinationError, parseDestination, pushCommit, pushDestination } from "../lib/ci.mjs";
+import { ciDestination, ciGreen, criticConvergedAccepted, DestinationError, hasConvergence, parseDestination, pushCommit, pushDestination } from "../lib/ci.mjs";
 import { readCi } from "../lib/ci-receipt.mjs";
 import { policyOf } from "../gated-push.mjs";
 import { fixtures, git, green, redOn, repo, s4History, scripts, temp } from "./helpers.mjs";
@@ -34,8 +31,6 @@ const NAMES = ["verify", "linux-host", "sandbox"];
 const CURRENT = NAMES.map(n => `github-actions/${n}`);
 const RED_S4 = ["7da50ab", "c6dff19", "6506fa8", "c7d752c"];
 
-// The checks the workflow defined at a time: each check counts from its first appearance in the corpus. This is
-// independent of any sample's own result.
 const firstSeen = {};
 for (const s of samples) for (const r of s.check_runs) if (!firstSeen[r.name] || r.started_at < firstSeen[r.name]) firstSeen[r.name] = r.started_at;
 const requiredAt = sample => {
@@ -85,17 +80,15 @@ test("a re-run that passed replaces the earlier result; the latest run per name 
 });
 
 test("parseDestination identifies GitHub remotes and rejects unsupported/local paths", () => {
-  assert.deepEqual(parseDestination("https://github.com/example/app.git\n"), { forge: "github", host: "github.com", region: null, repository: "example/app", profile: null });
-  assert.deepEqual(parseDestination("git@github.com:example/app.git"), { forge: "github", host: "github.com", region: null, repository: "example/app", profile: null });
+  assert.deepEqual(parseDestination("https://github.com/X32Studio/example-app.git\n"), { forge: "github", host: "github.com", region: null, repository: "x32studio/example-app", profile: null });
+  assert.deepEqual(parseDestination("git@github.com:X32Studio/example-app.git"), { forge: "github", host: "github.com", region: null, repository: "x32studio/example-app", profile: null });
   assert.equal(parseDestination("https://gitlab.com/a/b.git").forge, null);
   assert.equal(parseDestination("https://github.com.evil.example/a/b.git").forge, null);
   assert.equal(parseDestination("/srv/git/github.com/a/b.git"), null, "a local path is not a remote forge");
 });
 
-// ---------- review v0.2 B2: the latest run, the destination repository ----------
-
 test("a queued re-run is pending, not the earlier success; a failed re-run fails; check-run ids order runs", () => {
-  assert.deepEqual(redOn("ci-reruns"), { queuedRerunOk: true, failedRerunOk: false }); // red on a4db050: the queued re-run case
+  assert.deepEqual(redOn("ci-reruns"), { queuedRerunOk: true, failedRerunOk: false });
   const req = ["github-actions/verify"];
   const ok = green("verify", "github-actions", "success", "2026-11-20T01:00:00Z");
   const queued = { app: "github-actions", name: "verify", status: "queued", conclusion: null, started_at: null };
@@ -108,7 +101,7 @@ test("a queued re-run is pending, not the earlier success; a failed re-run fails
 });
 
 test("CI is read in the repository the push goes to, never the fetch repository", () => {
-  assert.deepEqual(redOn("push-destination"), { queried: ["example/fetch"], pushed: false, refused: null }); // red on a4db050
+  assert.deepEqual(redOn("push-destination"), { queried: ["example/fetch"], pushed: false, refused: null });
   const product = repo({ "a.txt": "1\n" });
   git(product, "remote", "add", "origin", "https://github.com/example/fetch.git");
   git(product, "remote", "set-url", "--push", "origin", "https://github.com/example/push.git");
@@ -122,7 +115,6 @@ test("CI is read in the repository the push goes to, never the fetch repository"
   assert.deepEqual(queried, ["example/push"]);
   assert.equal(r.refused, undefined);
   assert.deepEqual([ciGreen({ repo: product, sha: sha.slice(0, 7), require: req, fetchRuns }).repository, ciGreen({ repo: product, sha, require: req, fetchRuns }).sha], ["example/push", sha]);
-  // pushInsteadOf sends the push to a local bare repository: no supported forge checks exist there, so a protected push is refused
   const bare = temp("bare-"); git(bare, "init", "-q", "--bare");
   git(product, "config", "--unset", "remote.origin.pushurl");
   git(product, "config", `url.${bare}.pushInsteadOf`, "https://github.com/example/fetch.git");
@@ -176,8 +168,6 @@ test("ci-green writes the same green or red receipt as stdout and never overwrit
   assert.equal(run([green()], "--out").status, 64);
 });
 
-// End to end through the real command, offline: a stand-in `gh` serves the recorded check runs the way
-// `gh api --paginate --jq` prints them (one object per line); the history fixture maps the source SHAs to the replayed Git commits.
 test("gated-push refuses the S4 failure and passes the recorded rewrite head", () => {
   const { product, commits } = s4History();
   const failed = [...commits].find(([sha]) => sha.startsWith("c7d752c"))[1];
@@ -192,7 +182,6 @@ if (!runs[sha]) { process.stderr.write("Not Found"); process.exit(1); }
 for (const r of runs[sha]) process.stdout.write(JSON.stringify({ app: "github-actions", name: r.name, status: r.status, conclusion: r.conclusion, started_at: r.started_at }) + "\\n");
 `);
   chmodSync(join(bin, "gh"), 0o755);
-  // a green suite receipt for each SHA (synthetic: this test is about the CI half of the gate)
   const receipt = sha => { const f = join(bin, `${sha}.json`); writeFileSync(f, JSON.stringify({ repository: product, sha: git(product, "rev-parse", sha), tree: git(product, "rev-parse", `${sha}^{tree}`), green: true })); return f; };
   const { store } = registeredLoop(product, { protectedBranches: ["rewrite", "main"], require: CURRENT, files: {
     "metrics/trajectory.jsonl": convergence(failed) + convergence(rewrite, { round: 2 }),
@@ -222,7 +211,6 @@ test("every push needs a green suite-green receipt for that exact commit of that
   assert.match(push({ repository: product, sha: "f".repeat(40), green: true }).refused, /receipt is for fffffff/);
   assert.match(push({ repository: other, sha, green: true }).refused, /receipt is for/);
   assert.equal(spawnSync("git", ["-C", bare, "rev-parse", "--verify", "-q", "refs/heads/work"]).status, 1, "nothing was pushed");
-  // the receipt suite-green.mjs writes is accepted as is
   const out = join(temp(), "suite");
   writeFileSync(join(product, "t.test.mjs"), "import test from 'node:test';\ntest('ok', () => {});\n");
   git(product, "add", "t.test.mjs"); git(product, "commit", "-qm", "test");
@@ -681,4 +669,208 @@ test("flow: a configured remote includes its default transport port; loss: false
   for (const url of ["https://GitHub.com:443/Example/Product.git", "ssh://git@github.com:22/example/product.git", "git@github.com:example/product.git", "https://github.com./example/product/"])
     assert.deepEqual(parseDestination(url), { forge: "github", host: "github.com", region: null, repository: "example/product", profile: null });
   assert.deepEqual(parseDestination("ssh://git@github.com:2222/example/product"), { forge: null, host: "github.com:2222", region: null, repository: "example/product", profile: null });
+});
+
+function criticEvidence(base, commit, {
+  round = 1,
+  phase = "S5",
+  step = "critic",
+  agent = { runner: "t3:codex", model: "gpt-5.4", observedModel: "gpt-5.4", observedModels: ["gpt-5.4"] },
+  report = "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: -\nOPENED: -",
+  task = "VERDICT: PASS\nACCEPTANCE: pass",
+  sealed = true,
+  audit = { violations: 0 },
+  extraFiles = null,
+} = {}) {
+  const n = String(round).padStart(4, "0");
+  const record = `rounds/${n}-${step}.md`;
+  const sealedPath = `sealed/critic/${n}/${step}-1.md`;
+  const body = `# Critic\n\n## Task (verbatim)\n\n\`\`\`text\n${task}\n\`\`\`\n\n## Report (verbatim)\n\n${report}\n`;
+  const files = extraFiles ?? (sealed ? [record, sealedPath] : [record]);
+  const handoff = {
+    id: `R-${n}-${step}`, role: "critic", step, phase, round, record, files,
+    product: { base, commit }, view: "a".repeat(40), attempt: 1, agent, audit,
+  };
+  return {
+    handoff,
+    files: {
+      [record]: sealed ? "# Public critic record\n" : body,
+      ...(sealed ? { [sealedPath]: body } : {}),
+    },
+  };
+}
+
+test("D-0064 T10: criticConvergedAccepted validates sealed and record critic reports and fails closed on disputes, defects, task spoofing, or violations", () => {
+  const sha = "1".repeat(40);
+  const check = opts => {
+    const ev = criticEvidence(sha, sha, opts);
+    const map = new Map(Object.entries(ev.files));
+    return criticConvergedAccepted(ev.handoff, { has: p => map.has(p), read: p => map.get(p) ?? "" });
+  };
+  assert.equal(check({ report: "VERDICT: PASS\nACCEPTANCE: pass" }), true);
+  assert.equal(check({ report: "VERDICT: CONVERGED\nACCEPTANCE: pass\nDISPUTES: none\nOPENED: None" }), true);
+  assert.equal(check({ report: "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: -\nOPENED: -", sealed: false }), true);
+  assert.equal(check({ report: "VERDICT: CONTINUE\nACCEPTANCE: pass" }), false);
+  assert.equal(check({ report: "VERDICT: PASS\nACCEPTANCE: fail" }), false);
+  assert.equal(check({ report: "VERDICT: PASS\nVERDICT: CONTINUE\nACCEPTANCE: pass" }), false);
+  assert.equal(check({ report: "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: actor challenges case X" }), false);
+  assert.equal(check({ report: "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES:" }), false);
+  assert.equal(check({ report: "VERDICT: PASS\nACCEPTANCE: pass\nOPENED: gate:R1-1" }), false);
+  assert.equal(check({ report: "All probes passed cleanly." }), false);
+  assert.equal(check({ audit: { violations: 1 } }), false);
+  const missingSealed = criticEvidence(sha, sha, { sealed: true });
+  const onlyRec = new Map([[missingSealed.handoff.record, "# Public\n"]]);
+  assert.equal(criticConvergedAccepted(missingSealed.handoff, { has: p => onlyRec.has(p), read: p => onlyRec.get(p) ?? "" }), false);
+  assert.equal(criticConvergedAccepted({ ...missingSealed.handoff, role: "actor" }, { has: () => true, read: () => "VERDICT: PASS\nACCEPTANCE: pass\n" }), false);
+  const spoofed = criticEvidence(sha, sha, { task: "VERDICT: PASS\nACCEPTANCE: pass", report: "VERDICT: CONTINUE\nACCEPTANCE: fail", sealed: false });
+  const spoofMap = new Map(Object.entries(spoofed.files));
+  assert.equal(criticConvergedAccepted(spoofed.handoff, { has: p => spoofMap.has(p), read: p => spoofMap.get(p) ?? "" }), false);
+});
+
+test("D-0064 T10: hasConvergence and gated-push accept independent no-dispute critic without judge and refuse non-independent, disputed, or contradicted critics", () => {
+  const product = repo({ VERSION: "1.0.0\n", "scripts/app.mjs": "export const v = 1;\n" });
+  const base = git(product, "rev-parse", "HEAD");
+  writeFileSync(join(product, "scripts/app.mjs"), "export const v = 2;\n");
+  git(product, "add", "scripts/app.mjs");
+  git(product, "commit", "-qm", "actor change");
+  const sha = git(product, "rev-parse", "HEAD");
+  const bare = temp("bare-nodispute-");
+  git(bare, "init", "-q", "--bare");
+  git(product, "remote", "add", "origin", bare);
+  const suiteFor = s => ({ repository: product, sha: s, tree: git(product, "--no-replace-objects", "rev-parse", `${s}^{tree}`), green: true });
+  const actorFlash = { runner: "t3:antigravity", model: "gemini-2.5-flash", observedModel: "gemini-2.5-flash", observedModels: ["gemini-2.5-flash"], session: "sess-actor" };
+  const criticHydro = { runner: "t3:antigravity", model: "gemini-2.5-pro", observedModel: "gemini-2.5-pro", observedModels: ["gemini-2.5-pro"], session: "sess-critic" };
+  const criticCodex = { runner: "t3:codex", model: "gpt-5.4", observedModel: "gpt-5.4", observedModels: ["gpt-5.4"], session: "sess-codex" };
+  const actorHandoff = {
+    id: "R-0001-actor", role: "actor", step: "actor", phase: "S5", round: 1,
+    record: "rounds/0001-actor.md", files: ["rounds/0001-actor.md"],
+    product: { base, commit: sha }, view: "a".repeat(40), attempt: 1, agent: actorFlash, audit: { violations: 0 },
+  };
+  const makeRecords = ({ criticOpts = {}, policy = undefined, trajectory = "" } = {}) => {
+    const ev = criticEvidence(sha, sha, { round: 1, phase: "S5", ...criticOpts });
+    const files = {
+      "rounds/0001-actor.md": "# R-0001-actor\n",
+      "metrics/handoffs.jsonl": `${JSON.stringify(actorHandoff)}\n${JSON.stringify(ev.handoff)}\n`,
+      "metrics/trajectory.jsonl": trajectory,
+      ...ev.files,
+    };
+    const { records, store } = rawLoop(product, {
+      protected: ["main"], gates: { require: [] }, ...(policy !== undefined ? { judgeIndependence: policy } : {}),
+    }, files);
+    return { records, store };
+  };
+
+  const crossVendor = makeRecords({ criticOpts: { agent: criticCodex, report: "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: -\nOPENED: -" } });
+  assert.equal(hasConvergence(product, crossVendor.records, sha), true);
+  assert.equal(pushCommit({ repo: product, records: crossVendor.records, sha, suite: suiteFor(sha), branch: "main", protectedBranches: ["main"], require: [], dry: true }).refused, undefined);
+
+  const modelOk = makeRecords({ policy: "model", criticOpts: { agent: criticHydro, report: "VERDICT: CONVERGED\nACCEPTANCE: pass", sealed: false } });
+  assert.equal(hasConvergence(product, modelOk.records, sha), true);
+  const receipt = join(temp(), "suite.json");
+  writeFileSync(receipt, JSON.stringify(suiteFor(sha)));
+  const pushed = gatedPush(["--repo", product, "--owner-store", modelOk.store, "--branch", "main", "--sha", sha, "--suite-receipt", receipt]);
+  assert.equal(pushed.status, 0, pushed.stderr);
+  assert.equal(git(bare, "rev-parse", "refs/heads/main"), sha);
+
+  writeFileSync(join(product, "VERSION"), "1.0.1\n");
+  git(product, "add", "VERSION");
+  git(product, "commit", "-qm", "bump version");
+  const tip = git(product, "rev-parse", "HEAD");
+  assert.equal(hasConvergence(product, modelOk.records, tip), true);
+
+  const sameVendor = makeRecords({ policy: "vendor", criticOpts: { agent: criticHydro } });
+  assert.equal(hasConvergence(product, sameVendor.records, sha), false);
+  const sameModel = makeRecords({ policy: "model", criticOpts: { agent: { ...actorFlash, session: "sess-other" } } });
+  assert.equal(hasConvergence(product, sameModel.records, sha), false);
+  const sharedSess = makeRecords({ policy: "model", criticOpts: { agent: { ...criticHydro, session: "sess-actor" } } });
+  assert.equal(hasConvergence(product, sharedSess.records, sha), false);
+  const disputed = makeRecords({ policy: "model", criticOpts: { agent: criticHydro, report: "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: actor challenges case X" } });
+  assert.equal(hasConvergence(product, disputed.records, sha), false);
+  const opened = makeRecords({ policy: "model", criticOpts: { agent: criticHydro, report: "VERDICT: PASS\nACCEPTANCE: pass\nOPENED: ci:R1-1" } });
+  assert.equal(hasConvergence(product, opened.records, sha), false);
+  const contradicted = makeRecords({ policy: "model", criticOpts: { agent: criticHydro }, trajectory: convergence(sha, { verdict: "CONTINUE" }) });
+  assert.equal(hasConvergence(product, contradicted.records, sha), false);
+
+  const refusedCli = gatedPush(["--repo", product, "--owner-store", disputed.store, "--branch", "main", "--sha", sha, "--suite-receipt", receipt]);
+  assert.equal(refusedCli.status, 2);
+  assert.match(refusedCli.stderr, /no judge CONVERGED ruling or independent no-dispute critic PASS\/CONVERGED ruling/);
+  assert.match(refusedCli.stderr, /judge convergence or independent no-dispute critic PASS\/CONVERGED ruling/);
+});
+
+test("D-0064 T10: writing critic certifies only product.commit (and its tip/same-tree merge) while read-only critic certifies product.base without provenanceBaseline", () => {
+  const product = repo({ VERSION: "1.0.0\n", "scripts/app.mjs": "export const v = 1;\n" });
+  const initSha = git(product, "rev-parse", "HEAD");
+  writeFileSync(join(product, "scripts/app.mjs"), "export const v = 2;\n");
+  git(product, "add", "scripts/app.mjs");
+  git(product, "commit", "-qm", "actor change");
+  const actorSha = git(product, "rev-parse", "HEAD");
+  mkdirSync(join(product, "acceptance"), { recursive: true });
+  writeFileSync(join(product, "acceptance/app.test.mjs"), "import test from 'node:test';\ntest('ok', () => {});\n");
+  git(product, "add", "acceptance/app.test.mjs");
+  git(product, "commit", "-qm", "critic acceptance");
+  const criticSha = git(product, "rev-parse", "HEAD");
+  writeFileSync(join(product, "VERSION"), "1.0.1\n");
+  git(product, "add", "VERSION");
+  git(product, "commit", "-qm", "bump version on critic");
+  const criticTip = git(product, "rev-parse", "HEAD");
+  const actorTip = (() => {
+    git(product, "read-tree", actorSha);
+    writeFileSync(join(product, "VERSION"), "1.0.1\n");
+    git(product, "add", "VERSION");
+    const sha = git(product, "commit-tree", git(product, "write-tree"), "-p", actorSha, "-m", "bump version on actor");
+    git(product, "read-tree", "HEAD");
+    git(product, "checkout", "-q", "--", ".");
+    return sha;
+  })();
+  const other = git(product, "commit-tree", git(product, "rev-parse", `${initSha}^{tree}`), "-m", "unrelated parent");
+  const mergeCritic = git(product, "commit-tree", git(product, "rev-parse", `${criticSha}^{tree}`), "-p", other, "-p", criticSha, "-m", "same-tree critic merge");
+  const mergeActor = git(product, "commit-tree", git(product, "rev-parse", `${actorSha}^{tree}`), "-p", other, "-p", actorSha, "-m", "same-tree actor merge");
+
+  const bare = temp("bare-critic-base-");
+  git(bare, "init", "-q", "--bare");
+  git(product, "remote", "add", "origin", bare);
+  const suiteFor = s => ({ repository: product, sha: s, tree: git(product, "--no-replace-objects", "rev-parse", `${s}^{tree}`), green: true });
+  const actorFlash = { runner: "paseo:better-paseo-antigravity", model: "gemini-2.5-flash", observedModel: "gemini-2.5-flash", observedModels: ["gemini-2.5-flash"], session: "sess-a" };
+  const criticHydro = { runner: "paseo:better-paseo-antigravity", model: "gemini-2.5-pro", observedModel: "gemini-2.5-pro", observedModels: ["gemini-2.5-pro"], session: "sess-c" };
+  const actorHandoff = {
+    id: "R-0001-actor", role: "actor", step: "actor", phase: "S5", round: 1,
+    record: "rounds/0001-actor.md", files: ["rounds/0001-actor.md"],
+    product: { base: initSha, commit: actorSha }, view: "a".repeat(40), attempt: 1, agent: actorFlash, audit: { violations: 0 },
+  };
+  const makeLoop = (cBase, cCommit) => {
+    const ev = criticEvidence(cBase, cCommit, { round: 1, phase: "S5", agent: criticHydro, sealed: false });
+    return rawLoop(product, { protected: ["main"], gates: { require: [] }, judgeIndependence: "model", provenanceBaseline: null }, {
+      "rounds/0001-actor.md": "# R-0001-actor\n",
+      "metrics/handoffs.jsonl": `${JSON.stringify(actorHandoff)}\n${JSON.stringify(ev.handoff)}\n`,
+      "metrics/trajectory.jsonl": "",
+      ...ev.files,
+    });
+  };
+
+  const writing = makeLoop(actorSha, criticSha);
+  assert.equal(hasConvergence(product, writing.records, actorSha), false);
+  assert.equal(hasConvergence(product, writing.records, actorTip), false);
+  assert.equal(hasConvergence(product, writing.records, mergeActor), false);
+  assert.equal(hasConvergence(product, writing.records, criticSha), true);
+  assert.equal(hasConvergence(product, writing.records, criticTip), true);
+  assert.equal(hasConvergence(product, writing.records, mergeCritic), true);
+  assert.match(pushCommit({ repo: product, records: writing.records, sha: actorSha, suite: suiteFor(actorSha), branch: "main", protectedBranches: ["main"], require: [], dry: true }).refused, /no judge CONVERGED ruling/);
+  assert.equal(pushCommit({ repo: product, records: writing.records, sha: criticSha, suite: suiteFor(criticSha), branch: "main", protectedBranches: ["main"], require: [], dry: true }).refused, undefined);
+  const actorReceipt = join(temp(), "suite-actor.json");
+  writeFileSync(actorReceipt, JSON.stringify(suiteFor(actorSha)));
+  const criticReceipt = join(temp(), "suite-critic.json");
+  writeFileSync(criticReceipt, JSON.stringify(suiteFor(criticSha)));
+  assert.equal(gatedPush(["--repo", product, "--owner-store", writing.store, "--branch", "main", "--sha", actorSha, "--suite-receipt", actorReceipt]).status, 2);
+  assert.equal(gatedPush(["--repo", product, "--owner-store", writing.store, "--branch", "main", "--sha", criticSha, "--suite-receipt", criticReceipt]).status, 0);
+  assert.equal(git(bare, "rev-parse", "refs/heads/main"), criticSha);
+
+  const readOnly = makeLoop(actorSha, actorSha);
+  assert.equal(hasConvergence(product, readOnly.records, actorSha), true);
+  assert.equal(hasConvergence(product, readOnly.records, actorTip), true);
+  assert.equal(hasConvergence(product, readOnly.records, mergeActor), true);
+  assert.equal(pushCommit({ repo: product, records: readOnly.records, sha: actorSha, suite: suiteFor(actorSha), branch: "main", protectedBranches: ["main"], require: [], dry: true }).refused, undefined);
+
+  const unrelatedCommit = makeLoop(actorSha, other);
+  assert.equal(hasConvergence(product, unrelatedCommit.records, other), false);
+  assert.equal(hasConvergence(product, unrelatedCommit.records, actorSha), false);
 });
