@@ -1147,7 +1147,8 @@ test("MCP-10 (D-0061/R26-3): real .github/workflows/test.yml subscribes to ci/<h
   assert.equal(branches.some(p => matchBranchGlob(p, "main")), true, `missing main in ${JSON.stringify(branches)}`);
   assert.equal(branches.some(p => matchBranchGlob(p, "ci/R-0026-critic-tb-product")), true, `missing ci/<handoff-id> match in ${JSON.stringify(branches)}`);
   assert.equal(branches.some(p => matchBranchGlob(p, "ci/R-0002-critic")), true, `missing ci/R-0002-critic match in ${JSON.stringify(branches)}`);
-  assert.match(yml, /name:\s*suite \(\$\{\{\s*matrix\.os\s*\}\}\)/);
+  assert.match(yml, /name:\s*unit \(\$\{\{\s*matrix\.os\s*\}\}\)/);
+  assert.match(yml, /name:\s*acceptance \(\$\{\{\s*matrix\.os\s*\}\}\)/);
   assert.match(yml, /ubuntu-latest/);
   assert.match(yml, /macos-latest/);
 });
