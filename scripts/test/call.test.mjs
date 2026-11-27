@@ -436,4 +436,55 @@ test("D-0064 T9 & D-0067: recordCall skips out/tmp and nested .git, auto-prunes 
   assert.equal(git(s.product, "worktree", "list").includes(wt), false);
   assert.equal(git(s.product, "worktree", "list", "--porcelain").includes("prunable"), false);
   assert.equal(git(s.product, "worktree", "list").split("\n").length, 1);
+  assert.equal(existsSync(join(ws, "call.json")), true, "call.json tombstone preserved after recordCall");
+  assert.equal(existsSync(join(ws, "records")), false, "heavy records view reclaimed after recordCall");
+  assert.equal(existsSync(join(ws, "out")), false, "heavy out/ payload reclaimed after recordCall");
+});
+
+test("F-0015: call.mjs filters junk in out/, writes bounded audit with top-level nonce, and never reuses pruned attempt numbers", async () => {
+  const s = await setup({
+    actor: [{
+      report: "Done with hygiene.",
+      write: {
+        "ws:out/valid.json": '{"ok":true}\n',
+        "ws:out/nested-repo/.git/config": "[core]\n",
+        "ws:out/nested-repo/keep.txt": "kept\n",
+        "ws:out/pg_wal/000000010000000000000001": "wal\n",
+        "ws:out/node-compile-cache/blob.bin": "cache\n",
+        "ws:out/db/state.sqlite": "sqlite\n",
+        "ws:out/dump.h": "int x;\n",
+        "ws:out/oversize.bin": "X".repeat(2_200_000),
+      },
+    }],
+  });
+  const originSha = git(s.records, "rev-parse", "HEAD");
+  mkdirSync(join(s.records, "prune"), { recursive: true });
+  writeFileSync(join(s.records, "prune", "PR-0001.md"), [
+    "# PR-0001 Pruned attempt 1", "",
+    "| Path | Action | SHA-256 | Bytes | Origin commit | New SHA-256 | New bytes | Reason |",
+    "|---|---|---|---:|---|---|---:|---|",
+    `| \`evidence/0001/actor-1-audit.json\` | pruned | \`${"a".repeat(64)}\` | \`12\` | \`${originSha}\` | — | — | pruned |`,
+    "",
+  ].join("\n"));
+  git(s.records, "add", "prune/PR-0001.md");
+  git(s.records, "commit", "-qm", "record prune manifest");
+
+  const r = s.run("actor");
+  assert.equal(r.code, EXIT.done, r.message);
+  assert.equal(r.handoff.attempt, 2, "pruned attempt 1 is never reused");
+  assert.equal(existsSync(join(r.ws, "records")), true, "direct synchronous call() keeps r.ws intact");
+
+  const files = committed(s.records);
+  assert.ok(files.includes("evidence/0001/actor-2/out/valid.json"));
+  assert.ok(files.includes("evidence/0001/actor-2/out/nested-repo/keep.txt"));
+  for (const banned of ["pg_wal", "node-compile-cache", "state.sqlite", "dump.h", "oversize.bin"]) {
+    assert.equal(files.some(f => f.includes(banned)), false, `excluded ${banned}`);
+  }
+  const auditRaw = git(s.records, "show", "HEAD:evidence/0001/actor-2-audit.json");
+  assert.ok(Buffer.byteLength(auditRaw, "utf8") <= 1048576);
+  const audit = JSON.parse(auditRaw);
+  assert.equal(audit.nonce, null);
+  assert.ok(audit.excludedOutCount >= 5);
+  assert.ok(audit.excludedOutPaths.includes("pg_wal/"));
+  assert.ok(audit.excludedOutPaths.includes("oversize.bin"));
 });

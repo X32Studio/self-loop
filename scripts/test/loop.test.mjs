@@ -407,3 +407,40 @@ test("next recognizes independent no-dispute critic convergence without nagging 
     if (!opts.trajectory) assert.match(out, /no judge ruling on the integration head/, label);
   }
 });
+
+test("F-0015: loop.mjs preserves all exports, supports --full, and emits read-only hygiene & records-hook Rung-3 screening", async () => {
+  const mod = await import("../loop.mjs");
+  for (const name of [
+    "queryClock", "cliClock", "timeLines", "measuresLines", "PREDICATES", "createPredicates",
+    "citedPredicates", "predicateContext", "firstParentHistory", "predicateReplay",
+    "recordedAfter", "checkouts", "integrationOf", "certifiedCriticOn", "reconcilePlans",
+    "nextLines", "recordsOf", "blockerState", "idleSteps", "integrationTarget", "lastActivity", "liveStall", "stallState",
+  ]) {
+    assert.ok(name in mod, `loop.mjs exports ${name}`);
+  }
+  const s = await setup();
+  git(s.product, "checkout", "-q", "loop/s5");
+  put(s.product, "test/a.test.js", "export const ok = 1;\n");
+  git(s.product, "add", "test/a.test.js");
+  git(s.product, "commit", "-qm", "clean comments");
+  for (let i = 0; i < 12; i++) {
+    const staleWs = join(s.cfg.workDir, `0001-actor-stale-${i}`);
+    put(staleWs, "call.json", JSON.stringify({
+      version: 2, id: `R-0001-actor-stale`, phase, role: "actor", round: 1, step: "actor-stale",
+      record: "rounds/0001-actor-stale.md", nonce: "0123456789abcdef", ws: staleWs, wt: join(staleWs, "wt"), recorded: true,
+    }));
+  }
+  const before = git(s.records, "status", "--porcelain");
+  const fastOut = run(s, "next");
+  assert.equal(fastOut.status, 0, fastOut.stderr);
+  assert.match(fastOut.stdout, /Prose comments at [0-9a-f]{40}: 0/);
+  assert.match(fastOut.stdout, /operational hygiene threshold exceeded \(screening\)/);
+  assert.match(fastOut.stdout, /self-loop\.mjs clean --config .* --apply/);
+  assert.match(fastOut.stdout, /records pre-commit hook inactive \(missing \.githooks\/pre-commit, screening\)/);
+  assert.match(fastOut.stdout, /self-loop\.mjs hooks install --records/);
+  assert.equal(git(s.records, "status", "--porcelain"), before, "next remains strictly read-only");
+
+  const fullOut = run(s, "next", "--full");
+  assert.equal(fullOut.status, 0, fullOut.stderr);
+  assert.match(fullOut.stdout, /Prose comments at [0-9a-f]{40}: 0/);
+});

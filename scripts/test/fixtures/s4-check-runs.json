@@ -1,5 +1,5 @@
 {
- "source": "GitHub check runs and workflow runs of example/app, read 2026-11-20 with gh api (actions/runs?per_page=100 and commits/<sha>/check-runs); 9fc7a06 was pushed only inside a later push and has no runs.",
+ "source": "GitHub check runs and workflow runs of example-org/example-app, read 2026-11-20 with gh api (actions/runs?per_page=100 and commits/<sha>/check-runs); 9fc7a06 was pushed only inside a later push and has no runs.",
  "samples": [
   {
    "sha": "07b7cb31f0411ad7b4dc5d68998aa8ebf385d1d0",

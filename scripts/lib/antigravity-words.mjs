@@ -1,4 +1,4 @@
-// F-0009, D-0052, R-0032-reviewer-architecture, design/antigravity-harness.md#owner-words-capture-and-sync
+// F-0009, F-0015, D-0052, R-0032-reviewer-architecture, design/antigravity-harness.md#owner-words-capture-and-sync
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { antigravityAppDirs, appDirFromTranscriptPath, conversationIdFromPath, decodeToolCallArgs, extractHookDirs, readConversationSummaries, resolveAuthoritativeTranscript, unwrapAntigravityUserText } from "./antigravity.mjs";
@@ -174,27 +174,44 @@ export function antigravityTranscript(file, _roots = null, expectedSession = nul
   return { ...empty, words: numberWords(session, items, "antigravity"), echoes, skippedTruncated };
 }
 
-export function checkAntigravityTurnConfirmation({ transcriptPath, text, initialNumSteps, words = [], echoes = [] }) {
-  if (!transcriptPath) return { confirmed: false, event: null };
+export function latestAntigravityUserStep(transcriptPath) {
+  if (!transcriptPath) return null;
   const actual = resolveAuthoritativeTranscript(transcriptPath);
-  if (!existsSync(actual)) return { confirmed: false, event: null };
-  const { rows } = readTranscriptRows(actual);
+  if (!existsSync(actual)) return null;
+  let rows;
+  try { ({ rows } = readTranscriptRows(actual)); } catch { return null; }
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (isExplicitUserRow(rows[i]) && Number.isInteger(rows[i].step_index)) return rows[i].step_index;
+  }
+  return -1;
+}
+
+export function checkAntigravityTurnConfirmation({ transcriptPath, text, initialNumSteps, words = [], echoes = [] }) {
+  if (!transcriptPath) return { confirmed: false, event: null, latestUserStep: null };
+  const actual = resolveAuthoritativeTranscript(transcriptPath);
+  if (!existsSync(actual)) return { confirmed: false, event: null, latestUserStep: null };
+  let rows;
+  try { ({ rows } = readTranscriptRows(actual)); } catch { return { confirmed: false, event: null, latestUserStep: null }; }
+  let lastExplicit = null;
   let lastRow = null;
   for (let i = rows.length - 1; i >= 0; i--) {
-    if (isUserRow(rows[i])) { lastRow = rows[i]; break; }
+    if (!lastExplicit && isExplicitUserRow(rows[i])) lastExplicit = rows[i];
+    if (!lastRow && isUserRow(rows[i])) lastRow = rows[i];
+    if (lastExplicit && lastRow) break;
   }
-  if (!lastRow) return { confirmed: false, event: null };
+  const latestUserStep = Number.isInteger(lastExplicit?.step_index) ? lastExplicit.step_index : -1;
+  if (!lastRow) return { confirmed: false, event: null, latestUserStep };
   const event = Number.isInteger(lastRow.step_index) ? `step-${lastRow.step_index}` : null;
   const isCurrentTurn = typeof initialNumSteps === "number"
     ? (Number.isInteger(lastRow.step_index) && lastRow.step_index >= initialNumSteps - 1)
     : true;
-  if (!isCurrentTurn) return { confirmed: false, event: null };
-  if (isTruncatedContent(lastRow)) return { confirmed: false, event };
+  if (!isCurrentTurn) return { confirmed: false, event: null, latestUserStep };
+  if (isTruncatedContent(lastRow)) return { confirmed: false, event, latestUserStep };
   const unwrapped = unwrapAntigravityUserText(lastRow.content);
   const rowText = unwrapped === null ? null : captureOwnerText(unwrapped);
-  if (rowText !== text || !event) return { confirmed: false, event };
+  if (rowText !== text || !event) return { confirmed: false, event, latestUserStep };
   const confirmed = [...words, ...echoes].some(item => item.event === event && item.text === text);
-  return { confirmed, event };
+  return { confirmed, event, latestUserStep };
 }
 
 function brainTranscripts(appDir) {

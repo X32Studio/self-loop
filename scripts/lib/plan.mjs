@@ -9,19 +9,13 @@ import { batchesFrom } from '../decisions.mjs';
 import { isSubstantiveOwnerWord, MARKS, parseWords, wordClasses, WORDS } from './owner-words.mjs';
 import { hostLoad, resolveOwnerStore } from './registry.mjs';
 import { fileOverlap, globOverlap } from './plan-globs.mjs';
-import {
-  criticCausalBase, HANDOFF_ID, isCodeJudge, judgeCoverageProblems, judgeJoinProblems,
-  judgeLineageProblems, packageOrder, planCallCommand, planPackageMap, reviewCoverage,
-} from './plan-lineage.mjs';
+import { criticCausalBase, HANDOFF_ID, isCodeJudge, judgeCoverageProblems, judgeJoinProblems, judgeLineageProblems, packageOrder, planCallCommand, planPackageMap, reviewCoverage } from './plan-lineage.mjs';
 import { parseWindows, WINDOWS, windowState } from './window-state.mjs';
 import { gunzipSync } from 'node:zlib';
 import { classify, DEFAULT_LAYOUT, parseLayout } from '../records-check.mjs';
 import { parseRows, TRAJECTORY } from '../trajectory.mjs';
 
-export {
-  criticCausalBase, HANDOFF_ID, isCodeJudge, judgeCoverageProblems, judgeJoinProblems,
-  judgeLineageProblems, packageOrder, planCallCommand, planPackageMap, reviewCoverage,
-};
+export { criticCausalBase, HANDOFF_ID, isCodeJudge, judgeCoverageProblems, judgeJoinProblems, judgeLineageProblems, packageOrder, planCallCommand, planPackageMap, reviewCoverage };
 
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -42,13 +36,13 @@ function list(value) {
   const trimmed = value.trim();
   if (!trimmed) return [];
   if (trimmed.startsWith('[')) { const parsed = jsonList(value); if (parsed) return parsed; }
-  const parts = [];
+  const parts = [], chars = Array.from(value);
   let start = 0, depth = 0;
-  Array.from(value).forEach((c, i, chars) => {
+  chars.forEach((c, i) => {
     if ('[{'.includes(c)) depth++; else if (']}'.includes(c)) depth--;
     else if (c === ',' && depth === 0) { parts.push(chars.slice(start, i).join('').trim()); start = i + 1; }
   });
-  return [...parts, Array.from(value).slice(start).join('').trim()];
+  return [...parts, chars.slice(start).join('').trim()];
 }
 
 export function parsePlan(source) {
@@ -60,11 +54,8 @@ export function parsePlan(source) {
     for (const line of source.split('\n')) {
       const title = /^# (PL-\d{4})(?:\s|$)/.exec(line), section = /^## (?:Package\s+)?([\w.-]+)\s*$/.exec(line), field = /^([a-z][a-zA-Z-]*):\s*(.*?)\s*$/.exec(line);
       if (title) plan.id = title[1];
-      else if (section) { current = { id: section[1] }; plan.packages.push(current); }
-      else if (field) {
-        if (Object.hasOwn(current, field[1])) throw new Error(`duplicate field ${field[1]}`);
-        current[field[1]] = field[2];
-      }
+      else if (section) plan.packages.push(current = { id: section[1] });
+      else if (field) { if (Object.hasOwn(current, field[1])) throw new Error(`duplicate field ${field[1]}`); current[field[1]] = field[2]; }
     }
   }
   if (!object(plan)) throw new Error('plan must be an object');
@@ -99,8 +90,7 @@ const contract = p => JSON.stringify([p.authority?.toSorted(), p.goal, p.files?.
   ...(Array.isArray(p.reviews) && p.reviews.length ? [p.reviews.toSorted()] : [])]);
 
 const AUTHORITY_ID = /^D-\d{4}$|^R-\d{4}-(?:reviewer|judge)(?:-[a-z]+)*$/;
-const WORD_CITE = /(?<![\w-])W-[0-9a-f]{10}(?![\w-])/g;
-const BATCH_CITE = /(?<![\w-])B-\d{4}(?![\w-])/g;
+const WORD_CITE = /(?<![\w-])W-[0-9a-f]{10}(?![\w-])/g, BATCH_CITE = /(?<![\w-])B-\d{4}(?![\w-])/g;
 const REVIEW_OR_JUDGE_CITE = /(?<![\w-])R-\d{4}-(?:reviewer|judge)(?:-[a-z]+)*(?![\w-])/g;
 const TEXT_RECORD = /\.(md|tsv|json|txt|mjs|js|ts|ya?ml)$/i;
 const DISTILL_KINDS = new Set(['Purpose', 'Decisions', 'Blueprint', 'Interventions', 'Lessons']);
@@ -112,27 +102,23 @@ function openSubstantiveWords(state) {
   if (!words.length) return [];
   const marks = state.files.has(MARKS) ? wordClasses(parseWords(state.read(MARKS))) : new Map();
   const extra = state.files.has('records.json') ? (JSON.parse(state.read('records.json')).extraKinds ?? []) : [];
-  const layout = parseLayout(readFileSync(DEFAULT_LAYOUT, 'utf8'), extra);
-  const ids = new Set(), cited = new Set();
+  const layout = parseLayout(readFileSync(DEFAULT_LAYOUT, 'utf8'), extra), ids = new Set(), cited = new Set();
   for (const path of state.files) {
     const rec = classify(layout, path);
     if (rec?.id) ids.add(rec.id);
-    if (path !== WORDS && path !== MARKS && TEXT_RECORD.test(path) && (DISTILL_KINDS.has(rec?.kind) || rec?.settlesOwnerWords === true)) {
+    if (path !== WORDS && path !== MARKS && TEXT_RECORD.test(path) && (DISTILL_KINDS.has(rec?.kind) || rec?.settlesOwnerWords === true))
       for (const m of state.read(path).matchAll(WORD_CITE)) cited.add(m[0]);
-    }
   }
   return words.filter(w => {
     if (!isSubstantiveOwnerWord(w.text)) return false;
     const mark = marks.get(w.id) ?? null;
-    const settled = mark ? (mark.as !== 'direction' || ids.has(mark.intervention)) : cited.has(w.id);
-    return !settled;
+    return !(mark ? (mark.as !== 'direction' || ids.has(mark.intervention)) : cited.has(w.id));
   });
 }
 
 // D-0060, design/mandatory-control-plane.md#4
 function decisionAuthorityProblem(id, state, { batches, handoffIds, hasHandoffs }) {
-  const doc = state.read(recordPath(id));
-  const by = /^by:\s*(.*)$/mi.exec(doc)?.[1]?.trim() ?? '';
+  const doc = state.read(recordPath(id)), by = /^by:\s*(.*)$/mi.exec(doc)?.[1]?.trim() ?? '';
   const answeredBatch = bid => Boolean(batches.find(b => b.id === bid)?.answered);
   const committedHandoff = hid => Boolean(recordPath(hid) && state.files.has(recordPath(hid)) && (!hasHandoffs || handoffIds.has(hid)));
   if (/^owner\b/i.test(by)) {
@@ -150,22 +136,15 @@ function decisionAuthorityProblem(id, state, { batches, handoffIds, hasHandoffs 
 export function readPlanWindow(state, phase, nextRound = 1, { handoffs = null, rows = null } = {}) {
   if (!state.files.has(WINDOWS)) return { mode: 'normal', active: null, actorBlocked: false };
   const windows = parseWindows(state.read(WINDOWS), WINDOWS);
-  const phaseHandoffs = (handoffs ?? (state.files.has(HANDOFFS) ? parseHandoffs(state.read(HANDOFFS)) : []))
-    .filter(h => h.phase === phase && state.files.has(h.record));
-  const phaseRows = (rows ?? (state.files.has(TRAJECTORY) ? parseRows(state.read(TRAJECTORY)) : []))
-    .filter(r => r.phase === phase);
+  const phaseHandoffs = (handoffs ?? (state.files.has(HANDOFFS) ? parseHandoffs(state.read(HANDOFFS)) : [])).filter(h => h.phase === phase && state.files.has(h.record));
+  const phaseRows = (rows ?? (state.files.has(TRAJECTORY) ? parseRows(state.read(TRAJECTORY)) : [])).filter(r => r.phase === phase);
   return windowState({ windows, handoffs: phaseHandoffs, rows: phaseRows, phase, nextRound });
-}
-
-// D-0060, design/mandatory-control-plane.md#4
-function hasOpenRefactorWindow(plan, state, handoffs) {
-  const win = readPlanWindow(state, plan.phase, 1, { handoffs });
-  return Boolean(win.active && (win.mode === 'slack' || win.mode === 'converging'));
 }
 
 // D-0060, D-0064, design/mandatory-control-plane.md#4
 function checkActorCoverage(plan, state, handoffs, fail) {
-  if (!plan.packages.some(p => p.role === 'actor') || hasOpenRefactorWindow(plan, state, handoffs)) return;
+  const win = readPlanWindow(state, plan.phase, 1, { handoffs });
+  if (!plan.packages.some(p => p.role === 'actor') || (win.active && (win.mode === 'slack' || win.mode === 'converging'))) return;
   const { uncoveredActors } = reviewCoverage(plan);
   if (uncoveredActors.length) fail(`${plan.id}: actor package(s) lack critic coverage outside an open W-NNNN window: ${uncoveredActors.join(', ')}`);
 }
@@ -176,10 +155,8 @@ export function validatePlan(plan, state) {
   for (const key of ['scope', 'phase']) if (!text(plan[key])) fail(`plan needs ${key}`);
   if (!Array.isArray(plan.packages)) return [...errors, 'plan needs a packages list'];
   for (const w of openSubstantiveWords(state)) fail(`open substantive owner word ${w.id} must be distilled or marked before planning (0-turn grace)`);
-  const hasHandoffs = state.files.has(HANDOFFS);
-  const handoffs = hasHandoffs ? parseHandoffs(state.read(HANDOFFS)) : [];
-  const handoffIds = new Set(handoffs.map(h => h.id));
-  const batches = batchesFrom([...state.files], state.read);
+  const hasHandoffs = state.files.has(HANDOFFS), handoffs = hasHandoffs ? parseHandoffs(state.read(HANDOFFS)) : [];
+  const handoffIds = new Set(handoffs.map(h => h.id)), batches = batchesFrom([...state.files], state.read);
   const packages = new Map(), handoffsSeen = new Set();
   const hasRecord = id => recordPath(id) && state.files.has(recordPath(id));
   const reference = (id, at) => { if (!hasRecord(id)) fail(`${at}: missing committed record ${id}`); };
@@ -198,12 +175,8 @@ export function validatePlan(plan, state) {
       if (!AUTHORITY_ID.test(authority)) fail(`${p.id}: authority must be a decision, reviewer handoff, or judge ruling: ${authority}`);
       reference(authority, `${p.id} authority`);
       if (hasRecord(authority)) {
-        if (/^D-\d{4}$/.test(authority)) {
-          const problem = decisionAuthorityProblem(authority, state, { batches, handoffIds, hasHandoffs });
-          if (problem) fail(`${p.id} authority: ${problem}`);
-        } else if (hasHandoffs && !handoffIds.has(authority)) {
-          fail(`${p.id} authority: ${authority} has no committed handoff in ${HANDOFFS}`);
-        }
+        if (/^D-\d{4}$/.test(authority)) { const problem = decisionAuthorityProblem(authority, state, { batches, handoffIds, hasHandoffs }); if (problem) fail(`${p.id} authority: ${problem}`); }
+        else if (hasHandoffs && !handoffIds.has(authority)) fail(`${p.id} authority: ${authority} has no committed handoff in ${HANDOFFS}`);
       }
     }
     for (const field of ['files', 'needs']) if (!Array.isArray(p[field]) || !p[field].every(text)) fail(`${p.id}: ${field} must be a list (empty is allowed)`);
@@ -222,16 +195,13 @@ export function validatePlan(plan, state) {
     else if (!packages.has(target)) fail(`${p.id} reviews: unknown in-plan package ${target}`);
   }
   const visiting = new Set(), visited = new Set();
-  function visit(id) {
+  const visit = id => {
     if (visiting.has(id)) { fail(`needs cycle at ${id}`); return; }
     if (visited.has(id)) return;
     visiting.add(id);
-    for (const dep of packages.get(id)?.needs ?? []) {
-      const target = byRef.get(dep);
-      if (target) visit(target.id);
-    }
+    for (const dep of packages.get(id)?.needs ?? []) { const target = byRef.get(dep); if (target) visit(target.id); }
     visiting.delete(id); visited.add(id);
-  }
+  };
   if (plan.packages.every(p => Array.isArray(p.needs))) for (const id of packages.keys()) visit(id);
   checkActorCoverage(plan, state, handoffs, fail);
   if (!errors.length) {
@@ -251,15 +221,13 @@ export function validatePlan(plan, state) {
   }
   const sameScope = all.filter(p => p.scope === plan.scope && p.phase === plan.phase), descendants = new Set();
   for (const p of sameScope) {
-    let current = p; const seen = new Set();
-    while (current?.supersedes && !seen.has(current.id)) {
+    for (let current = p, seen = new Set(); current?.supersedes && !seen.has(current.id); current = all.find(q => q.id === current.supersedes)) {
       seen.add(current.id);
       if (current.supersedes === plan.id) { descendants.add(p.id); break; }
-      current = all.find(q => q.id === current.supersedes);
     }
   }
-  const heads = sameScope.filter(p => !sameScope.some(q => q.supersedes === p.id) && !descendants.has(p.id));
-  if (heads.some(p => p.id !== plan.supersedes)) fail(`scope ${plan.scope} already has a plan; supersedes must name its current head`);
+  if (sameScope.filter(p => !sameScope.some(q => q.supersedes === p.id) && !descendants.has(p.id)).some(p => p.id !== plan.supersedes))
+    fail(`scope ${plan.scope} already has a plan; supersedes must name its current head`);
   for (let ancestor = plan, chain = new Set(); ancestor?.supersedes; ancestor = ancestor.supersedes === plan.id ? plan : all.find(p => p.id === ancestor.supersedes)) {
     if (chain.has(ancestor.id)) { fail('supersedes cycle'); break; }
     chain.add(ancestor.id);
@@ -279,13 +247,87 @@ export function loadPlan(state, id) {
   return plan;
 }
 
+const AUDIT_STEP_RE = /^(?:evidence|sealed\/judge)\/(\d{4})\/([a-z]+(?:-[a-z]+)*)-\d+-audit\.json$/;
+const MAX_AUDIT_PARSE_BYTES = 1048576, AUDIT_SLICE_BYTES = 65536, AUDIT_META_KEYS = new Set(['id', 'nonce', 'agent']);
+
+function indexAuditFiles(files) {
+  const byStep = new Map();
+  for (const f of files) {
+    const m = AUDIT_STEP_RE.exec(f);
+    if (!m) continue;
+    const key = `${m[1]}/${m[2]}`, list = byStep.get(key) ?? [];
+    list.push(f); byStep.set(key, list);
+  }
+  return byStep;
+}
+
+const stepKeyOf = w => Number.isInteger(w.round) && typeof w.step === 'string' && w.step
+  ? `${String(w.round).padStart(4, '0')}/${w.step}`
+  : (m => m ? `${m[1]}/${m[2]}${m[3]}` : null)(HANDOFF_ID.exec(w.id ?? ''));
+
+function skipJsonString(src, i) {
+  for (i++; i < src.length; i++) { if (src[i] === '\\') i++; else if (src[i] === '"') return i + 1; }
+  return src.length;
+}
+
+function extractTopLevelFields(src) {
+  const found = {};
+  for (let i = 0, depth = 0; i < src.length && Object.keys(found).length < AUDIT_META_KEYS.size;) {
+    const ch = src[i];
+    if (ch === '{' || ch === '[') { depth++; i++; continue; }
+    if (ch === '}' || ch === ']') { depth--; i++; continue; }
+    if (ch !== '"') { i++; continue; }
+    const end = skipJsonString(src, i);
+    if (depth !== 1) { i = end; continue; }
+    let j = end;
+    while (j < src.length && /\s/.test(src[j])) j++;
+    if (src[j] !== ':') { i = end; continue; }
+    let key; try { key = JSON.parse(src.slice(i, end)); } catch { i = end; continue; }
+    for (j++; j < src.length && /\s/.test(src[j]); j++);
+    if (!AUDIT_META_KEYS.has(key)) { i = j; continue; }
+    if (src[j] === '"') { const ve = skipJsonString(src, j); try { found[key] = JSON.parse(src.slice(j, ve)); } catch {} i = ve; }
+    else if (src[j] === '{') {
+      let d = 0, k = j;
+      while (k < src.length) {
+        if (src[k] === '"') k = skipJsonString(src, k);
+        else if (src[k] === '{') { d++; k++; }
+        else if (src[k] === '}') { k++; if (--d === 0) break; }
+        else k++;
+      }
+      if (d === 0) { try { found[key] = JSON.parse(src.slice(j, k)); } catch {} i = k; } else i = j + 1;
+    } else {
+      const m = /^(?:null|true|false|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(src.slice(j));
+      if (m) { try { found[key] = JSON.parse(m[0]); } catch {} i = j + m[0].length; } else i = j;
+    }
+  }
+  return found;
+}
+
+function readAuditMeta(state, file) {
+  const raw = state.bytes?.(file), buf = raw == null ? null : (Buffer.isBuffer(raw) ? raw : Buffer.from(raw));
+  if (!buf) { const txt = state.read(file); if (!txt) return null; try { return JSON.parse(txt); } catch { return null; } }
+  if (buf.length <= MAX_AUDIT_PARSE_BYTES) { try { return JSON.parse(buf.toString('utf8')); } catch { return null; } }
+  const head = extractTopLevelFields(buf.subarray(0, AUDIT_SLICE_BYTES).toString('utf8'));
+  if (head.id !== undefined && head.agent !== undefined) return head;
+  const tail = buf.subarray(Math.max(0, buf.length - AUDIT_SLICE_BYTES)).toString('utf8'), close = tail.lastIndexOf(']');
+  return close >= 0 ? { ...extractTopLevelFields(`{${tail.slice(close + 1)}`), ...head } : head;
+}
+
+// F-0015, P-0014, P-0015, R-0055-judge-frame-hygiene
+export function buildSharedPlanContext(state, cfg = null, { live = true, plans = null } = {}) {
+  if (!cfg) {
+    if (!state.files.has('loop.json')) throw new Error('missing committed loop.json');
+    cfg = { ...normalize(JSON.parse(state.read('loop.json')), state.records), configFile: join(state.records, 'loop.json') };
+  }
+  return { cfg, handoffs: parseHandoffs(state.read('metrics/handoffs.jsonl')), trajectory: parseRows(state.read('metrics/trajectory.jsonl')),
+    batches: batchesFrom([...state.files], state.read), plans: plans ?? plansFrom(state), prepared: live ? preparedIn(cfg) : [],
+    auditFilesByStep: indexAuditFiles(state.files) };
+}
+
 export function planContext(state, plan, { live = true } = {}) {
-  if (!state.files.has('loop.json')) throw new Error('missing committed loop.json');
-  const cfg = { ...normalize(JSON.parse(state.read('loop.json')), state.records), configFile: join(state.records, 'loop.json') };
-  if (canonical(cfg.records) !== state.records || cfg.phase !== plan.phase) throw new Error('plan and loop.json must name the same records repository and phase');
-  return { cfg, handoffs: parseHandoffs(state.read('metrics/handoffs.jsonl')),
-    trajectory: parseRows(state.read('metrics/trajectory.jsonl')),
-    batches: batchesFrom([...state.files], state.read), plans: plansFrom(state), prepared: live ? preparedIn(cfg) : [] };
+  const shared = buildSharedPlanContext(state, null, { live });
+  if (canonical(shared.cfg.records) !== state.records || shared.cfg.phase !== plan.phase) throw new Error('plan and loop.json must name the same records repository and phase');
+  return shared;
 }
 
 // F-0012, R-0008-judge-mechanisms, design/generative-engine.md#idle-packages-and-holds
@@ -324,6 +366,7 @@ export function readyPlan(state, plan, { context = planContext(state, plan), hos
     status: completed(p.handoff) ? 'done' : matching(p.handoff).some(w => w.liveWorkspace) || leases(p.handoff).length ? 'running' : 'ready', holds: [] }));
   const byRef = planPackageMap(plan);
   const byId = new Map(rows.map(row => [row.id, row]));
+  let auditByStep = context.auditFilesByStep ?? null;
   const hold = (row, kind, target, release) => { row.holds.push({ kind, target, release }); row.status = 'waiting'; };
   for (let i = 0; i < plan.packages.length; i++) {
     const p = plan.packages[i], row = rows[i];
@@ -334,23 +377,25 @@ export function readyPlan(state, plan, { context = planContext(state, plan), hos
     }
     for (const need of p.needs) {
       const dep = byRef.get(need);
-      if (dep) {
-        const depRow = byId.get(dep.id);
-        if (depRow.status !== 'done') hold(row, 'package', dep.id, `record successful handoff ${depRow.handoff}`);
-      } else if (/^B-/.test(need) && !batches.find(b => b.id === need)?.answered)
-        hold(row, 'batch', need, `commit the owner's answer to ${need}`);
+      if (dep) { const depRow = byId.get(dep.id); if (depRow.status !== 'done') hold(row, 'package', dep.id, `record successful handoff ${depRow.handoff}`); }
+      else if (/^B-/.test(need) && !batches.find(b => b.id === need)?.answered) hold(row, 'batch', need, `commit the owner's answer to ${need}`);
     }
     for (const w of active) {
       const old = plans.flatMap(q => q.packages).find(q => q.handoff === w.id);
       const paths = Array.isArray(w.dispatch?.files) ? w.dispatch.files : (old?.files ?? null);
-      if (!paths || !paths.length) continue;
+      if (!paths?.length) continue;
       const overlap = fileOverlap(p.files, paths);
       if (overlap) hold(row, 'writer', w.id, `record or reconcile ${w.id} before writing ${overlap.left}`);
     }
-    for (const w of matching(p.handoff).filter(w => !w.liveWorkspace)) {
-      const terminal = [...state.files].filter(f => /-audit\.json$/.test(f)).some(f => {
-        const audit = JSON.parse(state.read(f));
-        if (audit.id !== w.id || !audit.agent?.session) return false;
+    const missing = matching(p.handoff).filter(w => !w.liveWorkspace);
+    if (missing.length && !auditByStep) auditByStep = indexAuditFiles(state.files);
+    for (const w of missing) {
+      const key = stepKeyOf(w), candidates = key ? (auditByStep.get(key) ?? []) : [];
+      const terminal = candidates.some(f => {
+        const audit = readAuditMeta(state, f);
+        if (!audit || audit.id !== w.id || !audit.agent?.session) return false;
+        if (typeof audit.nonce === 'string') return audit.nonce === w.nonce;
+        if (audit.nonce !== undefined) return false;
         const log = f.replace(/-audit\.json$/, '.log.gz');
         return state.files.has(log) && gunzipSync(state.bytes(log)).toString('utf8').includes(w.nonce);
       });
@@ -370,23 +415,15 @@ export function readyPlan(state, plan, { context = planContext(state, plan), hos
     let pinnedBase = null;
     if (p.role === 'critic' && !row.holds.some(h => h.kind === 'package')) {
       const cb = criticCausalBase(plan, p, { repo: cfg.product, handoffs: phaseHandoffs, base });
-      if (!cb.ok) hold(row, 'merge', cb.target, cb.release);
-      else if (cb.pinned) pinnedBase = cb.base;
+      if (!cb.ok) hold(row, 'merge', cb.target, cb.release); else if (cb.pinned) pinnedBase = cb.base;
     }
     if (p.role === 'judge') {
       if (base === null) hold(row, 'merge', 'integration SHA', 'merge the diverged hand-off heads that loop.mjs next names; the judge rules on one integration SHA');
-      if (isCodeJudge(p)) {
-        for (const jp of judgeJoinProblems(plan, { repo: cfg.product, handoffs: phaseHandoffs, base, window: win })) {
-          hold(row, jp.kind, jp.target, jp.release);
-        }
-      }
+      if (isCodeJudge(p)) for (const jp of judgeJoinProblems(plan, { repo: cfg.product, handoffs: phaseHandoffs, base, window: win })) hold(row, jp.kind, jp.target, jp.release);
     }
     const task = resolve(cfg.workDir, p.task ?? `tasks/${p.handoff}.md`);
     if (!existsSync(task)) hold(row, 'task', task, 'write the package task with features, goal, interface and acceptance');
-    if (row.status === 'ready') {
-      const cmdBase = p.role === 'judge' && base ? base : pinnedBase;
-      row.command = planCallCommand(cfg, plan.id, p, { base: cmdBase });
-    }
+    if (row.status === 'ready') row.command = planCallCommand(cfg, plan.id, p, { base: p.role === 'judge' && base ? base : pinnedBase });
   }
   return summarize({ plan: plan.id, scope: plan.scope, revision: state.revision, packages: rows, host,
     trajectory: (context.trajectory ?? []).filter(r => r.phase === plan.phase).map(r => ({ round: r.round, time: r.time, verdict: r.verdict, area: r.area })),
@@ -415,12 +452,35 @@ export function admitAcrossPlans(entries) {
         if (!overlap) continue;
         row.holds.push({ kind: 'writer', target: claim.p.handoff,
           release: `record successful handoff ${claim.p.handoff} (${claim.p.id}, ${claim.plan}), which writes ${overlap.right}, before writing ${overlap.left}` });
-        row.status = 'waiting';
-        delete row.command;
+        row.status = 'waiting'; delete row.command;
       }
       if (row.status === 'ready') claims.push({ plan, p, row });
     }
     summarize(entry.result);
   }
   return entries;
+}
+
+// F-0012, F-0015, P-0015, R-0008-judge-frame-dispatch
+export function reconcilePlans(records, revision, phase, { host, base, live = true, now = Date.now() } = {}) {
+  let state, plans;
+  try { state = snapshot(records, revision); plans = plansFrom(state); }
+  catch (error) { return { state: null, problem: `the plans cannot be read: ${error.message}`, plans: [], idle: [], unchecked: [] }; }
+  let shared = null, sharedErr = null, resolvedHost = host;
+  const getShared = plan => {
+    if (sharedErr) throw sharedErr;
+    if (!shared) { try { shared = buildSharedPlanContext(state, null, { live, plans }); } catch (err) { sharedErr = err; throw err; } }
+    if (canonical(shared.cfg.records) !== state.records || shared.cfg.phase !== plan.phase) throw new Error('plan and loop.json must name the same records repository and phase');
+    if (resolvedHost === undefined) resolvedHost = hostLoad({ cfg: shared.cfg, store: resolveOwnerStore() });
+    return shared;
+  };
+  const current = plans.filter(p => p.phase === phase && !plans.some(o => o.supersedes === p.id)).toSorted((a, b) => a.id.localeCompare(b.id)).map(plan => {
+    const errors = validatePlan(plan, state);
+    if (errors.length) return { plan, errors };
+    try { return { plan, result: readyPlan(state, plan, { context: getShared(plan), host: resolvedHost, base, now }) }; }
+    catch (error) { return { plan, problem: error.message }; }
+  });
+  admitAcrossPlans(current);
+  const rowsWith = test => current.flatMap(({ plan, result }) => result ? result.packages.filter(test).map(row => ({ ...row, plan: plan.id })) : []);
+  return { state, problem: null, plans: current, idle: rowsWith(isIdle), unchecked: rowsWith(row => row.unchecked) };
 }

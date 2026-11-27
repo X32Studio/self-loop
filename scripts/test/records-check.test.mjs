@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { parseHandoffs, ROLES, validateHandoff, validateLeadPatchHandoff } from "../lib/handoff.mjs";
@@ -28,7 +28,7 @@ test("the layout is parsed from RECORDS.md, the one source", () => {
   assert.equal(classify(layout, "notes.md"), null);
 });
 
-test("undeclared files, red and green on the real example-app-loop file list (b2ca438)", () => {
+test("undeclared files, red and green on the real example-loop file list (b2ca438)", () => {
   const [legit, baseline] = readFileSync(join(fixtures, "example-loop-files.txt"), "utf8").split("# baseline sample\n").map(s => s.split("\n").filter(Boolean));
   assert.ok(legit.length > 250 && baseline.length > 150);
   const falseKills = legit.filter(p => !classify(layout, p));
@@ -202,10 +202,10 @@ test("CLI: exit 1 with the finding on a certain failure, exit 0 with screening o
   assert.equal(run("--json").status, 0);
 });
 
-test("no test reads the live example-app-loop directory; its inputs are frozen fixtures", () => {
+test("no test reads a live records directory; its inputs are frozen fixtures", () => {
   assert.match(readFileSync(join(fixtures, "v0.1-post-report-test.log"), "utf8"), /ℹ fail 2/);
   for (const f of readdirSync(here).filter(f => f.endsWith(".mjs")))
-    assert.ok(f === "records-check.test.mjs" || !/example-app-loop["/]|EXAMPLE_APP_LOOP/.test(readFileSync(join(here, f), "utf8")), f);
+    assert.ok(f === "records-check.test.mjs" || !/example-loop["/]|EXAMPLE_LOOP/.test(readFileSync(join(here, f), "utf8")), f);
 });
 
 test("the check screens old designs until an actor hand-off writes them in the current phase", () => {
@@ -416,4 +416,77 @@ test("D-0064 T10: records-check validates ciReceipt offline on PASS trajectory r
     const state = inspect(valid, { layoutText });
     assert.equal(state.failures.some(f => f.rule === "trajectory" && f.path === "metrics/trajectory.jsonl"), true);
   }
+});
+
+test("F-0015 A5: parseLayout includes native .githooks/pre-commit and prune/PR-NNNN.md defaults, and { fast } skips historical screen()", () => {
+  assert.deepEqual(classify(layout, ".githooks/pre-commit"), { kind: "Repository", id: null, changes: "editable" });
+  assert.deepEqual(classify(layout, "prune/PR-0001.md"), { kind: "Prune", id: "PR-0001", changes: "immutable" });
+
+  const dir = repo({
+    "README.md": "# r\n",
+    "notes.txt": "undeclared\n",
+    "research/note.md": "# Note\n\nSee /tmp/scratch/foo.log and src/app.js:12\n",
+  });
+  const full = inspect(dir, { layoutText });
+  assert.ok(full.failures.some(f => f.rule === "undeclared"));
+  assert.ok(full.screening.some(s => s.rule === "scratch-path"));
+  assert.ok(full.screening.some(s => s.rule === "bare-line-citation"));
+
+  const fast = inspect(dir, { layoutText, fast: true });
+  assert.ok(fast.failures.some(f => f.rule === "undeclared"));
+  assert.deepEqual(fast.screening.filter(s => s.rule === "scratch-path" || s.rule === "bare-line-citation"), []);
+});
+
+test("F-0015: records-check --staged blocks stray staged paths and INDEX.md drift with exit 2 and passes when clean", () => {
+  const dir = repo({ "README.md": "# r\n" });
+  const runCli = (...a) => spawnSync(process.execPath, [join(scripts, "records-check.mjs"), "--repo", dir, ...a], { encoding: "utf8" });
+  assert.equal(runCli("--write").status, 0);
+  git(dir, "add", "INDEX.md");
+  git(dir, "commit", "-qm", "index");
+
+  assert.equal(runCli("--staged").status, 0);
+
+  mkdirSync(join(dir, "prompts"), { recursive: true });
+  writeFileSync(join(dir, "prompts", "draft.md"), "# Draft\n");
+  git(dir, "add", "prompts/draft.md");
+  const stray = runCli("--staged");
+  assert.equal(stray.status, 2);
+  assert.match(stray.stderr, /certain\tstaged-stray-file\tprompts\/draft\.md/);
+  git(dir, "reset", "-q", "HEAD", "--", "prompts/draft.md");
+
+  mkdirSync(join(dir, "decisions"), { recursive: true });
+  writeFileSync(join(dir, "decisions", "D-0001.md"), "# D-0001 Test\n\nby: owner\n");
+  git(dir, "add", "decisions/D-0001.md");
+  const drift = runCli("--staged");
+  assert.equal(drift.status, 2);
+  assert.match(drift.stderr, /certain\tstaged-index-drift\tINDEX\.md/);
+
+  assert.equal(runCli("--write").status, 0);
+  git(dir, "add", "INDEX.md");
+  assert.equal(runCli("--staged").status, 0);
+});
+
+test("F-0015: records-check --prune dry-run and apply delegate to pruneAndCompactRecords", () => {
+  const dir = repo({
+    "README.md": "# r\n",
+    "rounds/0001-actor.md": "# R-0001-actor\n",
+    "rounds/0005-actor.md": "# R-0005-actor\n",
+    "evidence/0001/actor-1/out/old.txt": "old\n",
+    "evidence/0005/actor-1/out/new.txt": "new\n",
+  });
+  const runCli = (...a) => spawnSync(process.execPath, [join(scripts, "records-check.mjs"), "--repo", dir, ...a], { encoding: "utf8" });
+  assert.equal(runCli("--write").status, 0);
+  git(dir, "add", "INDEX.md");
+  git(dir, "commit", "-qm", "index");
+
+  const dry = runCli("--prune", "--retain-rounds", "1", "--dry-run", "--json");
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.equal(JSON.parse(dry.stdout).prunedFiles.length, 1);
+  assert.equal(existsSync(join(dir, "evidence/0001/actor-1/out/old.txt")), true);
+
+  const app = runCli("--prune", "--retain-rounds", "1", "--apply", "--json");
+  assert.equal(app.status, 0, app.stderr);
+  assert.equal(JSON.parse(app.stdout).tombstonePath, "prune/PR-0001.md");
+  assert.equal(existsSync(join(dir, "evidence/0001/actor-1/out/old.txt")), false);
+  assert.equal(runCli().status, 0);
 });

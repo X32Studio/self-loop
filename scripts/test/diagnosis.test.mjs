@@ -1,8 +1,4 @@
-// The alarm gate (lib/diagnosis.mjs, applied by call.mjs): a critic, actor or judge call, its preparation and its dry
-// run are refused (exit 7) while the phase has an alarm at the view that no reviewer-diagnosis hand-off, recorded after
-// the row that raised it, names on an `alarms:` line of its task. Admission (SKILL.md Enforcement ladder): the replay
-// of this loop's phase v1 turns the recorded defect red (rounds 3 and 4 were briefed on undiagnosed alarms) and keeps
-// every legitimate call green.
+// D-0016, D-0017, D-0069, design/alarm-gate.md#measured
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -26,7 +22,6 @@ const append = (records, ...rows) => {
   git(records, "commit", "-qm", `trajectory: round ${rows.map(r => r.round).join(",")}`);
 };
 const diagnosis = (keys, extra = "") => `Mode: DIAGNOSIS.\nfeatures: none\n${keys === null ? "" : `alarms: ${keys}\n`}${extra}`;
-/** Two rulings of area core where round 1's blocker stays open after round 2: `partly-closed:S5:core:2` on row 2. */
 const partly = [row(1, { opened: "bug:A" }), row(2)];
 
 test("the task's alarms: lines and the record's task section are read exactly", () => {
@@ -44,7 +39,7 @@ test("an alarm fired on the row that last changed it: a grown alarm fires anew, 
   assert.equal(firings(grown).find(a => a.key === "area-rounds:S5:core").row, 4, "a fourth round of the area changed its evidence");
 });
 
-/** D-0017 item 2; design/alarm-gate.md#measured */
+// D-0017, design/alarm-gate.md#measured
 function replayRecords(replay, ciOf) {
   const records = repo({ "README.md": "# replay\n" });
   const rowTexts = replay.rows.map(text => { const r = JSON.parse(text); return JSON.stringify({ ...r, ci: ciOf(r) }); });
@@ -161,23 +156,18 @@ test("call.mjs refuses a critic, actor or judge call, dry run and preparation wh
 
 test("only a reviewer-diagnosis of the same phase, recorded after the row, naming the key on its task's alarms: line covers it", async () => {
   const s = await setup({ reviewer: [{ report: "VERDICT: CONTINUE\nalarms: partly-closed:S5:core:2\n" }] });
-  // Recorded before the row: it could not have diagnosed it.
   assert.equal(s.run("reviewer", { round: 1, step: "reviewer-diagnosis", task: diagnosis("partly-closed:S5:core:2") }).code, EXIT.done);
   append(s.records, ...partly);
   assert.equal(s.run("critic", { dry: true }).code, EXIT.records, "the diagnosis came before the row");
-  // The key only in the reviewer's report, not in the lead's task.
   assert.equal(s.run("reviewer", { round: 2, step: "reviewer-diagnosis", task: diagnosis(null, "Diagnose `partly-closed:S5:core:2`.\n") }).code, EXIT.done);
   assert.equal(s.run("critic", { round: 2, dry: true }).code, EXIT.records, "named in prose and in the report only");
-  // Another mode of the reviewer.
   assert.equal(s.run("reviewer", { round: 2, step: "reviewer-subtraction", task: diagnosis("partly-closed:S5:core:2") }).code, EXIT.done);
   assert.equal(s.run("critic", { round: 2, dry: true }).code, EXIT.records, "a subtraction review is no diagnosis");
-  // Another phase's diagnosis.
   s.cfg.phase = "S9";
   assert.equal(s.run("reviewer", { round: 3, step: "reviewer-diagnosis", task: diagnosis("partly-closed:S5:core:2") }).code, EXIT.done);
   s.cfg.phase = "S5";
   const still = s.run("critic", { round: 3, dry: true });
   assert.equal(still.code, EXIT.records, "a diagnosis of phase S9");
-  // The gate prints a step whose record is free in that round.
   assert.match(still.message, /--round 3 --step reviewer-diagnosis-b /, "round 3 holds S9's reviewer-diagnosis record");
   assert.match(s.run("critic", { round: 4, dry: true }).message, /--round 4 --step reviewer-diagnosis /);
   assert.equal(s.run("reviewer", { round: 3, step: "reviewer-diagnosis-b", task: diagnosis("partly-closed:S5:core:2") }).code, EXIT.done);
@@ -191,7 +181,6 @@ test("every key must be named; alarms that fired on rows of another phase do not
   append(s.records, row(4, { opened: "bug:B" }), row(5), row(6, { opened: "bug:C" }));
   const r = s.run("critic", { dry: true });
   assert.equal(r.code, EXIT.records);
-  // bug opened again in S5 rounds: the class alarm fired on an S5 row now.
   for (const key of ["blocker-recurring:bug", "partly-closed:S5:core:5", "partly-closed:S5:core:6", "area-rounds:S5:core"]) assert.match(r.message, new RegExp(key));
   assert.doesNotMatch(r.message, /S4:core/);
   assert.equal(s.run("reviewer", { round: 7, step: "reviewer-diagnosis", task: diagnosis("partly-closed:S5:core:5, area-rounds:S5:core, blocker-recurring:bug") }).code, EXIT.done);

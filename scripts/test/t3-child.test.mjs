@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync
 import { basename, join } from "node:path";
 import test from "node:test";
 import { EXIT, preparedIn, recordCall } from "../call.mjs";
-import { transcriptEvents } from "../lib/t3-child.mjs";
+import { cancelPreparedCall, readPreparation, transcriptEvents } from "../lib/t3-child.mjs";
 import { parseHandoffs } from "../lib/handoff.mjs";
 import { git, setup, temp } from "./helpers.mjs";
 
@@ -604,4 +604,84 @@ test("Codex wait calls with outputs are covered while a wait with missing output
   ]);
   const { events } = transcriptEvents("fixture", { runner: "codex", file });
   assert.deepEqual(events.map(({ event }) => event), [{ type: "unparsed_tool_call", call_id: "incomplete" }]);
+});
+
+test("preparedIn skips terminal/stale migrated workspaces, accepts migrated current-round basename, and rejects basename tamper", async () => {
+  const s = await setup({}, { agents: { critic: t3("codex"), actor: t3("codex"), judge: t3("codex"), reviewer: { runner: "cmd", cmd: ["true"] } } });
+  const writeCall = (dirName, ctx) => {
+    const ws = join(s.cfg.workDir, dirName);
+    mkdirSync(join(ws, "out"), { recursive: true });
+    writeFileSync(join(ws, "call.json"), `${JSON.stringify(ctx, null, 1)}\n`);
+    return ws;
+  };
+  writeCall("0005-judge-abc", {
+    version: 2, id: "R-0005-judge", role: "judge", round: 5, step: "judge", phase: s.cfg.phase,
+    record: "rounds/0005-judge.md", nonce: "n5", recorded: true,
+    ws: "/home/alice/.old-root/work/0005-judge-abc", wt: "/home/alice/.old-root/work/0005-judge-abc/wt",
+  });
+  writeCall("0006-actor-can", {
+    version: 2, id: "R-0006-actor", role: "actor", round: 6, step: "actor", phase: s.cfg.phase,
+    record: "rounds/0006-actor.md", nonce: "n6", cancelled: true,
+    ws: "/home/alice/.old-root/work/0006-actor-can", wt: "/home/alice/.old-root/work/0006-actor-can/wt",
+  });
+  writeCall("0007-critic-old", {
+    version: 2, id: "R-0007-critic", role: "critic", round: 7, step: "critic", phase: s.cfg.phase,
+    record: "rounds/0007-critic.md", nonce: "n7",
+    ws: "/home/alice/.old-root/work/0007-critic-old", wt: "/home/alice/.old-root/work/0007-critic-old/wt",
+  });
+  const baseSha = git(s.product, "rev-parse", "HEAD");
+  const viewSha = git(s.records, "rev-parse", "HEAD");
+  const existingHandoffs = readFileSync(join(s.records, "metrics/handoffs.jsonl"), "utf8");
+  mkdirSync(join(s.records, "rounds"), { recursive: true });
+  writeFileSync(join(s.records, "rounds/0010-judge.md"), "# R-0010-judge\n");
+  writeFileSync(join(s.records, "metrics/handoffs.jsonl"), `${existingHandoffs}${JSON.stringify({
+    id: "R-0010-judge", time: "2026-11-27T00:00:00Z", phase: s.cfg.phase, round: 10, step: "judge", role: "judge",
+    attempt: 1, agent: { runner: "t3:codex" }, view: viewSha, briefs: [], task: "0".repeat(64),
+    product: { base: baseSha, commit: baseSha }, exit: 0, audit: { violations: 0, denied: 0, flags: 0, file: "sealed/judge/0010/judge-1-audit.json" },
+    record: "rounds/0010-judge.md", files: ["rounds/0010-judge.md"],
+  })}\n`);
+  git(s.records, "add", "rounds/0010-judge.md", "metrics/handoffs.jsonl");
+  git(s.records, "commit", "-qm", "record R-0010-judge");
+  writeCall("0010-judge-handoff", {
+    version: 2, id: "R-0010-judge", role: "judge", round: 10, step: "judge", phase: s.cfg.phase,
+    record: "rounds/0010-judge.md", nonce: "n10j",
+    ws: "/home/alice/.old-root/work/0010-judge-other", wt: "/home/alice/.old-root/work/0010-judge-other/wt",
+  });
+  const activeWs = writeCall("0010-actor-mig", {
+    version: 2, id: "R-0010-actor", role: "actor", round: 10, step: "actor", phase: s.cfg.phase,
+    record: "rounds/0010-actor.md", nonce: "n10",
+    ws: "/home/alice/.old-root/work/0010-actor-mig", wt: "/home/alice/.old-root/work/0010-actor-mig/wt",
+  });
+
+  const active = preparedIn(s.cfg, { currentMaxRound: 10 });
+  assert.deepEqual(active.map(p => p.id), ["R-0010-actor"]);
+  assert.equal(active[0].ws, activeWs);
+  assert.equal(active[0].liveWorkspace, false);
+
+  writeCall("0010-actor-tampered", {
+    version: 2, id: "R-0010-actor-b", role: "actor", round: 10, step: "actor-b", phase: s.cfg.phase,
+    record: "rounds/0010-actor-b.md", nonce: "n10b",
+    ws: "/home/alice/.old-root/work/0010-actor-other", wt: "/home/alice/.old-root/work/0010-actor-other/wt",
+  });
+  assert.throws(() => preparedIn(s.cfg, { currentMaxRound: 10 }), /is not a supported prepared call/);
+});
+
+test("readPreparation and cancelPreparedCall compare canonical paths and reclaim payloads while keeping call.json", async () => {
+  const { s, r } = await prepared("codex", "actor");
+  const { ws, wt } = r.prepared;
+  const linkRoot = temp("t3-symlink-root-");
+  const linkedWork = join(linkRoot, "work-link");
+  symlinkSync(s.cfg.workDir, linkedWork);
+  const linkedWs = join(linkedWork, basename(ws));
+  const prep = readPreparation(s.cfg, linkedWs);
+  assert.equal(prep.ctx.id, "R-0001-actor");
+
+  const cancelled = cancelPreparedCall({ ws: linkedWs, product: s.product, reason: "symlink cancel test" });
+  assert.equal(cancelled.cancelled, true);
+  assert.equal(existsSync(join(ws, "call.json")), true);
+  assert.equal(JSON.parse(readFileSync(join(ws, "call.json"), "utf8")).cancelled, true);
+  assert.equal(existsSync(wt), false);
+  assert.equal(existsSync(join(ws, "records")), false);
+  assert.equal(existsSync(join(ws, "out")), false);
+  assert.equal(recordCall(s.cfg, ws).code, EXIT.records);
 });

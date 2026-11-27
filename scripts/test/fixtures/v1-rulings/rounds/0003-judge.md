@@ -2,7 +2,7 @@
 
 phase: v1
 role: judge
-agent: t3 gpt-5.4-pro
+agent: t3 gpt-5.4
 view: records@06de129aa1b9f3e3a1d8eb2f69dd33ca9b6071ae
 briefs: engines/shared.md, engines/judge.md
 product: 378cbf90c1f548f4342093b5b2daaa9b0c58345e

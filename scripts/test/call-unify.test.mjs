@@ -134,6 +134,8 @@ test("optional --session nonce resolution, call.mjs cancel, and prior-round zomb
     const recExplicit = recordCall(s.cfg, ws, { session: "sess-auto-1" });
     assert.equal(recExplicit.code, EXIT.done, recExplicit.message);
     assert.equal(JSON.parse(readFileSync(join(ws, "call.json"), "utf8")).recorded, true);
+    assert.equal(existsSync(join(ws, "records")), false, "recordCall reclaims heavy payloads");
+    assert.equal(JSON.parse(git(s.records, "show", `HEAD:${recExplicit.handoff.audit.file}`)).nonce, nonce, "audit.json carries top-level nonce");
     assert.equal(preparedIn(s.cfg).some(p => p.ws === ws), false);
 
     const p2 = s.run("actor", { round: 1, prepare: true });
@@ -152,6 +154,8 @@ test("optional --session nonce resolution, call.mjs cancel, and prior-round zomb
     assert.equal(cancelled.code, EXIT.done, cancelled.message);
     assert.equal(cancelled.cancelled.cancelled, true);
     assert.equal(existsSync(p3.prepared.wt), false);
+    assert.equal(existsSync(join(p3.prepared.ws, "records")), false, "cancelCall reclaims heavy payloads");
+    assert.equal(existsSync(join(p3.prepared.ws, "call.json")), true, "cancelCall retains call.json tombstone");
     assert.equal(preparedIn(s.cfg).some(p => p.ws === p3.prepared.ws), false);
     assert.equal(recordCall(s.cfg, p3.prepared.ws).code, EXIT.records);
 

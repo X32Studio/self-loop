@@ -80,8 +80,8 @@ test("a re-run that passed replaces the earlier result; the latest run per name 
 });
 
 test("parseDestination identifies GitHub remotes and rejects unsupported/local paths", () => {
-  assert.deepEqual(parseDestination("https://github.com/X32Studio/example-app.git\n"), { forge: "github", host: "github.com", region: null, repository: "x32studio/example-app", profile: null });
-  assert.deepEqual(parseDestination("git@github.com:X32Studio/example-app.git"), { forge: "github", host: "github.com", region: null, repository: "x32studio/example-app", profile: null });
+  assert.deepEqual(parseDestination("https://github.com/example-org/example-app.git\n"), { forge: "github", host: "github.com", region: null, repository: "example-org/example-app", profile: null });
+  assert.deepEqual(parseDestination("git@github.com:example-org/example-app.git"), { forge: "github", host: "github.com", region: null, repository: "example-org/example-app", profile: null });
   assert.equal(parseDestination("https://gitlab.com/a/b.git").forge, null);
   assert.equal(parseDestination("https://github.com.evil.example/a/b.git").forge, null);
   assert.equal(parseDestination("/srv/git/github.com/a/b.git"), null, "a local path is not a remote forge");
@@ -739,7 +739,7 @@ test("D-0064 T10: hasConvergence and gated-push accept independent no-dispute cr
   git(product, "remote", "add", "origin", bare);
   const suiteFor = s => ({ repository: product, sha: s, tree: git(product, "--no-replace-objects", "rev-parse", `${s}^{tree}`), green: true });
   const actorFlash = { runner: "t3:antigravity", model: "gemini-2.5-flash", observedModel: "gemini-2.5-flash", observedModels: ["gemini-2.5-flash"], session: "sess-actor" };
-  const criticHydro = { runner: "t3:antigravity", model: "gemini-2.5-pro", observedModel: "gemini-2.5-pro", observedModels: ["gemini-2.5-pro"], session: "sess-critic" };
+  const criticPro = { runner: "t3:antigravity", model: "gemini-2.5-pro", observedModel: "gemini-2.5-pro", observedModels: ["gemini-2.5-pro"], session: "sess-critic" };
   const criticCodex = { runner: "t3:codex", model: "gpt-5.4", observedModel: "gpt-5.4", observedModels: ["gpt-5.4"], session: "sess-codex" };
   const actorHandoff = {
     id: "R-0001-actor", role: "actor", step: "actor", phase: "S5", round: 1,
@@ -764,7 +764,7 @@ test("D-0064 T10: hasConvergence and gated-push accept independent no-dispute cr
   assert.equal(hasConvergence(product, crossVendor.records, sha), true);
   assert.equal(pushCommit({ repo: product, records: crossVendor.records, sha, suite: suiteFor(sha), branch: "main", protectedBranches: ["main"], require: [], dry: true }).refused, undefined);
 
-  const modelOk = makeRecords({ policy: "model", criticOpts: { agent: criticHydro, report: "VERDICT: CONVERGED\nACCEPTANCE: pass", sealed: false } });
+  const modelOk = makeRecords({ policy: "model", criticOpts: { agent: criticPro, report: "VERDICT: CONVERGED\nACCEPTANCE: pass", sealed: false } });
   assert.equal(hasConvergence(product, modelOk.records, sha), true);
   const receipt = join(temp(), "suite.json");
   writeFileSync(receipt, JSON.stringify(suiteFor(sha)));
@@ -778,17 +778,17 @@ test("D-0064 T10: hasConvergence and gated-push accept independent no-dispute cr
   const tip = git(product, "rev-parse", "HEAD");
   assert.equal(hasConvergence(product, modelOk.records, tip), true);
 
-  const sameVendor = makeRecords({ policy: "vendor", criticOpts: { agent: criticHydro } });
+  const sameVendor = makeRecords({ policy: "vendor", criticOpts: { agent: criticPro } });
   assert.equal(hasConvergence(product, sameVendor.records, sha), false);
   const sameModel = makeRecords({ policy: "model", criticOpts: { agent: { ...actorFlash, session: "sess-other" } } });
   assert.equal(hasConvergence(product, sameModel.records, sha), false);
-  const sharedSess = makeRecords({ policy: "model", criticOpts: { agent: { ...criticHydro, session: "sess-actor" } } });
+  const sharedSess = makeRecords({ policy: "model", criticOpts: { agent: { ...criticPro, session: "sess-actor" } } });
   assert.equal(hasConvergence(product, sharedSess.records, sha), false);
-  const disputed = makeRecords({ policy: "model", criticOpts: { agent: criticHydro, report: "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: actor challenges case X" } });
+  const disputed = makeRecords({ policy: "model", criticOpts: { agent: criticPro, report: "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: actor challenges case X" } });
   assert.equal(hasConvergence(product, disputed.records, sha), false);
-  const opened = makeRecords({ policy: "model", criticOpts: { agent: criticHydro, report: "VERDICT: PASS\nACCEPTANCE: pass\nOPENED: ci:R1-1" } });
+  const opened = makeRecords({ policy: "model", criticOpts: { agent: criticPro, report: "VERDICT: PASS\nACCEPTANCE: pass\nOPENED: ci:R1-1" } });
   assert.equal(hasConvergence(product, opened.records, sha), false);
-  const contradicted = makeRecords({ policy: "model", criticOpts: { agent: criticHydro }, trajectory: convergence(sha, { verdict: "CONTINUE" }) });
+  const contradicted = makeRecords({ policy: "model", criticOpts: { agent: criticPro }, trajectory: convergence(sha, { verdict: "CONTINUE" }) });
   assert.equal(hasConvergence(product, contradicted.records, sha), false);
 
   const refusedCli = gatedPush(["--repo", product, "--owner-store", disputed.store, "--branch", "main", "--sha", sha, "--suite-receipt", receipt]);
@@ -831,14 +831,14 @@ test("D-0064 T10: writing critic certifies only product.commit (and its tip/same
   git(product, "remote", "add", "origin", bare);
   const suiteFor = s => ({ repository: product, sha: s, tree: git(product, "--no-replace-objects", "rev-parse", `${s}^{tree}`), green: true });
   const actorFlash = { runner: "paseo:better-paseo-antigravity", model: "gemini-2.5-flash", observedModel: "gemini-2.5-flash", observedModels: ["gemini-2.5-flash"], session: "sess-a" };
-  const criticHydro = { runner: "paseo:better-paseo-antigravity", model: "gemini-2.5-pro", observedModel: "gemini-2.5-pro", observedModels: ["gemini-2.5-pro"], session: "sess-c" };
+  const criticPro = { runner: "paseo:better-paseo-antigravity", model: "gemini-2.5-pro", observedModel: "gemini-2.5-pro", observedModels: ["gemini-2.5-pro"], session: "sess-c" };
   const actorHandoff = {
     id: "R-0001-actor", role: "actor", step: "actor", phase: "S5", round: 1,
     record: "rounds/0001-actor.md", files: ["rounds/0001-actor.md"],
     product: { base: initSha, commit: actorSha }, view: "a".repeat(40), attempt: 1, agent: actorFlash, audit: { violations: 0 },
   };
   const makeLoop = (cBase, cCommit) => {
-    const ev = criticEvidence(cBase, cCommit, { round: 1, phase: "S5", agent: criticHydro, sealed: false });
+    const ev = criticEvidence(cBase, cCommit, { round: 1, phase: "S5", agent: criticPro, sealed: false });
     return rawLoop(product, { protected: ["main"], gates: { require: [] }, judgeIndependence: "model", provenanceBaseline: null }, {
       "rounds/0001-actor.md": "# R-0001-actor\n",
       "metrics/handoffs.jsonl": `${JSON.stringify(actorHandoff)}\n${JSON.stringify(ev.handoff)}\n`,

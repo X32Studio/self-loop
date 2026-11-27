@@ -10,8 +10,11 @@ import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
 import { fullSha, ORIGINAL_OBJECTS } from "./lib/ci.mjs";
+import { pruneSuiteStore } from "./lib/suite-prune.mjs";
 import { tipProblem } from "./lib/tip.mjs";
 import { FORMS, parseVersion } from "./lib/version.mjs";
+
+export { pruneSuiteStore };
 
 export const STORE = "self-loop-suite";
 export const LOAD_ENV = "SELF_LOOP_LOAD_DIR";
@@ -390,6 +393,7 @@ export function suiteGreen({ repo, sha, command, install = null, format = "auto"
     slot.assertCurrent("publication");
     let receiptPath = null;
     if (v.green) try { receiptPath = store(dir, { ...receipt, key, format, installExit: ran.installExit }, ran.log, storeDir, execution ? codeKey : null); } catch (e) { console.error(`suite-green: the receipt of ${full.slice(0, 7)} was not stored for reuse (${e.message})`); }
+    if (receiptPath) try { pruneSuiteStore(repo); } catch {}
     if (slot.finish) try { slot.finish({ green: v.green, receipt, receiptPath, text: ran.log, format, installExit: ran.installExit }); } catch (e) { console.error(`suite-green: generation g${slot.gen} of ${full.slice(0, 7)} was not recorded (${e.message})`); }
     finished = true;
     return { ...receipt, text: ran.log };

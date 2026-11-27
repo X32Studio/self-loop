@@ -1,7 +1,4 @@
-// bench-gate.mjs: a paired benchmark of two exact commits in clean checkouts, gated on the distribution-free upper
-// bound of the median ratio. Admission evidence (fixtures/bench-gate/): the R-0041 judge's 24 pairs of the ExampleApp
-// release benchmark, 9aafd69 against 952bf8b, re-judged here by the same rule (red: 1.698 > 1.10). Live cases use small
-// repositories whose benchmark prints a time read from a committed file.
+// D-0039, D-0069
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -68,7 +65,6 @@ test("a run counts only with a positive metric and every condition met; output i
   assert.equal(parseResult("no json\n"), null);
 });
 
-/** A repository whose benchmark prints {"ms": <the committed number>, "delivered": 24}, with commits base and candidate. */
 function project(baseMs, candidateMs, { extra = "" } = {}) {
   const dir = repo({ "ms.txt": `${baseMs}\n`, "bench.mjs": `import { readFileSync, appendFileSync } from "node:fs";\n${extra}\nconsole.log(JSON.stringify({ ms: Number(readFileSync("ms.txt", "utf8")), delivered: 24 }));\n` });
   const base = git(dir, "rev-parse", "HEAD");
@@ -79,7 +75,7 @@ function project(baseMs, candidateMs, { extra = "" } = {}) {
 
 test("live: a candidate within the bar is green, measured in alternating pairs, worktrees removed", () => {
   const p = project(100, 105);
-  writeFileSync(join(p.dir, "ms.txt"), "9999\n");  // uncommitted: never measured
+  writeFileSync(join(p.dir, "ms.txt"), "9999\n");
   const r = benchGate({ repo: p.dir, base: p.base, candidate: "HEAD", command: "node bench.mjs", metric: "ms", require: "delivered=24", pairs: 6, warmup: 1 });
   assert.equal(r.green, true, r.reasons.join("; "));
   assert.deepEqual([r.base, r.candidate], [p.base, p.candidate]);

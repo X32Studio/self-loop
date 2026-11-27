@@ -2,11 +2,11 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { codeTreeOf, lookupSuiteReceipt, parseSummary, purgeTreeReceipts, suiteGreen, suiteStore, verdict } from "../suite-green.mjs";
+import { codeTreeOf, lookupSuiteReceipt, parseSummary, pruneSuiteStore, purgeTreeReceipts, suiteGreen, suiteStore, verdict } from "../suite-green.mjs";
 import { tipProblem } from "../lib/tip.mjs";
 import { fixtures, git, repo, scripts, skill, temp } from "./helpers.mjs";
 
@@ -252,4 +252,87 @@ test("R6-3: a stored run whose runtime or key does not equal the request is neve
   const after = suiteGreen({ repo: dir, sha: "HEAD", command: "node --test", format: "node-test" });
   assert.ok(after.reusedFrom && after.reusedFrom !== moved && after.reusedFrom !== file, after.reusedFrom);
   assert.equal(runs().length, 3, "a run of another command filed under this key is skipped, the valid one reused");
+});
+
+test("pruneSuiteStore keeps pinned trees, evicts old/excess unpinned receipts and dangling .code-tree refs, and cleans stale .gen dirs", () => {
+  const dir = project(`test("ok", () => assert.equal(1, 1));`);
+  const headTree = git(dir, "rev-parse", "HEAD^{tree}");
+  const first = suiteGreen({ repo: dir, sha: "HEAD", command: "node --test", format: "node-test" });
+  assert.equal(first.green, true);
+  const storeDir = suiteStore(dir);
+
+  const nowMs = Date.now();
+  const makeReceipt = (keyHash, id, tree, ageMs, payloadBytes = 128) => {
+    const bucket = join(storeDir, keyHash);
+    mkdirSync(bucket, { recursive: true });
+    const jsonPath = join(bucket, `${id}.json`);
+    const logPath = join(bucket, `${id}.log.gz`);
+    writeFileSync(jsonPath, JSON.stringify({ green: true, tree, codeTree: `code-${tree}`, pad: "x".repeat(payloadBytes) }));
+    writeFileSync(logPath, gzipSync("ok\n"));
+    const sec = Math.floor((nowMs - ageMs) / 1000);
+    utimesSync(jsonPath, sec, sec);
+    utimesSync(logPath, sec, sec);
+    return jsonPath;
+  };
+
+  const pinnedExtra = makeReceipt("k-pin", "1-pin", "a".repeat(40), 30 * 86400_000);
+  const freshUnpinned = makeReceipt("k-u1", "2-fresh", "b".repeat(40), 1000);
+  const excessUnpinned = makeReceipt("k-u2", "3-excess", "c".repeat(40), 2000);
+  const expiredUnpinned = makeReceipt("k-u3", "4-expired", "d".repeat(40), 20 * 86400_000);
+
+  const codeRefDir = join(storeDir, ".code-tree", "bucket-1");
+  mkdirSync(codeRefDir, { recursive: true });
+  const danglingRef = join(codeRefDir, "dangling.json");
+  const liveRef = join(codeRefDir, "live.json");
+  writeFileSync(danglingRef, JSON.stringify({ receiptPath: excessUnpinned, tree: "c".repeat(40) }));
+  writeFileSync(liveRef, JSON.stringify({ receiptPath: freshUnpinned, tree: "b".repeat(40) }));
+
+  const deadOldGen = join(storeDir, ".gen", `${"e".repeat(40)}-dead-old`);
+  mkdirSync(deadOldGen, { recursive: true });
+  const deadClaim = join(deadOldGen, "g1.claim");
+  writeFileSync(deadClaim, JSON.stringify({ pid: 2 ** 22 + 1, gen: 1 }));
+  const twoHoursAgo = Math.floor((nowMs - 2 * 3600_000) / 1000);
+  utimesSync(deadClaim, twoHoursAgo, twoHoursAgo);
+
+  const liveGen = join(storeDir, ".gen", `${"f".repeat(40)}-live`);
+  mkdirSync(liveGen, { recursive: true });
+  const liveClaim = join(liveGen, "g1.claim");
+  writeFileSync(liveClaim, JSON.stringify({ pid: process.pid, gen: 1 }));
+  utimesSync(liveClaim, twoHoursAgo, twoHoursAgo);
+
+  const oldDoneGen = join(storeDir, ".gen", `${"1".repeat(40)}-done-old`);
+  mkdirSync(oldDoneGen, { recursive: true });
+  writeFileSync(join(oldDoneGen, "g1.claim"), JSON.stringify({ pid: 2 ** 22 + 1, gen: 1 }));
+  const oldDone = join(oldDoneGen, "g1.done.json");
+  writeFileSync(oldDone, JSON.stringify({ gen: 1, green: true }));
+  const twoDaysAgo = Math.floor((nowMs - 48 * 3600_000) / 1000);
+  utimesSync(oldDone, twoDaysAgo, twoDaysAgo);
+
+  const dry = pruneSuiteStore(dir, { maxReceipts: 1, maxAgeMs: 14 * 86400_000, pinnedTrees: ["a".repeat(40)], apply: false, now: () => nowMs });
+  assert.ok(dry.removed.includes(excessUnpinned));
+  assert.ok(dry.removed.includes(expiredUnpinned));
+  assert.ok(dry.removed.includes(danglingRef));
+  assert.ok(dry.removed.includes(deadOldGen));
+  assert.ok(dry.removed.includes(oldDoneGen));
+  assert.equal(existsSync(excessUnpinned), true);
+
+  const applied = pruneSuiteStore(dir, { maxReceipts: 1, maxAgeMs: 14 * 86400_000, pinnedTrees: ["a".repeat(40)], apply: true, now: () => nowMs });
+  assert.ok(applied.bytesFreed > 0);
+  assert.equal(existsSync(pinnedExtra), true);
+  assert.equal(existsSync(freshUnpinned), true);
+  assert.equal(existsSync(liveRef), true);
+  assert.equal(existsSync(liveGen), true);
+  assert.equal(existsSync(excessUnpinned), false);
+  assert.equal(existsSync(excessUnpinned.replace(/\.json$/, ".log.gz")), false);
+  assert.equal(existsSync(expiredUnpinned), false);
+  assert.equal(existsSync(danglingRef), false);
+  assert.equal(existsSync(deadOldGen), false);
+  assert.equal(existsSync(oldDoneGen), false);
+  assert.ok(storedRuns(dir).some(f => JSON.parse(readFileSync(f, "utf8")).tree === headTree));
+
+  const bigUnpinned = makeReceipt("k-big", "5-big", "2".repeat(40), 500, 4096);
+  const byteTrimmed = pruneSuiteStore(dir, { maxReceipts: 32, maxBytes: 2048, pinnedTrees: ["a".repeat(40)], apply: true, now: () => nowMs });
+  assert.ok(byteTrimmed.removed.includes(bigUnpinned));
+  assert.equal(existsSync(bigUnpinned), false);
+  assert.equal(existsSync(pinnedExtra), true);
 });

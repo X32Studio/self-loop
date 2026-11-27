@@ -22,9 +22,9 @@ const CODEX_REVIEWER = {
 
 const CLAUDE_JUDGE_SAME_VENDOR = {
   runner: "t3:claude",
-  model: "claude-haiku-5-5",
-  observedModel: "claude-haiku-5-5",
-  observedModels: ["claude-haiku-5-5"],
+  model: "claude-haiku-4-5",
+  observedModel: "claude-haiku-4-5",
+  observedModels: ["claude-haiku-4-5"],
 };
 
 const pad = n => String(n).padStart(4, "0");

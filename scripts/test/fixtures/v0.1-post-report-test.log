@@ -63,7 +63,7 @@ test at scripts/test/records-check.test.mjs:35:1
   + ]
   - []
   
-      at TestContext.<anonymous> (file:///work/self-loop/scripts/test/records-check.test.mjs:39:10)
+      at TestContext.<anonymous> (file:///Users/alice/.agents/skills/self-loop/scripts/test/records-check.test.mjs:39:10)
       at Test.runInAsyncScope (node:async_hooks:227:14)
       at Test.run (node:internal/test_runner/test:1402:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
@@ -97,7 +97,7 @@ test at scripts/test/records-check.test.mjs:58:1
   +   'reviews/self-loop-v0.1.md: L-0001'
     ]
   
-      at TestContext.<anonymous> (file:///work/self-loop/scripts/test/records-check.test.mjs:74:10)
+      at TestContext.<anonymous> (file:///Users/alice/.agents/skills/self-loop/scripts/test/records-check.test.mjs:74:10)
       at Test.runInAsyncScope (node:async_hooks:227:14)
       at Test.run (node:internal/test_runner/test:1402:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:974:18)

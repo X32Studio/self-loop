@@ -356,3 +356,58 @@ test("flow: lead sends intent questions quoting multiline records; loss: wrong-r
   assert.match(written, /If question 1 is answered "in v2": Defer\. ### 4\. Not a question phase: v2/);
   assert.equal(batch.answered, false);
 });
+
+test("flow: I-0005 sender gate refuses non-role --from on intent batches and screens unrecorded or legacy senders without breaking non-intent batches", () => {
+  const dir = temp();
+  const intentFile = join(dir, "intent.json");
+  const legacyFile = join(dir, "legacy.json");
+  writeFileSync(intentFile, JSON.stringify(intentBatch()));
+  writeFileSync(legacyFile, JSON.stringify({ questions: [q("Legacy non-intent question?")] }));
+
+  const bare = repo({ "purpose/P-0005.md": "# P-0005\n" });
+  for (const badFrom of ["lead", "R-0055-actor-provenance-decisions", "R-0055-critic-hygiene", "R-55-reviewer-frame", "   "]) {
+    const cliRes = decisionsCli("send", "--records", bare, "--file", intentFile, "--phase", "v1", "--from", badFrom);
+    assert.equal(cliRes.status, 2, `${badFrom}: ${cliRes.stdout}${cliRes.stderr}`);
+    assert.match(cliRes.stderr, /refused:.*R-NNNN-\(reviewer\|judge\)\*/);
+    assert.equal(existsSync(join(bare, "owner")), false);
+  }
+  for (const badFrom of ["lead", ""]) {
+    const directRefused = send(bare, intentBatch(), { phase: "v1", from: badFrom });
+    assert.match(directRefused.refused ?? "", /R-NNNN-\(reviewer\|judge\)\*/);
+    assert.equal(existsSync(join(bare, "owner")), false);
+  }
+
+  const okNoHandoffs = decisionsCli("send", "--records", bare, "--file", intentFile, "--phase", "v1", "--from", "R-0055-reviewer-frame");
+  assert.equal(okNoHandoffs.status, 0, okNoHandoffs.stderr);
+  assert.doesNotMatch(okNoHandoffs.stderr, /screening:/);
+  assert.equal(existsSync(join(bare, "owner/B-0001.md")), true);
+
+  const okJudgeNoHandoffs = decisionsCli("send", "--records", bare, "--file", intentFile, "--phase", "v1", "--from", "R-0055-judge-frame-hygiene");
+  assert.equal(okJudgeNoHandoffs.status, 0, okJudgeNoHandoffs.stderr);
+  assert.doesNotMatch(okJudgeNoHandoffs.stderr, /screening:/);
+
+  const legacyOnBare = decisionsCli("send", "--records", bare, "--file", legacyFile, "--phase", "v1", "--from", "lead");
+  assert.equal(legacyOnBare.status, 0, legacyOnBare.stderr);
+  assert.match(legacyOnBare.stderr, /screening:.*does not match a reviewer\/judge hand-off/);
+  assert.equal(existsSync(join(bare, "owner/B-0003.md")), true);
+
+  const withHandoffs = repo({
+    "purpose/P-0005.md": "# P-0005\n",
+    "metrics/handoffs.jsonl": JSON.stringify({ id: "R-0055-reviewer-frame", role: "reviewer" }) + "\n",
+  });
+  const missingRole = decisionsCli("send", "--records", withHandoffs, "--file", intentFile, "--phase", "v1", "--from", "R-0055-reviewer-other");
+  assert.equal(missingRole.status, 0, missingRole.stderr);
+  assert.match(missingRole.stderr, /screening: --from R-0055-reviewer-other has no recorded hand-off in metrics\/handoffs\.jsonl/);
+
+  const presentRole = decisionsCli("send", "--records", withHandoffs, "--file", intentFile, "--phase", "v1", "--from", "R-0055-reviewer-frame");
+  assert.equal(presentRole.status, 0, presentRole.stderr);
+  assert.doesNotMatch(presentRole.stderr, /screening:/);
+
+  const legacyMissing = decisionsCli("send", "--records", withHandoffs, "--file", legacyFile, "--phase", "v1", "--from", "R-0055-reviewer-other");
+  assert.equal(legacyMissing.status, 0, legacyMissing.stderr);
+  assert.match(legacyMissing.stderr, /screening: --from R-0055-reviewer-other has no recorded hand-off in metrics\/handoffs\.jsonl/);
+
+  const legacyPresent = decisionsCli("send", "--records", withHandoffs, "--file", legacyFile, "--phase", "v1", "--from", "R-0055-reviewer-frame");
+  assert.equal(legacyPresent.status, 0, legacyPresent.stderr);
+  assert.doesNotMatch(legacyPresent.stderr, /screening:/);
+});

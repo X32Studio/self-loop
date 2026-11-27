@@ -26,24 +26,26 @@ node scripts/version-gate.mjs tip --version <V> [--on <commit>] [--branch <b>]
 # SSOT & records integrity
 node scripts/ssot-check.mjs [check] --config <loop.json> [--sha <commit>] [--strict] [--json] [--out <receipt.json>] [--owner-store <dir>]
 node scripts/ssot-check.mjs attest --config <loop.json> --id <entry-id> --sha <commit> --disposition <updated|no-contract-change> --by <role> --reason "<text>" [--round N] [--json] [--owner-store <dir>]
-node scripts/records-check.mjs --repo <records> [--write] [--json]
+node scripts/records-check.mjs --repo <records> [--write] [--fast] [--staged] [--prune [--retain-rounds N] [--dry-run | --apply]] [--json]
 
-# Unified front-door (self-loop.mjs) & bounded Lead micro-patch
+# Unified front-door (self-loop.mjs), hygiene & bounded Lead micro-patch
 node scripts/self-loop.mjs init [--product <dir>] [--records <dir>] [--name <name>] [--branch <branch>] [--harness t3|paseo] [--runner claude|codex|t3|paseo] [--provider <name>] [--adapter antigravity|claude|codex|generic] [--model <id>] [--actor-model <id>] [--critic-model <id>] [--judge-model <id>] [--reviewer-model <id>] [--independence vendor|model|session] [--local-exclude] [--register] [--owner-store <dir>] [--json]
 node scripts/self-loop.mjs start [--config <loop.json>] [--parent-entry <public-input.json>] [--hours N] [--now <ISO time>] [--json] [--owner-store <dir>]
-node scripts/self-loop.mjs next [--config <loop.json> | --all] [--parent-entry <public-input.json>] [--owner-store <dir>]
+node scripts/self-loop.mjs next [--config <loop.json> | --all] [--full] [--parent-entry <public-input.json>] [--owner-store <dir>]
 node scripts/self-loop.mjs stall [--hours N] [--config <loop.json> | --all] [--now <ISO time>] [--json] [--owner-store <dir>]
 node scripts/self-loop.mjs tick [--hours N] [--now <ISO time>] [--json] [--owner-store <dir>]
+node scripts/self-loop.mjs clean|prune|records gc|records compact [--config <loop.json> | --records <dir> | --all] [--retain-rounds N] [--dry-run | --apply] [--json] [--owner-store <dir>]
 node scripts/self-loop.mjs patch --records <dir> --reason "<why>" --verify "<cmd>" [--files <p1,p2>] [--dry-run] [--json]
 node scripts/self-loop.mjs ssot [check|attest] [--config <loop.json>] ...
 node scripts/self-loop.mjs window open|status|close --records <dir> ...
 node scripts/self-loop.mjs dispatch analyze|waves|integrate|prepare|record --records <dir> --plan PL-NNNN ...
 node scripts/self-loop.mjs heartbeat install|uninstall [--dry-run] [--platform launchd|cron] [--release <dir>] [--owner-store <dir>]
+node scripts/self-loop.mjs hooks install --records <dir> [--dry-run] [--json]
 node scripts/self-loop.mjs hooks install|check|uninstall --harness antigravity [--scope workspace|global] [--target <hooks.json>] [--all | --config <loop.json>] [--owner-store <dir>] [--release <dir>] [--dry-run] [--json]
 node scripts/self-loop.mjs registry init [--roots <dir>,...] | add --name <name> --records <dir> [--aliases a,b] | list [--json]
 
 # Driver, blueprint, trajectory, facts, windows, decisions & owner words
-node scripts/loop.mjs next --config <loop.json>
+node scripts/loop.mjs next --config <loop.json> [--full]
 node scripts/loop.mjs stall --hours N [--config <loop.json>]
 node scripts/blueprint.mjs set --records <records> --feature F-NNNN --status <status> [--round R-NNNN-judge | --acceptance <path#heading@commit> --commit <sha> --ci <records-relative receipt>] [--decision D-NNNN] --by <who> --note "<text>"
 node scripts/blueprint.mjs status --records <records> [--phase <phase>]
@@ -57,6 +59,18 @@ node scripts/facts.mjs shipped|area|sizes ...
 node scripts/decisions.mjs validate <decisions.json> | send --records R --file F --phase P --from R-NNNN-role | answer --records R --batch B-NNNN --words "<owner's words>" [--outcome as-recommended|amended|other] | replace --records R --batch B-NNNN --by B-MMMM [--note "<why>"] | status --records R [--phase P]
 node scripts/owner-words.mjs capture|sync|open|pending|mark|metrics --records <records> ...
 ```
+
+### Candidate development commands (supervised incremental release; `D-0041`)
+
+Current development contract only (not in installed `v0.4.4`; operational gate use requires separate root exact-bootstrap admission per `D-0041`):
+
+```bash
+node scripts/version-gate.mjs release --repo <canonical-product> --branch <protected-branch> --sha <tip> --suite-receipt <receipt> --protected <nonempty-pinned-list> --require <exact-app/name-list> --records <records> --remote <pinned-remote> --release-admission <immutable-admission> --transaction <TransactionRequest-file>
+node scripts/scoped-release.mjs --request <file> [--synthetic-blobs <file>]
+SELF_LOOP_REPLAY_INPUT=<private-input-manifest> node scripts/suite-green.mjs --repo <managed-clean-candidate> --sha <tip> --command "node --test scripts/test acceptance/candidate-replay.mjs" --out <proof-prefix>
+```
+
+`scoped-release.mjs` prints JSON `VerifierResult` (exit `0` eligible/resume, `2` refused, `64` usage), accepts no CLI or environment-variable replacement trust root or trust callback, and is **non-authorizing even on `ELIGIBLE`**; production authority binds solely to the root-selected fixed OOB anchor `<authority-state>/self-loop-release-authority/anchor.json` (no `/etc` or `sudo`) under actual root custody. `gated-push.mjs --release-admission ...` shares the pure verifier predicate and refuses `ATOMIC_REQUIRED` for branch-only publication; absent scoped arguments, native `gated-push.mjs` and `version-gate.mjs` stay unchanged, and malformed scoped requests fail closed without falling back to native (`design/scoped-release.md`).
 
 ---
 
@@ -111,7 +125,7 @@ Envelope schema (public JSON, not a transcript, auth source, or platform lookup)
   - `"lookup"` zero-delay staging for `actor` and write-mode `critic` (non-empty `files`).
   - `purgeTreeReceipts` on newly committed unattested product trees during `record`; Rung-3 `duplicateSuiteRuns` screening in `audit-access.mjs`.
 - When `loop.json` configures `ssot`, injects read-only `ssot-status.md` (`runChecks: false` at `--base`) and a one-line prompt pointer into `actor` and `judge` workspaces (`critic`, `reviewer`, and non-`ssot` repos unchanged).
-- Audits tool events afterwards with canonical paths and commits one atomic hand-off: round record (task + report verbatim; for `judge`, only `out/public.md` public and full record sealed), evidence (log, audit, every file under `out/` skipping `out/tmp/` and `.git/`, plus `arch-facts.json` for `reviewer-architecture`), actor `design/<area>.md` files (retaining proposals in evidence on design conflict), `metrics/handoffs.jsonl`, and regenerated `INDEX.md`.
+- Audits tool events afterwards with canonical paths, writes top-level `nonce` and serializes every `*-audit.json` through `serializeBoundedAudit(audit, 1048576)` (preserving Tier-0 security flags and capping ordinary flags at `16`/command and `256`/audit with `<= 240`-char previews), filters `<ws>/out/` through `collectCleanOutFiles` (excluding `pg_wal/`, PostgreSQL clusters, `*cache*`, `tmp/`, `node_modules/`, `.git` metadata while keeping sibling files, bare repos, binary/DB/source dumps, files `> 2 MiB`, and caps at `64` files / `10 MiB`), checks `parsePruneManifests` so pruned attempts are never reused, and commits one atomic hand-off: round record, evidence, actor `design/<area>.md`, `metrics/handoffs.jsonl`, and regenerated `INDEX.md`. On `record` (exit 0) and `cancel`, reclaims heavy workspace payloads via `reclaimWorkspacePayloads` while preserving `<ws>/call.json`.
 - Fast-forwards `loop/<phase>` (`cfg.branch`) by compare-and-swap when the new product commit descends from branch head (never rewriting an active checkout; `next` reports index lag); non-descending commits leave the branch untouched.
 - **Exit codes**: `0` recorded, `1` call failed (evidence committed), `2` pre-judge / read-only final critic suite gate failed before model launch, `6` certain access violation, `7` refused by records/plan/provenance/alarm/owner-word/comment rules (no model called), `64` usage.
 - **Heavy-call leases**: while a CLI `critic`, `actor`, or `judge` runs, `call.mjs` holds `call-<pid>-<n>.json` (`{ "kind": "call", "pid", "role", "id", "records" }`) in `SELF_LOOP_LOAD_DIR` (default `~/.self-loop/load`); dead PIDs count for nothing. A live lease naming a planned package's hand-off counts as that package's start. Reviewers hold none.
@@ -145,7 +159,7 @@ Envelope schema (public JSON, not a transcript, auth source, or platform lookup)
 
 Prior converged waves are authenticated against the historical `judgeIndependence` policy committed in `records/loop.json` when that wave's certifying hand-off, trajectory row, and view commit were recorded. Current wave certification requires every certifying Judge or independent Critic and every unjudged covering Actor above `provenanceBaseline` to satisfy `loop.json` `judgeIndependence`:
 - `"vendor"` (default): distinct vendors and distinct models, with single-model runtime observed telemetry (`observedModels` / `observedModel`; fails closed on missing/`null`, unknown, or multi-model observations).
-- `"model"`: distinct case-insensitive normalized models with known vendor (via built-in model families, router prefix stripping such as `openrouter/gemini-2.5-pro-exp` -> `gemini-2.5-pro-exp`, `loop.json` `modelVendors`, or explicit `agent.vendor`) and single-model observed telemetry across all runners.
+- `"model"`: distinct case-insensitive normalized models with known vendor (via built-in model families, router prefix stripping such as `openrouter/gemini-2.5-pro` -> `gemini-2.5-pro`, `loop.json` `modelVendors`, or explicit `agent.vendor`) and single-model observed telemetry across all runners.
 - `"session"`: distinct non-empty sessions across Judge/Critic and covering Actors (permitting same-model/same-vendor certification across genuinely separate sessions when rate limits leave one model available, while failing closed on missing or shared session).
 - Any unrecognized value fails closed.
 
@@ -239,9 +253,12 @@ Each role in `loop.json` configures:
 - **Owner store**: `--owner-store`, else `SELF_LOOP_OWNER_STORE`, else `~/.self-loop/owner-store`, holding `products.json` (`name`, `records`, `aliases`, `roots`).
 - **Config resolution**: `--config`, else `SELF_LOOP_CONFIG`, else `<git-toplevel>/.self-loop/loop.json`, else registered product matching `cwd` (its records, product checkout, or `projects`). None or multiple candidates exit `64`.
 - **`tick`**: runs `stall` and `next` for every registered product; commits durable stall alarms (`metrics/alarms.jsonl`, once per idle period, default `tick.stallHours: 12`); reports `idle` ready packages (A3), `unchecked-release` word holds, missing records/`no loop`, unregistered `records.json` repos under `roots` (bounded by `ROOT_SCAN_FOLDERS`), and scan errors. Exit `0` quiet, `2` findings. `tick.onStall` is `show` (default) or `resume` (D-0003).
-- **`start`**: read-only summary across all registered products (live stalls, `tick` findings, Antigravity hook health probe `hooks: { healthy, findings }`) plus this session's `next`. Exit `0`, `64` usage.
+- **`start`**: strictly read-only summary across all registered products (live stalls, `tick` findings, Antigravity hook health probe `hooks: { healthy, findings }`, read-only hygiene screening `session.hygiene`) plus this session's `next`. Never mutates files or `git config`. Exit `0`, `64` usage.
+- **`clean` / `prune` / `records gc` / `records compact` (`F-0015`)**: unified operational hygiene (`--dry-run` by default; pass `--apply` to mutate). Runs `pruneAndCompactRecords()` (`P1–P6` protection, `prune/PR-NNNN.md` cryptographic tombstones, in-place `> 1 MiB` audit compaction), `cleanWorkDir()` (deleting expired/terminal `<ws>` tombstones & `.prepared/` sidecars), `pruneSuiteStore()` (evicting unpinned receipts, dangling `.code-tree/` refs, and expired `.gen/` dirs), and (on `--apply`) installs portable `<records>/.githooks/pre-commit`.
+- **`hooks install --records <dir>`**: installs portable, secret-free `<records>/.githooks/pre-commit` (`records-check.mjs --repo "$REPO_ROOT" --staged`) and sets local `core.hooksPath=.githooks`.
+- **Sub-2s fast diagnostics**: routine `loop.mjs next` / `self-loop.mjs next` runs `records-check` in `{ fast: true }` mode, caches `collectArchFacts` and `proseInTree` by tree OID, bounds uncached pre-subtraction `proseInTree` (`2000` files / `1500ms`), and uses `O(1)` `${round}/${step}` audit lookup via `buildSharedPlanContext`; pass `--full` for complete historical screening and unbounded prose scanning.
 - **`heartbeat install`**: installs hourly OS schedule (launchd on macOS, cron elsewhere) pointing strictly to a plain `X.Y.Z` release worktree detached at `v<VERSION>` (prereleases `X.Y.Z-<pre>` are refused as live installs).
-- **One-time product setup (`self-loop.mjs init`)**: creates Git-ignored `<product>/.self-loop/` (`.gitignore` or `--local-exclude` `.git/info/exclude`, or external `--records <dir>`; refuses tracked paths fail-closed), commits `README.md`, `records.json`, `loop.json`, `.gitignore`, `INDEX.md`; add `--register` to register in owner store. Keep held-out cases and backtest keys in a **separate** sealed repo given only to `judge`.
+- **One-time product setup (`self-loop.mjs init`)**: creates Git-ignored `<product>/.self-loop/` (`.gitignore` or `--local-exclude` `.git/info/exclude`, or external `--records <dir>`; refuses tracked paths fail-closed), installs `.githooks/pre-commit`, and commits `README.md`, `records.json`, `loop.json`, `.gitignore`, `.githooks/pre-commit`, `INDEX.md`; add `--register` to register in owner store. Keep held-out cases and backtest keys in a **separate** sealed repo given only to `judge`.
 
 ---
 
@@ -250,16 +267,16 @@ Each role in `loop.json` configures:
 ```bash
 node scripts/owner-words.mjs capture|sync --records <records> --project <dir>[,<dir>...]
 node scripts/owner-words.mjs sync --owner-store <dir>
-node scripts/owner-words.mjs open --records <records> [--json]
+node scripts/owner-words.mjs open --records <records> [--hints] [--json]
 node scripts/owner-words.mjs pending --records <records> --discard <key> --note "<why>"
-node scripts/owner-words.mjs mark --records <records> --id <W-id> --as direction --intervention I-NNNN [--note "<why>"]
-node scripts/owner-words.mjs mark --records <records> --id <W-id> --as answer --batch B-NNNN [--note "<why>"]
-node scripts/owner-words.mjs mark --records <records> --id <W-id> --as routine|not-owner --note "<why>"
+node scripts/owner-words.mjs mark --records <records> --id <W-id[,W-id2]> | --ids <W-id,W-id2> --as direction --intervention I-NNNN [--note "<why>"]
+node scripts/owner-words.mjs mark --records <records> --id <W-id[,W-id2]> | --ids <W-id,W-id2> --as answer --batch B-NNNN [--note "<why>"]
+node scripts/owner-words.mjs mark --records <records> --id <W-id[,W-id2]> | --ids <W-id,W-id2> --as routine|not-owner --note "<why>"
 node scripts/owner-words.mjs metrics --records <records> [--phase <phase>] [--json]
 ```
 
-- **Envelope filtering**: deterministically skips T3/harness relays (`Delegated task node:delegated-task:`, `[T3 Code: the agent in T3 thread`, `<CONTEXT_SUMMARY>`, `<SYSTEM_MESSAGE>`, whole-message single/batched `<paseo-system ...>` `agent-notification`/`agent-message` envelopes while keeping Lead sessions open and preserving human prose mentioning `<paseo-system>`).
-- **Classes (`owner/word-marks.jsonl`)**: `direction` (settled only once `interventions/I-NNNN.md` is committed), `answer` (`--batch B-NNNN`), `routine`, `not-owner`. Invalid/duplicate marks exit `64`. Substantive open owner words (`isSubstantiveOwnerWord`) trigger `reviewer-distill` and refuse `plan.mjs validate` and `call.mjs critic|actor` immediately (exit `7`, 0-turn grace per `D-0060`).
+- **Envelope filtering**: deterministically skips T3/harness relays (`Delegated task node:delegated-task:`, `[T3 Code: the agent in T3 thread`, index-0 `[T3 Code: scheduled task "..."]`, `<CONTEXT_SUMMARY>`, `<SYSTEM_MESSAGE>`, leading `<chat-history-summary>...</chat-history-summary>` blocks, whole-message single/batched `<paseo-system ...>` `agent-notification`/`agent-message` envelopes while keeping Lead sessions open and preserving human prose mentioning them). Antigravity `PreInvocation` deduplicates strictly against active unresolved pending entries at the current transcript user step.
+- **Classes (`owner/word-marks.jsonl`)**: `direction` (settled only once `interventions/I-NNNN.md` is committed), `answer` (`--batch B-NNNN`), `routine`, `not-owner`. Supports atomic multi-ID batch marking (`--id a,b`, `--ids a,b`, repeated `--id`) while preserving `UsageError` (`exit 64`) on unknown/conflicting marks; `open` prints read-only verbatim-quote `W-id -> record` hints and routine check-in batch commands without auto-discarding words. Substantive open owner words (`isSubstantiveOwnerWord`) trigger `reviewer-distill` and refuse `plan.mjs validate` and `call.mjs critic|actor` immediately (exit `7`, 0-turn grace per `D-0060`).
 - **Interventions (`interventions/I-NNNN.md`)**: carry `words:`, frame/reframe/general question, `raised-first: <record ID | no>` (checked by `records-check.mjs` against first-adding commit timestamp strictly predating every cited word's capture time), `rung: <construction | hard gate | screening predicate | question bank | owner-only>`, and `carried-by: <mechanism | PREDICATES id | none: why>` (`PREDICATES` in `scripts/loop.mjs`: `stall`, `advancing-round-due`, `idle-packages`, `open-words`, `area-rounds`, `blocker-recurring`, `partly-closed`, `ci-not-green`, `ci-absent`).
 - **`metrics` (`phaseMetrics` in `scripts/lib/owner-metrics.mjs`)**: computes settled counts, `ownerDirections`, `raisedFirst`/`raisedFirstShare`, replay `wouldHaveFired` + false alarms (A2), `batchesSent`/`batchesAnswered`, `ownerWaiting`, `answersByOutcome`/`precision`, and `unclassified`.
 
@@ -296,12 +313,14 @@ node scripts/owner-words.mjs metrics --records <records> [--phase <phase>] [--js
   - Emits async read-only `reviewer-architecture` (`FILE_TOOLS` on `[ws, wt]`, zero Bash, zero writes to `wt`, Codex refused). After `cadence.outerGrace` (default `2`) deliveries outside a window (or delta-scoped `T3`), `call.mjs actor` refuses exit `7` (narrowed to hotspot-intersecting packages while an async `reviewer-architecture` is active).
 - **SSOT checks (`ssot-check.mjs`, F-0014, D-0057)**: Rung-2 (`missing-doc`, `anchors`, `check` in clean detached worktrees) gates every branch push; Rung-3 `ssot-drift` warns on working branches and blocks protected pushes and `CONVERGED`/`PASS` trajectory appends under `--strict`. Attest entries via `ssot-check.mjs attest`.
 - **Phase close**: (1) `reviewer-subtraction` pass + subtraction rounds until zero prose comments and every requirement retains mechanism + test; (2) protected promotion via `gated-push.mjs`; (3) rule -> code -> test traceability check; (4) converged rules into authoritative docs; (5) `lessons/L-NNNN.md` (`applies-to: skill|product|both`); (6) Owner report quoting `next`'s `Measures` header verbatim.
+- **Supervised incremental release (`4a`, candidate under `D-0041`)**: bounded route alongside native convergence (`design/scoped-release.md`); requires separate root exact-bootstrap admission (`ir-admission/2`), fresh cross-vendor `SCOPE_CONVERGED` (`external-release-certificate/2`), exact full-suite/log, live dual-platform Linux/macOS CI, isolated Linux/macOS `BASE` replay, atomic host authority publication (`version-gate.mjs release`), and pre-switch `DELTA` owner-word replay with no-rewind rollback.
 
 ---
 
 ## 12. Owner Interface & Intent Batches (`decisions.mjs`)
 
 - Questions come from Judge and Frame Reviewer in `out/decisions.json` and must pass `decisions.mjs validate` (question, `>= 2` distinct options, recommendation, no duplicates).
+- **Generation-Engine-First Sender Gate (`I-0005`, `F-0015`)**: `decisions.mjs send` hard-refuses (`exit 2`, `refused:`) unless `--from` matches `/^R-\d{4}-(?:reviewer|judge)(?:-[a-z0-9-]+)*$/`, and emits a non-blocking `screening:` notice if `metrics/handoffs.jsonl` lacks that hand-off ID. Never ask the owner derivable engineering questions before running `P-NNNN` + `reviewer-frame` / `reviewer-distill` + `judge-frame`.
 - **Intent batches (`D-0031`)**: `{ "kind": "intent", "requirement": "P-NNNN", "questions": [...] }` with `whyAsked`, dependency-ordered 1-based `dependsOn`, and `ifOther` mapping alternate options of the depended-on question. `send` allows at most one intent batch and one follow-up per requirement per phase (a third exits `2`).
 - **Answers & replacement**: `decisions.mjs answer --records <r> --batch B-NNNN --words "<verbatim>" [--outcome as-recommended|amended|other]` preserves owner text verbatim (invalid `--outcome` exits `64`). When a later answered batch re-asks and names an earlier batch, close the earlier one with `decisions.mjs replace --batch B-NNNN --by B-MMMM --note "<why>"`.
 - **Question-bank updates**: distill general questions from `interventions/I-NNNN.md` into `engines/frame-reviewer.md` and re-score on held-out backtests (`scripts/backtest.mjs`, sealed keys, blind cross-vendor grader).

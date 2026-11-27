@@ -1,6 +1,6 @@
 // F-0003, F-0009, D-0016, D-0065, D-0066, D-0067, R-0001-judge
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { argv, load } from "../call.mjs";
@@ -291,4 +291,76 @@ test("D-0067: git-plumbing defaults GIT_TERMINAL_PROMPT=0 across run, git, and g
     if (saved === undefined) delete process.env.GIT_TERMINAL_PROMPT;
     else process.env.GIT_TERMINAL_PROMPT = saved;
   }
+});
+
+test("F-0015: self-loop clean/prune/records gc/compact, hooks install --records, next --full, and read-only start hygiene screening", () => {
+  const lead = loopProduct({ activity: hoursBefore(1) });
+  const env = isolatedEnv();
+  const cfgPath = join(lead.records, "loop.json");
+  const loadedCfg = load(cfgPath);
+  const staleWs = join(loadedCfg.workDir, "0001-actor-done");
+  const staleManifest = join(staleWs, "call.json");
+  mkdirSync(staleWs, { recursive: true });
+  writeFileSync(staleManifest, JSON.stringify({
+    version: 2, id: "R-0001-actor", phase: "v1", role: "actor", round: 1, step: "actor",
+    record: "rounds/0001-actor.md", nonce: "0123456789abcdef", ws: staleWs, wt: join(staleWs, "wt"), recorded: true,
+  }) + "\n");
+  mkdirSync(join(lead.records, "evidence", "0001", "actor-1", "out"), { recursive: true });
+  writeFileSync(join(lead.records, "evidence", "0001", "actor-1", "out", "old.txt"), "old-evidence\n");
+  mkdirSync(join(lead.records, "rounds"), { recursive: true });
+  writeFileSync(join(lead.records, "rounds", "0010-actor.md"), "# R-0010-actor\n");
+  git(lead.records, "add", "-A");
+  git(lead.records, "commit", "-qm", "seed old evidence and round 10");
+
+  const startBefore = snapshot(lead);
+  const startJson = selfLoop(["start", "--now", NOW, "--config", cfgPath, "--json"], { cwd: lead.product, env });
+  assert.equal(startJson.status, 0, startJson.stderr);
+  const parsedStart = JSON.parse(startJson.stdout);
+  assert.equal(parsedStart.session.error, null);
+  assert.equal(typeof parsedStart.session.next, "string");
+  assert.equal(parsedStart.session.hygiene.healthy, false);
+  assert.ok(parsedStart.session.hygiene.findings.some(f => f.includes("hooks install --records")));
+  assert.equal(existsSync(join(lead.records, ".githooks", "pre-commit")), false, "start never writes pre-commit hook");
+  assert.equal(existsSync(staleWs), true, "start never deletes stale workspaces");
+  assert.deepEqual(snapshot(lead), startBefore, "start mutates nothing");
+
+  const hookDry = selfLoop(["hooks", "install", "--records", lead.records, "--dry-run", "--json"], { cwd: lead.product, env });
+  assert.equal(hookDry.status, 0, hookDry.stderr);
+  assert.equal(JSON.parse(hookDry.stdout).dryRun, true);
+  assert.equal(existsSync(join(lead.records, ".githooks", "pre-commit")), false);
+
+  const hookInstall = selfLoop(["hooks", "install", "--records", lead.records, "--json"], { cwd: lead.product, env });
+  assert.equal(hookInstall.status, 0, hookInstall.stderr);
+  assert.equal(JSON.parse(hookInstall.stdout).changed, true);
+  assert.equal(existsSync(join(lead.records, ".githooks", "pre-commit")), true);
+  assert.equal(git(lead.records, "config", "--local", "--get", "core.hooksPath"), ".githooks");
+
+  for (const argv of [
+    ["clean", "--config", cfgPath, "--json"],
+    ["prune", "--config", cfgPath, "--json"],
+    ["records", "gc", "--config", cfgPath, "--json"],
+    ["records", "compact", "--config", cfgPath, "--json"],
+  ]) {
+    const dry = selfLoop(argv, { cwd: lead.product, env });
+    assert.equal(dry.status, 0, `${argv.join(" ")}: ${dry.stderr}`);
+    const out = JSON.parse(dry.stdout);
+    assert.equal(out.apply, false, `${argv.join(" ")} defaults to dry-run`);
+    assert.equal(out.recordsResult.prunedFiles.length, 1);
+    assert.equal(out.work.candidates.length, 1);
+    assert.equal(existsSync(staleWs), true);
+  }
+
+  const applied = selfLoop(["clean", "--config", cfgPath, "--apply", "--json"], { cwd: lead.product, env });
+  assert.equal(applied.status, 0, applied.stderr);
+  const res = JSON.parse(applied.stdout);
+  assert.equal(res.apply, true);
+  assert.equal(res.recordsResult.prunedFiles.length, 1);
+  assert.match(res.recordsResult.tombstonePath, /^prune\/PR-0001\.md$/);
+  assert.equal(res.work.removed.length, 1);
+  assert.equal(existsSync(staleWs), false);
+  assert.equal(existsSync(join(lead.records, "evidence", "0001", "actor-1", "out", "old.txt")), false);
+
+  const nextFull = selfLoop(["next", "--config", cfgPath, "--full"], { cwd: lead.product, env });
+  assert.equal(nextFull.status, 0, nextFull.stderr);
+  assert.match(nextFull.stdout, /Prose comments at [0-9a-f]{40}: 0/);
 });

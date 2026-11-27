@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { auditAccess } from "../audit-access.mjs";
 import { productCode } from "../lead-guard.mjs";
 import { antigravityAppDirs, decodeToolCallArgs, extractHookDirs, geminiHome, isAntigravityHook, PRE_TOOL_USE_PASSTHROUGH, unwrapAntigravityUserText } from "../lib/antigravity.mjs";
-import { antigravityTranscript } from "../lib/antigravity-words.mjs";
+import { antigravityTranscript, latestAntigravityUserStep } from "../lib/antigravity-words.mjs";
 import { ANTIGRAVITY_TEMPLATE, HooksError, renderAntigravityHooks } from "../lib/hooks.mjs";
 import { claudeSessionWords, claudeSlug, codexSessionWords, committedWords, pendingOwnerPrompts, transcriptWordsReport } from "../lib/owner-words.mjs";
 import { git, isolatedEnv, loopProduct, ownerStore, repo, scripts, temp } from "./helpers.mjs";
@@ -495,4 +495,42 @@ test("renderAntigravityHooks and SessionStart support --owner-store multi-produc
   const wtHook = runHook(["--owner-store", store], { hookEventName: "SessionStart", conversationId: "s-wt", workspacePaths: [pathToFileURL(bWt).href] });
   assert.equal(wtHook.status, 0);
   assert.match(JSON.parse(wtHook.stdout).injectSteps[0].systemMessage.systemMessage, /This session: beta · /);
+});
+
+test("F-0015 (AG-WORD-06): PreInvocation deduplicates repeated steps against active pending only without breaking distinct turns", () => {
+  const project = temp("ag-dedup-proj-"), records = repo({ "README.md": "# records\n" }), appDir = temp("ag-dedup-app-");
+  const env = isolatedEnv({ ANTIGRAVITY_APP_DATA_DIR: appDir, GEMINI_HOME: temp("g-"), T3CODE_HOME: "", T3CODE_THREAD_ID: "" });
+  const cap = payload => spawnSync(process.execPath, [join(scripts, "owner-words.mjs"), "capture", "--harness", "antigravity", "--records", records, "--project", project],
+    { input: JSON.stringify(payload), encoding: "utf8", env });
+
+  const convCompact = "conv-dedup-compact", longPrompt = "Implement full production hardening across all five operational dimensions.";
+  const compactFile = writeAgConversation(appDir, convCompact, [userStep(0, wrapEnvelope("Implement...dimensions."), { truncated_fields: ["content"] })], { full: false, compact: true });
+  assert.equal(latestAntigravityUserStep(compactFile), 0);
+  assert.equal(latestAntigravityUserStep(join(appDir, "missing.jsonl")), null);
+
+  const first = cap({ hookEventName: "PreInvocation", conversationId: convCompact, cwd: project, initialNumSteps: 1, lastUserInput: wrapEnvelope(longPrompt), transcriptPath: compactFile });
+  assert.match(JSON.parse(first.stdout).injectSteps[0].systemMessage.systemMessage, /pending transcript confirmation/);
+  assert.equal(pendingOwnerPrompts(records, convCompact).length, 1);
+
+  for (const steps of [5, 9, 14]) {
+    const retry = cap({ hookEventName: "PreInvocation", conversationId: convCompact, cwd: project, initialNumSteps: steps, lastUserInput: wrapEnvelope(longPrompt), transcriptPath: compactFile });
+    assert.deepEqual(JSON.parse(retry.stdout), {}, `step ${steps} retry must no-op`);
+    assert.equal(pendingOwnerPrompts(records, convCompact).length, 1, `step ${steps} must not duplicate pending`);
+  }
+
+  writeAgConversation(appDir, convCompact, [
+    userStep(0, wrapEnvelope("Implement...dimensions."), { truncated_fields: ["content"] }),
+    userStep(15, wrapEnvelope("Implement...dimensions."), { truncated_fields: ["content"] }),
+  ], { full: false, compact: true });
+  assert.equal(latestAntigravityUserStep(compactFile), 15);
+  const newTurn = cap({ hookEventName: "PreInvocation", conversationId: convCompact, cwd: project, initialNumSteps: 16, lastUserInput: wrapEnvelope(longPrompt), transcriptPath: compactFile });
+  assert.match(JSON.parse(newTurn.stdout).injectSteps[0].systemMessage.systemMessage, /pending transcript confirmation/);
+  assert.equal(pendingOwnerPrompts(records, convCompact).length, 2);
+
+  const convMissing = "conv-dedup-missing", missingFile = join(appDir, "brain", convMissing, ".system_generated", "logs", "transcript_full.jsonl");
+  const m1 = cap({ hookEventName: "PreInvocation", conversationId: convMissing, cwd: project, initialNumSteps: 1, lastUserInput: "pending while missing", transcriptPath: missingFile });
+  assert.match(JSON.parse(m1.stdout).injectSteps[0].systemMessage.systemMessage, /pending transcript confirmation/);
+  const m2 = cap({ hookEventName: "PreInvocation", conversationId: convMissing, cwd: project, initialNumSteps: 7, lastUserInput: "pending while missing", transcriptPath: missingFile });
+  assert.deepEqual(JSON.parse(m2.stdout), {});
+  assert.equal(pendingOwnerPrompts(records, convMissing).length, 1);
 });

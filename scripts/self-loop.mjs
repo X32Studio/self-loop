@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// P-0003, F-0003, F-0009, D-0010, D-0052, R-0032-reviewer-architecture, design/continuation-entry.md#entry
+// P-0003, P-0014, P-0015, F-0003, F-0009, F-0015, D-0010, D-0016, D-0052, R-0032-reviewer-architecture, R-0055-judge-frame-hygiene
 import "./lib/unbind-git.mjs";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -8,21 +8,26 @@ import { load, Stop } from "./call.mjs";
 import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
 import { extractHookDirs } from "./lib/antigravity.mjs";
 import { antigravityChildSession } from "./lib/antigravity-words.mjs";
+import { git, gitOk, regularFiles } from "./lib/git-plumbing.mjs";
+import { HANDOFFS, parseHandoffs } from "./lib/handoff.mjs";
 import { dryRun, heartbeatEntry, install, resolveRelease, uninstall } from "./lib/heartbeat.mjs";
 import { checkHooks, HooksError, installHooks, uninstallHooks } from "./lib/hooks.mjs";
-import { InitError, initLoop } from "./lib/init.mjs";
+import { InitError, initLoop, installRecordsPreCommitHook } from "./lib/init.mjs";
 import { delegatedThread } from "./lib/owner-words.mjs";
+import { pruneAndCompactRecords } from "./lib/records-prune.mjs";
 import { addProduct, CONFIG_ENV, discoverLocalLoop, initStore, loadHookStore, loadRegistry, loopSettings, matchHookProduct, productState, real, REGISTRY, resolveConfig, resolveOwnerStore } from "./lib/registry.mjs";
 import { continuationText, parentEntryInput, reconcileParentEntry, startReport, startText } from "./lib/start.mjs";
 import { stallThreshold, tick, tickText } from "./lib/tick.mjs";
+import { cleanWorkDir } from "./lib/work-hygiene.mjs";
 import { cliClock, nextLines, recordsOf, stallState } from "./loop.mjs";
 import { main as runDispatch } from "./dispatch.mjs";
 import { main as runPatch } from "./lead-patch.mjs";
 import { main as runSsot } from "./ssot-check.mjs";
+import { pruneSuiteStore } from "./suite-green.mjs";
 import { main as runWindow } from "./window.mjs";
 
 const skill = join(dirname(fileURLToPath(import.meta.url)), "..");
-const USAGE = "self-loop.mjs init|start|next|stall|tick|ssot|window|dispatch|patch|heartbeat|hooks|registry ...";
+const USAGE = "self-loop.mjs init|start|next|stall|tick|clean|prune|records|ssot|window|dispatch|patch|heartbeat|hooks|registry ...";
 
 function hoursOf(args) {
   if (!("hours" in args)) return null;
@@ -56,13 +61,13 @@ const heading = p => `== ${p.name} · ${p.records}`;
 const unusable = p => !p.exists ? "missing: the registered records folder does not exist"
   : !p.loop ? `no loop: ${p.records} has no loop.json` : p.error ? `error: ${p.error}` : null;
 
-function runNext(products, all, store, clock) {
+function runNext(products, all, store, clock, full = false) {
   let failed = false;
   const blocks = products.map(p => {
     const head = p.name ? [heading(p)] : [];
     const problem = unusable(p);
     if (problem) return [...head, problem].join("\n");
-    try { return [...head, nextLines(p.cfg, p.loop, recordsOf(p.cfg), { store, ...clock })].join("\n"); }
+    try { return [...head, nextLines(p.cfg, p.loop, recordsOf(p.cfg), { store, ...clock, full })].join("\n"); }
     catch (e) {
       if (!all) throw e;
       failed = true;
@@ -70,6 +75,98 @@ function runNext(products, all, store, clock) {
     }
   });
   console.log(blocks.join("\n\n"));
+  return failed ? 1 : 0;
+}
+
+function recordsWorkMeta(recordsDir) {
+  let maxRound = 0;
+  const recordedIds = new Set();
+  if (!gitOk(recordsDir, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")) return { maxRound: null, recordedIds };
+  for (const e of regularFiles(recordsDir, "HEAD")) {
+    const m = /^(?:rounds|evidence|sealed\/judge)\/(\d{4})/.exec(e.path);
+    if (m) maxRound = Math.max(maxRound, Number(m[1]));
+  }
+  if (gitOk(recordsDir, "cat-file", "-e", `HEAD:${HANDOFFS}`)) {
+    try {
+      for (const h of parseHandoffs(git(recordsDir, "show", `HEAD:${HANDOFFS}`))) {
+        if (h.id) recordedIds.add(h.id);
+        if (Number.isInteger(h.round)) maxRound = Math.max(maxRound, h.round);
+      }
+    } catch {}
+  }
+  return { maxRound: maxRound > 0 ? maxRound : null, recordedIds };
+}
+
+function runHygiene(command, args, env, cwd) {
+  if (command === "records") {
+    const sub = args._[1];
+    if (!["gc", "compact"].includes(sub)) {
+      throw new UsageError("records gc|compact [--config <loop.json> | --records <dir> | --all] [--retain-rounds N] [--dry-run | --apply] [--json]");
+    }
+  }
+  if ("apply" in args && "dry-run" in args) throw new UsageError("cannot pass both --apply and --dry-run");
+  if ("records" in args && ("config" in args || "all" in args)) throw new UsageError("--records excludes --config and --all");
+  let retainRounds = null;
+  if ("retain-rounds" in args) {
+    const n = Number(args["retain-rounds"]);
+    if (!Number.isInteger(n) || n < 0) throw new UsageError(`--retain-rounds must be a non-negative integer, got ${args["retain-rounds"]}`);
+    retainRounds = n;
+  }
+  const apply = "apply" in args;
+  const all = "all" in args;
+  let targets;
+  if ("records" in args) {
+    if (!args.records) throw new UsageError("missing value for --records");
+    const rec = resolve(cwd, args.records);
+    if (!existsSync(rec) || !gitOk(rec, "rev-parse", "--git-dir")) throw new UsageError(`--records ${rec} is not a Git repository`);
+    const loopPath = join(rec, "loop.json");
+    let cfg = null;
+    if (existsSync(loopPath)) { try { cfg = load(loopPath); } catch {} }
+    targets = [{ name: null, records: rec, exists: true, loop: cfg ? loopPath : null, cfg, error: null }];
+  } else {
+    targets = selection(args, env, cwd);
+  }
+  let failed = false;
+  const results = targets.map(p => {
+    const problem = !p.exists ? "missing: the registered records folder does not exist" : p.error ? `error: ${p.error}` : null;
+    if (problem) {
+      if (all) failed = true;
+      return { product: p.name, records: p.records, apply, error: problem };
+    }
+    try {
+      const records = pruneAndCompactRecords(p.records, { ...(retainRounds !== null ? { retainRounds } : {}), apply, installHooks: false });
+      const hook = apply ? installRecordsPreCommitHook(p.records) : null;
+      const meta = p.cfg?.workDir ? recordsWorkMeta(p.records) : null;
+      const work = p.cfg?.workDir
+        ? cleanWorkDir(p.cfg.workDir, { maxRound: meta.maxRound, ...(retainRounds !== null ? { retainRounds } : {}), recordedIds: meta.recordedIds, apply })
+        : null;
+      const suite = p.cfg?.product && existsSync(p.cfg.product) ? pruneSuiteStore(p.cfg.product, { apply }) : null;
+      return { product: p.name, records: p.records, apply, recordsResult: records, work, suite, hook };
+    } catch (e) {
+      if (!all) throw e;
+      failed = true;
+      return { product: p.name, records: p.records, apply, error: e.message };
+    }
+  });
+  if ("json" in args) console.log(JSON.stringify(results.length === 1 && !all ? results[0] : results, null, 2));
+  else {
+    for (const r of results) {
+      const prefix = r.product ? `${r.product} (${r.records}): ` : `${r.records}: `;
+      if (r.error) { console.log(`${prefix}error: ${r.error}`); continue; }
+      const rec = r.recordsResult;
+      const mode = r.apply ? "applied" : "dry-run";
+      const parts = [
+        `${rec.prunedFiles.length} pruned`,
+        `${rec.compactedAudits.length} compacted`,
+        `${rec.bytesSaved} bytes records`,
+        ...(rec.tombstonePath ? [rec.tombstonePath] : []),
+        ...(r.work ? [`${r.apply ? r.work.removed.length : r.work.candidates.length} workspaces (${r.work.bytesFreed} bytes)`] : []),
+        ...(r.suite ? [`${r.suite.removed.length} suite files (${r.suite.bytesFreed} bytes)`] : []),
+        ...(r.hook ? [`hook ${r.hook.changed ? "installed" : "ok"}`] : []),
+      ];
+      console.log(`${prefix}${mode}: ${parts.join(", ")}`);
+    }
+  }
   return failed ? 1 : 0;
 }
 
@@ -155,7 +252,7 @@ async function runParentEntry(args, env, cwd) {
     return continuation.failed ? 1 : 0;
   }
   console.log(continuationText(continuation));
-  const code = runNext(products, "all" in args, store, clock);
+  const code = runNext(products, "all" in args, store, clock, "full" in args);
   return code || (continuation.failed ? 1 : 0);
 }
 
@@ -252,14 +349,33 @@ function runStartAntigravityHook(args, env) {
 function runHooks(args, env, cwd) {
   const [, action] = args._;
   if (!["install", "check", "uninstall"].includes(action)) {
-    throw new UsageError("hooks install|check|uninstall --harness antigravity [--scope workspace|global] [--target <hooks.json>] [--all] [--config <loop.json>] [--owner-store <dir>] [--release <dir>] [--dry-run] [--json]");
+    throw new UsageError("hooks install --records <dir> [--dry-run] [--json] | hooks install|check|uninstall --harness antigravity [--scope workspace|global] [--target <hooks.json>] [--all] [--config <loop.json>] [--owner-store <dir>] [--release <dir>] [--dry-run] [--json]");
+  }
+  const dryRunFlag = "dry-run" in args;
+  const jsonFlag = "json" in args;
+  if (action === "install" && "records" in args) {
+    if ("harness" in args) throw new UsageError("--records and --harness exclude each other");
+    if (!args.records) throw new UsageError("missing value for --records");
+    const recordsDir = resolve(cwd, args.records);
+    if (!existsSync(recordsDir) || !gitOk(recordsDir, "rev-parse", "--git-dir")) {
+      throw new UsageError(`--records ${recordsDir} is not a Git repository`);
+    }
+    if (dryRunFlag) {
+      const hookPath = join(recordsDir, ".githooks", "pre-commit");
+      const res = { records: recordsDir, hookPath, dryRun: true };
+      if (jsonFlag) console.log(JSON.stringify(res, null, 2));
+      else console.log(`# would install records pre-commit hook at ${hookPath}`);
+      return 0;
+    }
+    const res = installRecordsPreCommitHook(recordsDir);
+    if (jsonFlag) console.log(JSON.stringify({ records: recordsDir, ...res }, null, 2));
+    else console.log(`${res.changed ? "installed" : "verified"} records pre-commit hook at ${res.hookPath}`);
+    return 0;
   }
   need(args, "harness");
   const harness = args.harness;
   const scope = args.scope || "workspace";
   const target = args.target || null;
-  const dryRunFlag = "dry-run" in args;
-  const jsonFlag = "json" in args;
   const allFlag = "all" in args;
   if (allFlag && "config" in args) throw new UsageError("--all and --config exclude each other");
   if (allFlag && scope === "workspace" && !target) throw new UsageError("--all cannot be combined with --scope workspace without --target");
@@ -417,8 +533,9 @@ export function main(argv, { env = process.env, cwd = process.cwd() } = {}) {
   }
   if (command === "next") {
     const clock = cliClock(args);
-    return runNext(selection(args, env, cwd), "all" in args, resolveOwnerStore({ flag: args["owner-store"], env }), clock);
+    return runNext(selection(args, env, cwd), "all" in args, resolveOwnerStore({ flag: args["owner-store"], env }), clock, "full" in args);
   }
+  if (command === "clean" || command === "prune" || command === "records") return runHygiene(command, args, env, cwd);
   if (command === "stall") return runStall(selection(args, env, cwd), args);
   if (command === "tick") {
     const report = tick({ store: resolveOwnerStore({ flag: args["owner-store"], env }), now: nowOf(args), hours: hoursOf(args) });

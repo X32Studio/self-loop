@@ -1,7 +1,7 @@
 {
   "name": "self-loop",
-  "version": "0.9.6",
-  "description": "Ship coding-agent projects to truly done with a fraction of your attention: first-principles framing, parallel-first multi-track execution, configurable cross-vendor/model adversarial verification, Dual-Five Zeroing, and Git-backed mechanical gates.",
+  "version": "0.9.8",
+  "description": "The deterministic delivery control plane for coding-agent swarms: Generation-Engine-first framing, parallel file-disjoint waves, Dual-Five Zeroing, zero-waste Critic/Judge verification, and Round-80 operational self-hygiene.",
   "license": "MIT",
   "author": "Ruiyuan Kang <kang@x32studio.com>",
   "homepage": "https://github.com/X32Studio/self-loop",

@@ -91,15 +91,15 @@ const v1Rows = () => parseRows(readFileSync(join(v1Rulings, "trajectory.jsonl"),
 
 test("D-0024: a blocker listed again after a phase change is not a new blocker (flow: supervision across ExampleApp S4 to A1; loss: stuck, a false count gates role calls)", () => {
   const grants = (round, phase, fields) => ruling(round, { phase, area: phase === "S4" ? "grant-store" : "records", ...fields });
-  const exampleApp = [
+  const appRows = [
     grants(25, "S4", { opened: "grant-store:R25-2" }), grants(32, "S4", { opened: "grant-store:R32-1" }),
     grants(33, "S4", { opened: "grant-store:R33-1" }), grants(35, "A1", { opened: "grant-store:R33-1" }),
     grants(39, "A1", { opened: "grant-store:R39-5", closed: "grant-store:R33-1" }),
   ];
-  const [found] = recurring(exampleApp);
+  const [found] = recurring(appRows);
   assert.deepEqual([found.count, found.at, found.evidence], [4, 39, { rounds: [25, 32, 33, 39], blockers: ["grant-store:R25-2", "grant-store:R32-1", "grant-store:R33-1", "grant-store:R39-5"] }]);
-  assert.deepEqual(recurring(exampleApp, { recur: 5 }), [], "four blockers, not the five rows that list them");
-  const carried = exampleApp.map(r => r.round === 35 ? { ...r, opened: "-", carried: "grant-store:R33-1" } : r);
+  assert.deepEqual(recurring(appRows, { recur: 5 }), [], "four blockers, not the five rows that list them");
+  const carried = appRows.map(r => r.round === 35 ? { ...r, opened: "-", carried: "grant-store:R33-1" } : r);
   assert.deepEqual(recurring(carried), [found], "the carry-over field reads as the old re-listing did");
   assert.deepEqual(recurring([ruling(1, { carried: "bug:A" }), ruling(2, { opened: "bug:A" }), ruling(3, { opened: "bug:B" })]), [],
     "a blocker first seen as carried is not an opening when it is listed again");

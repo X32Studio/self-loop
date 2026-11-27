@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// F-0008, D-0015, D-0016, D-0058, D-0060, D-0061, D-0066, D-0068, design/mandatory-control-plane.md#5, design/suite-once.md#2
+// F-0008, F-0015, P-0014, P-0015, D-0015, D-0016, D-0058, D-0060, D-0061, D-0066, D-0068, D-0069, R-0055-judge-frame-hygiene
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -8,39 +8,31 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import "./lib/unbind-git.mjs";
-import { auditAccess, canonical, eventsOf, FILE_TOOLS } from "./audit-access.mjs";
+import { auditAccess, canonical, eventsOf, FILE_TOOLS, serializeBoundedAudit } from "./audit-access.mjs";
 import { collectArchFacts, structuralBreaches } from "./lib/arch-facts.mjs";
 import { parseArgs } from "./lib/args.mjs";
 import { taskFeatures } from "./lib/blueprint.mjs";
-import { ARCH_STEP, JUDGE_FRAME_STEP, outerCadenceOf, outerLoopState } from "./lib/cadence.mjs";
+import { ARCH_STEP, JUDGE_FRAME_STEP } from "./lib/cadence.mjs";
+import { archBaselineFacts, lastOuterBaselineSha, refuseExhaustedWindow, refuseOuterLoopOverdue, refuseUndiagnosed, refuseUndistilledOwnerWords, viewHandoffs } from "./lib/call-gates.mjs";
 import { node as nodeCommand } from "./lib/commands.mjs";
 import { addedProse, commentResolutions } from "./lib/comments.mjs";
-import { undiagnosedAlarms } from "./lib/diagnosis.mjs";
 import { validateDispatchCall } from "./lib/dispatch.mjs";
 import { blobs, git, gitOk, regularFiles, writeFiles } from "./lib/git-plumbing.mjs";
-import { HANDOFFS, hasPhaseFrame, idOf, recordOf, ROLES, validateHandoff } from "./lib/handoff.mjs";
-import { isSubstantiveOwnerWord } from "./lib/owner-words.mjs";
+import { HANDOFFS, hasPhaseFrame, idOf, parseHandoffs, recordOf, ROLES, validateHandoff } from "./lib/handoff.mjs";
 import { ADAPTERS, isAdapter, isPreparedRunner, resolveAdapter } from "./lib/paseo.mjs";
 import { snapshot as planSnapshot } from "./lib/plan.mjs";
 import { globMatch } from "./lib/plan-globs.mjs";
-import { parseProvenanceHandoffs as parseHandoffs, verifyProvenance } from "./lib/provenance.mjs";
+import { verifyProvenance } from "./lib/provenance.mjs";
 import { appendJsonLines, commitRecords, RecordsConflict } from "./lib/records-commit.mjs";
+import { parsePruneManifests } from "./lib/records-prune.mjs";
 import { DISPLAY_SHA_LEN, renderSsotStatusMarkdown } from "./lib/ssot.mjs";
-import {
-  cancelPreparedCall,
-  preparationFile,
-  preparationScope,
-  preparedIn,
-  readPreparation,
-  resolveChildSession,
-  t3Prompt,
-  transcriptEvents,
-} from "./lib/t3-child.mjs";
-import { parseWindows, windowAlarmKey, WINDOWS, windowState } from "./lib/window.mjs";
+import { cancelPreparedCall, preparationFile, preparationScope, preparedIn, readPreparation, resolveChildSession, t3Prompt, transcriptEvents } from "./lib/t3-child.mjs";
 import { validateJudgeIndependence, validateModelVendors } from "./lib/vendor.mjs";
-import { classify, DEFAULT_LAYOUT, inspect, isPublicKind, openWords, parseLayout, renderIndex } from "./records-check.mjs";
+import { collectCleanOutFiles, reclaimWorkspacePayloads } from "./lib/work-hygiene.mjs";
+import { classify, DEFAULT_LAYOUT, inspect, isPublicKind, parseLayout, renderIndex } from "./records-check.mjs";
 import { purgeTreeReceipts, stageSuiteWorkspace } from "./suite-green.mjs";
-import { parseRows, TRAJECTORY } from "./trajectory.mjs";
+
+export { archBaselineFacts, viewHandoffs };
 
 export const EXIT = { done: 0, failure: 1, gate: 2, violation: 6, records: 7, usage: 64 };
 export const HEAVY_ROLES = ["critic", "actor", "judge"];
@@ -189,21 +181,6 @@ function indexHandOff(records, own, { tree, add, read }, { layoutText, extraKind
   return state.screening.filter(s => own.includes(s.path));
 }
 
-function walk(dir, prefix = "") {
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir).flatMap(n => {
-    if (n === ".git") return [];
-    const full = join(dir, n);
-    const st = lstatSync(full, { throwIfNoEntry: false });
-    if (!st) return [];
-    if (st.isDirectory()) {
-      if (prefix === "" && n === "tmp") return [];
-      return walk(full, `${prefix}${n}/`);
-    }
-    return st.isFile() ? [`${prefix}${n}`] : [];
-  });
-}
-
 function designOutputs(ws, role, layout) {
   const dir = join(ws, "out", "design");
   const stat = lstatSync(dir, { throwIfNoEntry: false });
@@ -271,15 +248,15 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
   const branch = gitOk(cfg.product, "show-ref", "--verify", "--quiet", `refs/heads/${baseName}`) ? baseName : null;
   const commits = ["critic", "actor"].includes(role);
   if (commits && branch && cfg.protected.includes(branch)) throw new Stop(EXIT.usage, `${branch} is protected; a role works on a loop branch, the lead promotes with gated-push.mjs`);
-  if (role !== "reviewer") refuseUndiagnosed(cfg, view, round);
+  if (role !== "reviewer") refuseUndiagnosed(cfg, view, round, { Stop, EXIT });
   if (HEAVY_ROLES.includes(role)) {
     const prov = verifyProvenance({ repo: cfg.product, records: cfg.records, sha: base, cfg, mode: "base" });
     if (!prov.ok) throw new Stop(EXIT.records, `--base ${base.slice(0, DISPLAY_SHA_LEN)} failed provenance verification: ${prov.reasons.join("; ")}`);
   }
-  if (commits) refuseUndistilledOwnerWords(cfg, view, round);
+  if (commits) refuseUndistilledOwnerWords(cfg, view, round, { Stop, EXIT });
   if (requiresPlan(role, step) && !planId)
     throw new Stop(EXIT.records, `${role} (${step}) requires --plan PL-NNNN --package <id> (D-0060; only reviewer, judge-frame*, and judge-comments* are exempt)`);
-  const win = role === "actor" ? refuseExhaustedWindow(cfg, view, viewPaths, round) : null;
+  const win = role === "actor" ? refuseExhaustedWindow(cfg, view, viewPaths, round, { Stop, EXIT }) : null;
   let dispatchMeta = null;
   if (planId && packageId) {
     const check = validateDispatchCall({
@@ -289,7 +266,7 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
     if (!check.ok) throw new Stop(EXIT.records, check.errors.join("\n"));
     dispatchMeta = { plan: planId, package: packageId, files: check.scopeFiles, peerFiles: check.peerFiles };
   }
-  if (role === "actor") refuseOuterLoopOverdue(cfg, view, viewPaths, base, round, win, dispatchMeta?.files ?? null);
+  if (role === "actor") refuseOuterLoopOverdue(cfg, view, viewPaths, base, round, win, dispatchMeta?.files ?? null, { Stop, EXIT, preparedIn });
 
   const extra = recordsConfig(cfg, view);
   const extraKinds = extra.extraKinds ?? [];
@@ -408,120 +385,6 @@ function callInner(cfg, role, { round, step = role, task, view: viewRev = "HEAD"
   } finally { cleanup(); }
 }
 
-// D-0015, D-0017, D-0060, design/alarm-gate.md#the-rule
-function refuseUndiagnosed(cfg, view, round) {
-  let open;
-  try { open = undiagnosedAlarms(cfg.records, view, cfg.phase, { repo: cfg.product }); }
-  catch (e) { throw new Stop(EXIT.records, `the trajectory or hand-offs at view ${view.slice(0, DISPLAY_SHA_LEN)} cannot be read for the alarm check: ${e.message}`); }
-  if (!open.length) return;
-  const keys = open.map(a => a.key);
-  const letters = "bcdefghijklmnopqrstuvwxyz";
-  let step = "reviewer-diagnosis";
-  for (let i = 0; gitOk(cfg.records, "cat-file", "-e", `HEAD:${recordOf(round, step)}`) && i < letters.length; i++) step = `reviewer-diagnosis-${letters[i]}`;
-  const prepareFlag = isPreparedRunner(cfg.agents.reviewer?.runner) ? ["--prepare"] : [];
-  throw new Stop(EXIT.records, [
-    `phase ${cfg.phase} has ${open.length} alarm(s) that no reviewer-diagnosis hand-off recorded after them names (records ${view.slice(0, DISPLAY_SHA_LEN)}; no model was called):`,
-    ...open.map(a => `  ${a.key}  (row of round ${a.round}: ${a.message})`),
-    "Diagnose first: write a diagnosis task with the line",
-    `  alarms: ${keys.join(", ")}`,
-    `then run ${nodeCommand("call.mjs", cfg.configFile ?? "<config.json>", "reviewer", "--round", round, "--step", step, "--task", "<diagnosis task file>", ...prepareFlag)}`,
-  ].join("\n"));
-}
-
-// P-0011, D-0058, design/two-loop-rhythm.md#2
-function refuseExhaustedWindow(cfg, view, viewPaths, round) {
-  if (!viewPaths.has(WINDOWS)) return { mode: "normal", active: null, actorBlocked: false };
-  let win;
-  try {
-    const windows = parseWindows(git(cfg.records, "show", `${view}:${WINDOWS}`), WINDOWS);
-    const handoffs = viewHandoffs(cfg, view, viewPaths);
-    const rows = viewPaths.has(TRAJECTORY) ? parseRows(git(cfg.records, "show", `${view}:${TRAJECTORY}`)).filter(r => r.phase === cfg.phase) : [];
-    win = windowState({ windows, handoffs, rows, phase: cfg.phase, nextRound: round });
-  } catch (e) {
-    throw new Stop(EXIT.records, `the windows ledger at view ${view.slice(0, DISPLAY_SHA_LEN)} cannot be read: ${e.message}`);
-  }
-  if (!win.actorBlocked) return win;
-  const w = win.active;
-  const alarmKey = windowAlarmKey(cfg.phase, w.id);
-  throw new Stop(EXIT.records, [
-    `bounded window ${w.id} in phase ${cfg.phase} exhausted its horizon (${win.usedActorRounds}/${w.horizon} actor rounds used, start ${w.startRound}, end ${w.endRound}); further actor calls are refused until the window is closed (no model was called).`,
-    `Verify (suite-green, CI if configured, critic, different-vendor judge) and close with:`,
-    `  ${nodeCommand("window.mjs", "close", "--records", cfg.records, "--id", w.id, "--verdict", "verified", "--commit", "<integration-sha>", ...(cfg.configFile ? ["--config", cfg.configFile] : []))}`,
-    `Or run reviewer-diagnosis with \`alarms: ${alarmKey}\` and close reframed with:`,
-    `  ${nodeCommand("window.mjs", "close", "--records", cfg.records, "--id", w.id, "--verdict", "reframed")}`,
-  ].join("\n"));
-}
-
-function viewHandoffs(cfg, view, viewPaths) {
-  return viewPaths.has(HANDOFFS)
-    ? parseHandoffs(git(cfg.records, "show", `${view}:${HANDOFFS}`)).filter(h => h.phase === cfg.phase && viewPaths.has(h.record))
-    : [];
-}
-
-function lastOuterBaselineSha(cfg, view, viewPaths) {
-  const handoffs = viewHandoffs(cfg, view, viewPaths);
-  const { baseline } = outerLoopState({ handoffs, phase: cfg.phase });
-  const sha = baseline?.product?.base ?? baseline?.product?.commit ?? null;
-  return sha && gitOk(cfg.product, "cat-file", "-e", `${sha}^{commit}`) ? sha : null;
-}
-
-function archBaselineFacts(cfg, view, viewPaths, baseline, validBase) {
-  if (!baseline || !ARCH_STEP.test(baseline.step ?? "")) return null;
-  const factsPath = (baseline.files ?? []).find(p => p.endsWith("arch-facts.json") && viewPaths.has(p));
-  if (factsPath) {
-    try { return JSON.parse(git(cfg.records, "show", `${view}:${factsPath}`)); } catch {}
-  }
-  if (validBase) {
-    try { return collectArchFacts(cfg.product, validBase); } catch {}
-  }
-  return null;
-}
-
-// P-0011, D-0058, D-0060, design/mandatory-control-plane.md#3
-function refuseOuterLoopOverdue(cfg, view, viewPaths, base, round, win, packageFiles = null) {
-  if (win && (win.mode === "slack" || win.mode === "converging")) return;
-  let outerCfg, handoffs, rows;
-  try {
-    outerCfg = outerCadenceOf(cfg);
-    handoffs = viewHandoffs(cfg, view, viewPaths);
-    rows = viewPaths.has(TRAJECTORY) ? parseRows(git(cfg.records, "show", `${view}:${TRAJECTORY}`)).filter(r => r.phase === cfg.phase) : [];
-  } catch (e) {
-    throw new Stop(EXIT.records, `outer-loop cadence check failed at view ${view.slice(0, DISPLAY_SHA_LEN)}: ${e.message}`);
-  }
-  const baseCheck = outerLoopState({ handoffs, rows, phase: cfg.phase });
-  const baselineSha = baseCheck.baseline?.product?.base ?? baseCheck.baseline?.product?.commit ?? null;
-  const validBase = baselineSha && gitOk(cfg.product, "cat-file", "-e", `${baselineSha}^{commit}`) ? baselineSha : null;
-  const baselineFacts = archBaselineFacts(cfg, view, viewPaths, baseCheck.baseline, validBase);
-  const currentFacts = collectArchFacts(cfg.product, base, { baselineSha: validBase });
-  const outer = outerLoopState({
-    handoffs, rows, currentFacts, baselineFacts, prepared: preparedIn(cfg), packageFiles,
-    deliveries: outerCfg.deliveries, outerGrace: outerCfg.outerGrace, phase: cfg.phase, targetSha: base,
-  });
-  if (!outer.blocked) return;
-  const reasons = [];
-  if (outer.t1Due) reasons.push(`T1 delivery cadence (${outer.deliveriesSince}/${outer.deliveries} committed deliveries, grace +${outer.outerGrace} exceeded)`);
-  if (outer.t3Due) reasons.push(`T3 arch-facts breach (${outer.archBreaches.map(b => `${b.kind} ${b.path}: ${b.detail}`).join("; ")})`);
-  const prepareFlag = isPreparedRunner(cfg.agents.reviewer?.runner) ? ["--prepare"] : [];
-  throw new Stop(EXIT.records, [
-    `outer loop is hard-due in phase ${cfg.phase}: ${reasons.join("; ")}; further actor calls are refused until reviewer-architecture commits (no model was called).`,
-    `Run read-only architectural review:`,
-    `  ${nodeCommand("call.mjs", cfg.configFile ?? "<config.json>", "reviewer", "--round", round, "--step", "reviewer-architecture", "--base", base, "--task", "<architecture task file>", ...prepareFlag)}`,
-  ].join("\n"));
-}
-
-// P-0011, D-0060, design/mandatory-control-plane.md#4
-function refuseUndistilledOwnerWords(cfg, view, round) {
-  const pending = openWords(cfg.records, view).filter(w => isSubstantiveOwnerWord(w.text));
-  if (!pending.length) return;
-  const prepareFlag = isPreparedRunner(cfg.agents.reviewer?.runner) ? ["--prepare"] : [];
-  throw new Stop(EXIT.records, [
-    `phase ${cfg.phase} has ${pending.length} un-distilled substantive owner word(s) (0-turn grace; no model was called):`,
-    ...pending.map(w => `  ${w.id} (${w.time}): ${w.text.replace(/\s+/g, " ").slice(0, 120)}`),
-    `Distill into purpose/decisions/design (citing each ID), mark via owner-words.mjs mark, or run:`,
-    `  ${nodeCommand("call.mjs", cfg.configFile ?? "<config.json>", "reviewer", "--round", round, "--step", "reviewer-distill", "--task", "<distill task file>", ...prepareFlag)}`,
-  ].join("\n"));
-}
-
 function holdLease(fields, log) {
   try {
     const dir = loadDir();
@@ -575,10 +438,11 @@ function moveBranch(cfg, name, from, to) {
   return gitOk(cfg.product, "update-ref", `refs/heads/${name}`, to, from);
 }
 
-// D-0060, design/mandatory-control-plane.md#5
+// D-0060, F-0015, design/mandatory-control-plane.md#5
 export function cancelCall(cfg, wsDir, { reason, now = () => new Date() } = {}) {
   try {
     const cancelled = cancelPreparedCall({ ws: wsDir, product: cfg.product, reason, now });
+    reclaimWorkspacePayloads(cancelled.ws);
     return { code: EXIT.done, message: `${cancelled.id} cancelled (${cancelled.ws}): ${cancelled.cancelReason}`, cancelled };
   } catch (e) {
     if (e instanceof Stop || Number.isInteger(e?.code)) return { code: e.code, message: e.message };
@@ -622,14 +486,14 @@ export function recordCall(cfg, wsDir, { transcript = null, session = null, log 
         observedModel: t.observedModel, ...(t.observedModels ? { observedModels: t.observedModels } : {}),
         costUsd: null, seconds: t.seconds } };
     log(`${ctx.id}: recording the ${runnerPrefix === "paseo" ? "Paseo" : "T3"} child's transcript ${match.file}`);
-    return finish(cfg, ctx, run, { log, now });
+    return finish(cfg, ctx, run, { log, now, reclaim: true });
   } catch (e) {
     if (e instanceof Stop || Number.isInteger(e?.code)) return { code: e.code, message: e.message };
     return { code: EXIT.failure, message: String(e.stack ?? e) };
   }
 }
 
-function finish(cfg, ctx, run, { log, now }) {
+function finish(cfg, ctx, run, { log, now, reclaim = false }) {
   const { role, round, step, phase = cfg.phase, task, features, id, record, view, briefs, base, branch, commits, extraKinds, ws, wt, owns, agent, dispatch = null, suiteReceipt = null } = ctx;
   const confined = role === "reviewer";
   const isArchReviewer = confined && ARCH_STEP.test(step);
@@ -650,8 +514,8 @@ function finish(cfg, ctx, run, { log, now }) {
     : run.status !== 0 ? [EXIT.failure, `${role} exited ${run.status}`]
     : !report.trim() ? [EXIT.failure, `${role} wrote no out/report.md`] : null;
   const designs = new Set(designOutputs(ws, role, parseLayout(layoutText, extraKinds)));
-  const outputs = walk(join(ws, "out")).filter(p => role === "judge" || p !== "report.md")
-    .map(path => [path, readFileSync(join(ws, "out", path))]);
+  const outCollected = collectCleanOutFiles(join(ws, "out"), { role });
+  const outputs = outCollected.included.filter(([path]) => role === "judge" || path !== "report.md");
   const agentFacts = run.facts;
   const product = { base, commit: base };
   const retry = isPreparedRunner(agent.runner);
@@ -696,9 +560,12 @@ function finish(cfg, ctx, run, { log, now }) {
     done = commitRecords(cfg.records, (candidate) => {
       const { files, read, add } = candidate;
       const exists = path => files.has(path) || existsSync(join(cfg.records, path));
+      const pruned = parsePruneManifests(files.keys(), read);
       const evDir = role === "judge" ? `sealed/judge/${pad(round)}` : `evidence/${pad(round)}`;
       let attempt = 1;
-      while (exists(`${evDir}/${step}-${attempt}-audit.json`)) attempt++;
+      while (exists(`${evDir}/${step}-${attempt}-audit.json`)
+        || pruned.has(`${evDir}/${step}-${attempt}-audit.json`)
+        || pruned.has(`${evDir}/${step}-${attempt}.log.gz`)) attempt++;
       const tag = `${evDir}/${step}-${attempt}`;
       const own = [];
       const put = (path, data, replace = false) => {
@@ -708,7 +575,11 @@ function finish(cfg, ctx, run, { log, now }) {
       };
       put(`${tag}.log.gz`, gzipSync(run.log));
       if (prose.length) put(`${tag}-comments.json`, `${JSON.stringify({ id, role, attempt, base, prose }, null, 1)}\n`);
-      put(`${tag}-audit.json`, `${JSON.stringify({ id, role, attempt, exit: run.status, agent: agentFacts, ...audit }, null, 1)}\n`);
+      const auditPayload = {
+        id, role, attempt, exit: run.status, nonce: ctx.nonce ?? null, agent: agentFacts, ...audit,
+        ...(outCollected.excludedCount ? { excludedOutPaths: outCollected.excludedPaths, excludedOutCount: outCollected.excludedCount, ...(outCollected.truncated ? { outIngestionTruncated: true } : {}) } : {}),
+      };
+      put(`${tag}-audit.json`, serializeBoundedAudit(auditPayload, 1048576));
       if (isArchReviewer && existsSync(join(ws, "arch-facts.json"))) put(`${tag}-arch-facts.json`, readFileSync(join(ws, "arch-facts.json")));
       for (const [path, bytes] of outputs) put(`${tag}/out/${path}`, bytes);
       let handoff;
@@ -786,6 +657,7 @@ function finish(cfg, ctx, run, { log, now }) {
     } catch {}
   }
   removeWorktree(cfg, wt);
+  if (reclaim) reclaimWorkspacePayloads(ws);
   return { code: EXIT.done, message: `${id} recorded in records ${done.commit.slice(0, DISPLAY_SHA_LEN)}${moved.map(m => `; ${m}`).join("")}`, handoff, ws };
 }
 

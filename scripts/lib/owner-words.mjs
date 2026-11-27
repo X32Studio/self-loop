@@ -1,4 +1,4 @@
-// F-0002, F-0009, D-0006, D-0007, D-0052, R-0033-judge-hooks
+// F-0002, F-0009, F-0015, D-0006, D-0007, D-0052, R-0033-judge-hooks
 import { randomUUID } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -14,6 +14,7 @@ import {
   HARNESS_ENVELOPE,
   inside,
   isLeadPrompt,
+  isRoutineCheckInCandidate,
   isSubstantiveOwnerWord,
   LeadSends,
   MARKS,
@@ -21,10 +22,13 @@ import {
   ownerPrompt,
   ownerPromptText,
   projectRoots,
+  ROUTINE_CHECKIN_RE,
   rowsOf,
   SEND,
   sha,
+  stripChatHistorySummary,
   T3_AGENT_NOTICE,
+  T3_SCHEDULED_TASK_NOTICE,
   textOf,
   wordId,
   WORDS,
@@ -40,6 +44,7 @@ export {
   HARNESS_ENVELOPE,
   inside,
   isLeadPrompt,
+  isRoutineCheckInCandidate,
   isSubstantiveOwnerWord,
   LeadSends,
   MARKS,
@@ -47,9 +52,12 @@ export {
   ownerPrompt,
   ownerPromptText,
   projectRoots,
+  ROUTINE_CHECKIN_RE,
   rowsOf,
   sha,
+  stripChatHistorySummary,
   T3_AGENT_NOTICE,
+  T3_SCHEDULED_TASK_NOTICE,
   wordId,
   WORDS,
 };
@@ -433,4 +441,49 @@ export function appendWords(records, words, { message = null, attempts = 5 } = {
     return { message: message ?? `owner: record ${fresh.length} word(s) verbatim`, value: fresh.length };
   }, { attempts });
   return { added, commit };
+}
+
+const QUOTE_RECORD_RE = /^(?:purpose\/(P-\d{4})|decisions\/(D-\d{4})|interventions\/(I-\d{4})|blueprint\/(F-\d{4}))\.md$/;
+const WORD_CITE_RE = /(?<![\w-])W-[0-9a-zA-Z]+(?![\w-])/g;
+const normQuote = text => String(text ?? "").replace(/\s+/g, " ").trim();
+
+function quoteClauses(text) {
+  const out = [];
+  for (const part of String(text ?? "").split(/(?:\r?\n|[。！？!?；;，,：:]|\.(?:\s|$))+/)) {
+    const norm = normQuote(part);
+    if (norm.length >= 16) out.push(norm);
+  }
+  return out;
+}
+
+export function findVerbatimQuoteMatches(state, openList) {
+  if (!state || !Array.isArray(openList) || !openList.length) return [];
+  const snap = typeof state === "string" ? recordsSnapshot(state) : state;
+  const paths = snap.files instanceof Map ? [...snap.files.keys()] : [...(snap.files ?? [])];
+  const records = [];
+  for (const path of paths.sort()) {
+    const m = QUOTE_RECORD_RE.exec(path);
+    if (!m) continue;
+    const raw = snap.read(path) ?? "";
+    if (!raw) continue;
+    const cited = new Set([...raw.matchAll(WORD_CITE_RE)].map(x => x[0]));
+    const quotedSpans = [...raw.matchAll(/(?:「([^」]{16,})」|“([^”]{16,})”|"([^"\r\n]{16,})")/g)]
+      .map(x => normQuote(x[1] ?? x[2] ?? x[3])).filter(s => s.length >= 16);
+    records.push({ recordId: m[1] || m[2] || m[3] || m[4], path, norm: normQuote(raw), cited, quotedSpans });
+  }
+  const matches = [];
+  for (const w of openList) {
+    const rawText = w?.text ?? w?.words ?? "";
+    const norm = normQuote(rawText);
+    if (norm.length < 10) continue;
+    const clauses = norm.length >= 16 ? quoteClauses(rawText) : [];
+    for (const rec of records) {
+      if (rec.cited.has(w.id)) continue;
+      if (rec.norm.includes(norm) || clauses.some(c => rec.norm.includes(c))
+        || (norm.length >= 16 && rec.quotedSpans.some(span => norm.includes(span)))) {
+        matches.push({ wordId: w.id, recordId: rec.recordId, path: rec.path });
+      }
+    }
+  }
+  return matches;
 }

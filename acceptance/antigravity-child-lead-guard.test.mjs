@@ -359,7 +359,7 @@ function setupReviewerHarness(prefix, round) {
   for (const rel of [BRIEFS.shared, BRIEFS.reviewer]) writeFileSync(join(ctx.alpha.records, rel), `# ${rel}\n`);
   const loopPath = join(ctx.alpha.records, "loop.json");
   const loopCfg = JSON.parse(readFileSync(loopPath, "utf8"));
-  loopCfg.agents.reviewer = { runner: "t3", provider: "antigravity", model: "gemini-2.5-pro-high" };
+  loopCfg.agents.reviewer = { runner: "t3", provider: "antigravity", model: "gemini-2.5-pro" };
   writeFileSync(loopPath, `${JSON.stringify(loopCfg, null, 2)}\n`);
   git(ctx.alpha.records, "add", BRIEFS.shared, BRIEFS.reviewer, "loop.json");
   git(ctx.alpha.records, "commit", "-qm", "configure antigravity reviewer");
@@ -377,9 +377,9 @@ function setupReviewerHarness(prefix, round) {
   };
   const completeRows = (prompt, calls) => [
     userStep(0, wrapEnvelope(`[T3 Code: the agent in T3 thread "0dda5e1c-c733-4d0a-8128-bb21179d5a29" sent this message, not the user.]\n\nAct as the test sub-agent for this task.\n\n${prompt}`)),
-    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-25T01:00:02.000Z", model: "gemini-2.5-pro-high", tool_calls: calls.map((c, i) => ({ id: `call_${i + 1}`, name: c.name, argumentsJson: JSON.stringify(c.args) })) },
+    { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-25T01:00:02.000Z", model: "gemini-2.5-pro", tool_calls: calls.map((c, i) => ({ id: `call_${i + 1}`, name: c.name, argumentsJson: JSON.stringify(c.args) })) },
     ...calls.map((_, i) => ({ step_index: i + 2, source: "MODEL", type: "GENERIC", status: "DONE", created_at: "2026-11-25T01:00:03.000Z" })),
-    { step_index: calls.length + 2, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-25T01:00:05.000Z", model: "gemini-2.5-pro-high", content: "done" },
+    { step_index: calls.length + 2, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-25T01:00:05.000Z", model: "gemini-2.5-pro", content: "done" },
   ];
   return { ...ctx, runInstalled, runCall, prepStep, completeRows };
 }

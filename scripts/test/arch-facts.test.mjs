@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { ARCH_THRESHOLDS, buildImportGraph, collectArchFacts, compareArchFacts, structuralBreaches } from "../lib/arch-facts.mjs";
+import { ARCH_THRESHOLDS, archCacheDir, buildImportGraph, collectArchFacts, compareArchFacts, structuralBreaches } from "../lib/arch-facts.mjs";
 import { git, repo } from "./helpers.mjs";
 
 const linesOf = (n, prefix = "export const v") =>
@@ -168,4 +169,51 @@ test("static ES import hubs compute fanIn/fanOut and parallelSiblings stay infor
   assert.equal(graph.files.length, 6);
   assert.ok(graph.edges.some(e => e.from === "src/a/alpha-kernel.mjs" && e.to === "src/core/shared.mjs"));
   assert.equal(graph.inEdges.get("src/core/shared.mjs").size, 4);
+});
+
+// F-0015, P-0014, P-0015, R-0055-judge-frame-hygiene
+test("F-0015 A9: collectArchFacts caches tree metrics under host-level arch-cache without mutating .git (pruned to 16, fail-open) while recomputing churn per commit", t => {
+  const nonGit = realpathSync(mkdtempSync(join(tmpdir(), "arch-non-git-")));
+  t.after(() => rmSync(nonGit, { recursive: true, force: true }));
+  assert.equal(archCacheDir(nonGit), null);
+
+  const r = repo({ "src/churn.mjs": linesOf(25), "src/stable.mjs": linesOf(20) });
+  const cacheDir = archCacheDir(r);
+  assert.ok(cacheDir);
+  t.after(() => rmSync(dirname(cacheDir), { recursive: true, force: true }));
+
+  const commonDir = realpathSync(git(r, "rev-parse", "--path-format=absolute", "--git-common-dir"));
+  assert.equal(cacheDir.startsWith(commonDir), false);
+  const baseSha = git(r, "rev-parse", "HEAD");
+  const c1 = putCommit(r, { "src/churn.mjs": linesOf(30) }, "bump 1");
+  const facts1 = collectArchFacts(r, c1, { baselineSha: baseSha });
+  assert.deepEqual(facts1.churnHotspots, []);
+  assert.equal(existsSync(join(commonDir, "self-loop-suite")), false);
+
+  const targetTree = git(r, "rev-parse", `${c1}^{tree}`);
+  const baseTree = git(r, "rev-parse", `${baseSha}^{tree}`);
+  const matching = readdirSync(cacheDir).filter(n => n.startsWith(`arch-facts-v2-${targetTree}-${baseTree}-`) && n.endsWith(".json"));
+  assert.equal(matching.length, 1);
+
+  putCommit(r, { "src/churn.mjs": linesOf(35) }, "bump 2");
+  const c3 = putCommit(r, { "src/churn.mjs": linesOf(30) }, "revert to c1 tree");
+  assert.equal(git(r, "rev-parse", `${c3}^{tree}`), targetTree);
+  const facts3 = collectArchFacts(r, c3, { baselineSha: baseSha });
+  assert.equal(facts3.sha, c3);
+  assert.equal(facts3.sourceFileCount, facts1.sourceFileCount);
+  assert.deepEqual(facts3.fileLines, facts1.fileLines);
+  assert.deepEqual(facts3.churnHotspots, [{ path: "src/churn.mjs", commits: 3 }]);
+
+  for (let i = 0; i < 18; i++) {
+    const s = putCommit(r, { "src/stable.mjs": linesOf(21 + i) }, `grow-${i}`);
+    collectArchFacts(r, s, { baselineSha: baseSha });
+  }
+  assert.ok(readdirSync(cacheDir).filter(n => n.startsWith("arch-facts-v2-") && n.endsWith(".json")).length <= 16);
+  assert.equal(existsSync(join(commonDir, "self-loop-suite")), false);
+
+  rmSync(cacheDir, { recursive: true, force: true });
+  writeFileSync(cacheDir, "unwritable-cache-sentinel");
+  const failOpen = collectArchFacts(r, c3, { baselineSha: baseSha });
+  assert.deepEqual(failOpen.churnHotspots, [{ path: "src/churn.mjs", commits: 3 }]);
+  assert.equal(existsSync(join(commonDir, "self-loop-suite")), false);
 });

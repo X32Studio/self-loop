@@ -1,10 +1,11 @@
-// F-0002, F-0009, D-0016, D-0062, design/paseo-and-judge-policy.md#1
+// F-0002, F-0009, F-0015, D-0016, D-0062, design/paseo-and-judge-policy.md#1
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
-import { isPaseoSystemEnvelope } from "./paseo.mjs";
+import { isPaseoSystemEnvelope, stripChatHistorySummary } from "./paseo.mjs";
 import { canonical } from "./path-canonical.mjs";
 
+export { stripChatHistorySummary };
 export const WORDS = "owner/words.jsonl";
 export const MARKS = "owner/word-marks.jsonl";
 const LEAD_MARKERS = ["self-loop call ", "[lead", "Your task is the file "];
@@ -13,8 +14,10 @@ const SLASH_COMMAND = /^<command-name>(\/[^<]+)<\/command-name>\s*<command-messa
 export const SEND = /^(?:mcp__t3[-_]code__|mcp_t3[-_]code_)t3_thread_send(?:_attachments)?$/;
 export const DELEGATED = /^Act as the [\w -]+ sub-agent for this task\./;
 export const T3_AGENT_NOTICE = /^\[T3 Code: (?:the agent in T3 thread "[^"\r\n]+"(?: on linked environment "[^"\r\n]+")? sent this message, not the user|this message came through T3 Code's tools, not from the user typing in this chat)\.\](?:\r?\n|$)/;
+export const T3_SCHEDULED_TASK_NOTICE = /^\[T3 Code: scheduled task "[^"\r\n]+"\](?:[ \t]*\r?\n[\s\S]*|[ \t]*)$/;
 export const DELEGATED_NOTICE = /^Delegated task (?:node:|thread:)?delegated-task:\S+(?: \([^\r\n]*\))?(?: in child thread \S+)? (?:\[(?:completed|failed|cancelled|interrupted)\](?::|\. Use task_status\b)|asked a question and is still working\.)/;
 export const HARNESS_ENVELOPE = /^\s*(?:Delegated task node:delegated-task:|\[T3 Code:\s*the agent in T3 thread\b|<CONTEXT_SUMMARY>|<SYSTEM_MESSAGE>)/;
+export const ROUTINE_CHECKIN_RE = /^(?:进展如何|进度如何|进度|如何了|怎么样了|到哪了|继续|继续吧|继续跑|继续跑吧|去做|去做吧|跑吧|好|好的|可以|行|收到|明白|ok|okay|go ahead|continue|status|progress)[!！。？?，,~～.\s]*$/iu;
 
 const ROUTINE_ACKS = new Set([
   "ok", "okay", "k", "kk", "go", "go ahead", "yes", "y", "yep", "yeah", "sure", "done", "ack",
@@ -56,15 +59,26 @@ export function handoffMessage(text) {
 }
 
 export function ownerPrompt(text, { claude = false } = {}) {
-  while (HANDOFF.test(text.trimStart())) {
-    text = handoffMessage(text);
-    if (text === null) return null;
+  if (typeof text !== "string") return null;
+  for (;;) {
+    if (HANDOFF.test(text.trimStart())) {
+      text = handoffMessage(text);
+      if (text === null) return null;
+      continue;
+    }
+    const stripped = stripChatHistorySummary(text);
+    if (stripped !== text) {
+      text = stripped;
+      continue;
+    }
+    break;
   }
   const content = text.trim();
   if (!content
     || (claude && /^\[Request interrupted by user(?: for tool use)?\]$/.test(content))
     || /^(?:\[Historical (?:user|assistant); [^\]\r\n]*\]|<codex_internal_context\b)/.test(content)
-    || T3_AGENT_NOTICE.test(content) || DELEGATED_NOTICE.test(content) || HARNESS_ENVELOPE.test(content)
+    || T3_AGENT_NOTICE.test(content) || T3_SCHEDULED_TASK_NOTICE.test(content)
+    || DELEGATED_NOTICE.test(content) || HARNESS_ENVELOPE.test(content)
     || isPaseoSystemEnvelope(content)
     || /^<(task-notification|system-reminder|local-command-stdout)>[\s\S]*<\/\1>$/.test(content)
     || /^<local-command-caveat>[\s\S]*?<\/local-command-caveat>/.test(content)) return null;
@@ -83,11 +97,19 @@ export function captureOwnerText(text) {
 
 export function isSubstantiveOwnerWord(text) {
   if (typeof text !== "string") return false;
-  const trimmed = text.trim();
-  if (!trimmed || HARNESS_ENVELOPE.test(trimmed) || T3_AGENT_NOTICE.test(trimmed) || DELEGATED_NOTICE.test(trimmed) || isPaseoSystemEnvelope(trimmed)) return false;
+  const trimmed = stripChatHistorySummary(text).trim();
+  if (!trimmed || HARNESS_ENVELOPE.test(trimmed) || T3_AGENT_NOTICE.test(trimmed)
+    || T3_SCHEDULED_TASK_NOTICE.test(trimmed) || DELEGATED_NOTICE.test(trimmed)
+    || isPaseoSystemEnvelope(trimmed)) return false;
   if (/[?？]/.test(trimmed)) return true;
   const norm = trimmed.replace(/[.!。！~～,，]+$/u, "").trim().toLowerCase();
   return !(trimmed.length <= 8 && ROUTINE_ACKS.has(norm));
+}
+
+export function isRoutineCheckInCandidate(text) {
+  if (typeof text !== "string") return false;
+  const trimmed = text.trim();
+  return Boolean(trimmed) && trimmed.length <= 24 && ROUTINE_CHECKIN_RE.test(trimmed);
 }
 
 export class LeadSends {

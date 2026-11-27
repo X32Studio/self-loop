@@ -1,14 +1,16 @@
-// D-0060, D-0062, D-0064, D-0068, design/mandatory-control-plane.md#1, design/paseo-and-judge-policy.md#1
+// F-0015, D-0060, D-0062, D-0064, D-0068, design/mandatory-control-plane.md#1, design/paseo-and-judge-policy.md#1
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseRows, TRAJECTORY } from "../trajectory.mjs";
 import { JUDGE_FRAME_STEP } from "./cadence.mjs";
 import { criticContradictedByTrajectory, criticConvergedAccepted, judgeAccepted } from "./ci.mjs";
-import { HANDOFFS, validateHandoff } from "./handoff.mjs";
+import { HANDOFFS, parseHandoffs } from "./handoff.mjs";
 import { recordsSnapshot } from "./records-commit.mjs";
 import { priorConvergedCommits, unjudgedCoveringActors, validateJudgeIndependence, validateModelVendors, waveIndependenceProblem } from "./vendor.mjs";
 import { parseWindows, WINDOWS, windowState } from "./window-state.mjs";
+
+export { parseHandoffs as parseProvenanceHandoffs, validateLeadPatchHandoff } from "./handoff.mjs";
 
 export const DEFAULT_LEAD_PATHS = Object.freeze(["VERSION", "docs/", "AGENTS.md", "CLAUDE.md", "README.md"]);
 
@@ -30,35 +32,6 @@ const isAncestor = (repo, anc, desc) => anc === desc || gitRun(repo, "merge-base
 const matchesLeadPath = (path, leadPaths) => leadPaths.some(rule => (rule.endsWith("/") ? path.startsWith(rule) : path === rule));
 const toSet = items => (items instanceof Set ? items : new Set(items ?? []));
 const hasValidPlan = (h, files) => Boolean(h.dispatch?.plan && PLAN_ID.test(h.dispatch.plan) && files.has(`plans/${h.dispatch.plan}.md`));
-const relPath = p => typeof p === "string" && p.length > 0 && !p.startsWith("/") && !p.split("/").includes("..");
-
-export function validateLeadPatchHandoff(h) {
-  const fail = m => { throw new Error(m); };
-  if (!h || typeof h !== "object" || Array.isArray(h)) fail("not an object");
-  if (h.role !== "lead-patch") fail("role must be lead-patch");
-  if (typeof h.id !== "string" || !h.id.trim()) fail("id is missing");
-  if (typeof h.phase !== "string" || !h.phase.trim() || /[\n\t]/.test(h.phase)) fail("phase must be a one-line name");
-  if (!h.product || !SHA.test(h.product.base ?? "") || !SHA.test(h.product.commit ?? "") || h.product.commit === h.product.base)
-    fail("product must carry distinct base and commit full SHAs");
-  if (!Array.isArray(h.files) || !h.files.length || h.files.length > 3 || !h.files.every(relPath))
-    fail("files must be 1..3 relative paths");
-  if (typeof h.reason !== "string" || !h.reason.trim()) fail("reason is missing");
-  if (!h.verify || typeof h.verify.command !== "string" || !h.verify.command.trim() || h.verify.exit !== 0)
-    fail("verify must record command and exit 0");
-  if (!h.audit || h.audit.violations !== 0) fail("audit.violations must be 0");
-  return h;
-}
-
-export function parseProvenanceHandoffs(text) {
-  return text.split("\n").filter(Boolean).map((line, i) => {
-    try {
-      const obj = JSON.parse(line);
-      return obj?.role === "lead-patch" ? validateLeadPatchHandoff(obj) : validateHandoff(obj);
-    } catch (e) {
-      throw new Error(`${HANDOFFS}:${i + 1}: not a valid hand-off (${e.message})`);
-    }
-  });
-}
 
 const isAttestedLeadPatch = h => h?.role === "lead-patch"
   && h.audit?.violations === 0
@@ -244,7 +217,7 @@ export function evaluateCertifiedWaveCoverage({
   const baseline = SHA.test(merged.provenanceBaseline ?? "") && commitOf(repo, merged.provenanceBaseline) ? merged.provenanceBaseline : null;
   const effLeadPaths = Array.isArray(leadPaths) ? leadPaths : (Array.isArray(merged.leadPaths) ? merged.leadPaths : DEFAULT_LEAD_PATHS);
   const isAnc = typeof ancFn === "function" ? ancFn : ((a, b) => isAncestor(repo, a, b)), effPhase = phase ?? merged.phase ?? null;
-  const fullHandoffs = allHandoffs ?? (fileSet.has(HANDOFFS) ? parseProvenanceHandoffs(readFile(HANDOFFS)) : []);
+  const fullHandoffs = allHandoffs ?? (fileSet.has(HANDOFFS) ? parseHandoffs(readFile(HANDOFFS)) : []);
   const fullRows = allRows ?? (fileSet.has(TRAJECTORY) ? parseRows(readFile(TRAJECTORY)) : []);
   const scopedJudges = judges ?? fullHandoffs.filter(h => (!effPhase || h.phase === effPhase) && h.role === "judge" && !JUDGE_FRAME_STEP.test(h.step) && fileSet.has(h.record));
   const scopedCritics = critics ?? fullHandoffs.filter(h => (!effPhase || h.phase === effPhase) && h.role === "critic" && fileSet.has(h.record) && (!baseline || hasValidPlan(h, fileSet)));
@@ -425,7 +398,7 @@ export function verifyWaveGate({ repo, records, sha, branch, cfg = null }) {
   if (!snap) return { required: true, ok: false, missing: ["records"], reasons: ["provenance wave gate requires records repository"] };
   const commits = gitLines(repo, "rev-list", "--topo-order", "--reverse", `${baseline}..${full}`) ?? [];
   const leadPaths = Array.isArray(merged.leadPaths) ? merged.leadPaths : DEFAULT_LEAD_PATHS;
-  const handoffs = snap.files.has(HANDOFFS) ? parseProvenanceHandoffs(snap.read(HANDOFFS)) : [];
+  const handoffs = snap.files.has(HANDOFFS) ? parseHandoffs(snap.read(HANDOFFS)) : [];
   const attested = attestedRoleCommits(handoffs, snap.files);
   const leadOnlySet = new Set(commits.filter(c => !attested.has(c) && isLeadOnlyCommit(repo, c, leadPaths)));
   return evaluateWaveGate({
@@ -459,7 +432,7 @@ export function verifyProvenance({ repo, records, sha, branch = null, cfg = null
 
   let handoffs, rows, windows;
   try {
-    handoffs = snap.files.has(HANDOFFS) ? parseProvenanceHandoffs(snap.read(HANDOFFS)) : [];
+    handoffs = snap.files.has(HANDOFFS) ? parseHandoffs(snap.read(HANDOFFS)) : [];
     rows = snap.files.has(TRAJECTORY) ? parseRows(snap.read(TRAJECTORY)) : [];
     windows = snap.files.has(WINDOWS) ? parseWindows(snap.read(WINDOWS), WINDOWS) : [];
   } catch (e) { return result(false, { sha: full, baseline, reasons: [`invalid records state: ${e.message}`] }); }

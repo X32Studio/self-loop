@@ -1,13 +1,15 @@
 // P-0006, D-0018, D-0063, D-0064, design/dispatch.md#file-ownership, design/dispatch.md#ready-state
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { gzipSync } from 'node:zlib';
 import { globOverlap } from '../lib/plan-globs.mjs';
-import { admitAcrossPlans, criticCausalBase, judgeCoverageProblems, judgeJoinProblems, judgeLineageProblems, packageOrder, parsePlan, planCallCommand, planPackageMap, RELEASE_IN_WORDS, validatePlan, readyPlan } from '../lib/plan.mjs';
+import { admitAcrossPlans, buildSharedPlanContext, criticCausalBase, judgeCoverageProblems, judgeJoinProblems, judgeLineageProblems, packageOrder, parsePlan, planCallCommand, planPackageMap, reconcilePlans, RELEASE_IN_WORDS, validatePlan, readyPlan } from '../lib/plan.mjs';
 import { executionInterval, measurePlan, renderMeasures } from '../lib/plan-measures.mjs';
+import { citedPredicates, cliClock, createPredicates, firstParentHistory, measuresLines, predicateContext, predicateReplay, queryClock, timeLines } from '../lib/predicate-replay.mjs';
+import { certifiedCriticOn, checkouts, integrationOf, recordedAfter } from '../lib/integration.mjs';
 import { git, repo, roomyStore, scripts, setup, temp } from './helpers.mjs';
 
 const pkg = (id, changes = {}) => ({ id, authority: ['D-0001'], goal: `Deliver ${id}`, files: [],
@@ -534,4 +536,99 @@ test('R51-1/R51-2/D-0064 T10: planCallCommand binds plan/package, readyPlan hold
   assert.deepEqual([covHeld.status, covHeld.idle, covHeld.holds[0].kind], ['waiting', false, 'coverage']);
   const slackReady = readyPlan(pendingState, uncovered, { context: { ...pendingCtx, plans: [uncovered] }, host, base: sha, window: { mode: 'slack' } }).packages.find(p => p.id === 'j');
   assert.equal(slackReady.status, 'ready');
+});
+
+// F-0015, P-0014, P-0015, R-0055-judge-frame-hygiene
+test('F-0015 A7: buildSharedPlanContext indexes audits by round/step, verifies audit.nonce with 0 gunzipSync, parses >1 MiB legacy audits safely, and keeps legacy .log.gz fallback', () => {
+  const pl = plan([
+    pkg('fast', { handoff: 'R-0008-actor-fast', files: ['src/fast.js'] }),
+    pkg('mismatch', { handoff: 'R-0008-actor-mismatch', files: ['src/mismatch.js'] }),
+    pkg('legacy', { handoff: 'R-0008-actor-legacy', files: ['src/legacy.js'] }),
+    pkg('huge', { handoff: 'R-0008-actor-huge', files: ['src/huge.js'] }),
+    pkg('hugetail', { handoff: 'R-0008-actor-hugetail', files: ['src/hugetail.js'] }),
+  ]);
+  pl.packages.forEach(p => { p.task = import.meta.filename; });
+  const padPayload = 'x'.repeat(1_200_000);
+  const hugeHead = JSON.stringify({ id: 'R-0008-actor-huge', nonce: 'n-huge', agent: { session: 's-huge' }, flags: [{ pad: padPayload }] });
+  const hugeTail = JSON.stringify({ flags: [{ pad: padPayload }], id: 'R-0008-actor-hugetail', nonce: 'n-tail', agent: { session: 's-tail' } });
+  const recState = state({
+    'evidence/0008/actor-fast-1-audit.json': JSON.stringify({ id: 'R-0008-actor-fast', nonce: 'n-fast', agent: { session: 's-fast' } }),
+    'evidence/0008/actor-fast-1.log.gz': Buffer.from('not-gzip-proves-zero-gunzip'),
+    'evidence/0008/actor-mismatch-1-audit.json': JSON.stringify({ id: 'R-0008-actor-mismatch', nonce: 'n-old', agent: { session: 's-m' } }),
+    'evidence/0008/actor-mismatch-1.log.gz': gzipSync('prompt n-new\n'),
+    'evidence/0008/actor-legacy-1-audit.json': JSON.stringify({ id: 'R-0008-actor-legacy', agent: { session: 's-leg' } }),
+    'evidence/0008/actor-legacy-1.log.gz': gzipSync('prompt n-legacy\n'),
+    'evidence/0008/actor-huge-1-audit.json': Buffer.from(hugeHead),
+    'evidence/0008/actor-hugetail-1-audit.json': Buffer.from(hugeTail),
+    'evidence/0009/actor-fast-1-audit.json': JSON.stringify({ id: 'R-0009-actor-fast', nonce: 'other', agent: { session: 's-other' } }),
+  });
+  const cfg = { agents: { actor: { runner: 't3' } }, workDir: '/', configFile: '/loop.json', records: '/records' };
+  const shared = buildSharedPlanContext(recState, cfg, { live: false, plans: [pl] });
+  assert.deepEqual(shared.auditFilesByStep.get('0008/actor-fast'), ['evidence/0008/actor-fast-1-audit.json']);
+  assert.deepEqual(shared.auditFilesByStep.get('0009/actor-fast'), ['evidence/0009/actor-fast-1-audit.json']);
+  const prepared = [
+    { id: 'R-0008-actor-fast', round: 8, step: 'actor-fast', phase: 'v1', liveWorkspace: false, ws: '/w/fast', nonce: 'n-fast' },
+    { id: 'R-0008-actor-mismatch', round: 8, step: 'actor-mismatch', phase: 'v1', liveWorkspace: false, ws: '/w/mismatch', nonce: 'n-new' },
+    { id: 'R-0008-actor-legacy', phase: 'v1', liveWorkspace: false, ws: '/w/legacy', nonce: 'n-legacy' },
+    { id: 'R-0008-actor-huge', round: 8, step: 'actor-huge', phase: 'v1', liveWorkspace: false, ws: '/w/huge', nonce: 'n-huge' },
+    { id: 'R-0008-actor-hugetail', round: 8, step: 'actor-hugetail', phase: 'v1', liveWorkspace: false, ws: '/w/tail', nonce: 'n-tail' },
+  ];
+  const out = readyPlan(recState, pl, { context: { ...shared, prepared }, host: { admits: true, over: [] } });
+  const byId = Object.fromEntries(out.packages.map(r => [r.id, r]));
+  assert.equal(byId.fast.status, 'ready');
+  assert.equal(byId.mismatch.status, 'waiting');
+  assert.equal(byId.mismatch.holds[0].kind, 'attempt');
+  assert.equal(byId.legacy.status, 'ready');
+  assert.equal(byId.huge.status, 'ready');
+  assert.equal(byId.hugetail.status, 'ready');
+});
+
+// F-0015, R-0054-reviewer-architecture
+test('F-0015: reconcilePlans shares context across current plans and extracted leaf modules stay acyclic and under line limits', async () => {
+  const s = await setup({}, { plans: false });
+  const put = (root, p, d) => { mkdirSync(dirname(join(root, p)), { recursive: true }); writeFileSync(join(root, p), d); };
+  const sec = (id, role, handoff, files, needs = '', extra = []) => [`## ${id}`, 'authority: D-0001', `goal: Deliver ${id}`, `files: ${files}`,
+    'interface: fixed', `needs: ${needs}`, ...extra, `role: ${role}`, 'acceptance: green', `handoff: ${handoff}`, ''];
+  put(s.records, 'loop.json', JSON.stringify(s.cfg));
+  put(s.records, 'decisions/D-0001.md', '# D-0001\nby: owner\n');
+  put(s.records, 'plans/PL-0001.md', ['# PL-0001 One', 'scope: S5/one', 'phase: S5', '',
+    ...sec('a', 'actor', 'R-0002-actor-a', 'src/a/'), ...sec('ca', 'critic', 'R-0002-critic-a', 'test/a/', 'a', ['reviews: a'])].join('\n'));
+  put(s.records, 'plans/PL-0002.md', ['# PL-0002 Two', 'scope: S5/two', 'phase: S5', '',
+    ...sec('b', 'actor', 'R-0002-actor-b', 'src/b/'), ...sec('cb', 'critic', 'R-0002-critic-b', 'test/b/', 'b', ['reviews: b'])].join('\n'));
+  for (const id of ['R-0002-actor-a', 'R-0002-critic-a', 'R-0002-actor-b', 'R-0002-critic-b']) put(s.cfg.workDir, `tasks/${id}.md`, `features: F-0001\n${id}\n`);
+  git(s.records, 'add', '-A'); git(s.records, 'commit', '-qm', 'two plans');
+  const rec = reconcilePlans(s.records, 'HEAD', 'S5', { host: { admits: true, over: [], calls: [] }, live: true });
+  assert.equal(rec.problem, null);
+  assert.equal(rec.plans.length, 2);
+  assert.deepEqual(rec.plans.map(p => p.result.ready), [['a'], ['b']]);
+
+  assert.equal(typeof queryClock, 'function');
+  assert.equal(typeof cliClock, 'function');
+  assert.equal(typeof timeLines, 'function');
+  assert.equal(typeof measuresLines, 'function');
+  assert.equal(typeof createPredicates, 'function');
+  assert.equal(typeof predicateContext, 'function');
+  assert.equal(typeof firstParentHistory, 'function');
+  assert.equal(typeof predicateReplay, 'function');
+  assert.equal(typeof recordedAfter, 'function');
+  assert.equal(typeof checkouts, 'function');
+  assert.equal(typeof integrationOf, 'function');
+  assert.equal(typeof certifiedCriticOn, 'function');
+  assert.deepEqual(citedPredicates('carried-by: open-words and stall'), ['stall', 'open-words']);
+  assert.equal(cliClock({}).clockMode, 'live');
+  assert.deepEqual(timeLines(null), []);
+
+  for (const [rel, maxLines] of [
+    ['lib/comments.mjs', 360],
+    ['lib/arch-facts.mjs', 490],
+    ['lib/plan.mjs', 490],
+    ['lib/predicate-replay.mjs', 260],
+    ['lib/integration.mjs', 160],
+  ]) {
+    const src = readFileSync(join(scripts, rel), 'utf8');
+    assert.ok(src.split('\n').length < maxLines, `${rel} exceeded ${maxLines}L`);
+    if (rel === 'lib/predicate-replay.mjs' || rel === 'lib/integration.mjs') {
+      assert.doesNotMatch(src, /from\s+["'][^"']*loop\.mjs["']/, `${rel} must not import loop.mjs`);
+    }
+  }
 });

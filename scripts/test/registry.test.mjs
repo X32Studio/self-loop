@@ -229,3 +229,28 @@ test("loadHookStore and matchHookProduct validate fail-closed and route primary,
   assert.equal(loadHookStore("").ok, false);
   assert.equal(loadHookStore(temp("no-reg-")).ok, false);
 });
+
+test("hostLoad immediately unlinks dead-PID call and suite leases while preserving live leases and non-lease files", () => {
+  const store = ownerStore([]);
+  const loadDir = temp("self-loop-dead-lease-");
+  const deadCall = join(loadDir, "call-999999-0.json");
+  const deadSuite = join(loadDir, "suite-999999-1.json");
+  const liveCall = join(loadDir, `call-${process.pid}-0.json`);
+  const unrelated = join(loadDir, "notes.json");
+  writeFileSync(deadCall, JSON.stringify({ kind: "call", pid: 2 ** 22 + 1, role: "actor" }));
+  writeFileSync(deadSuite, JSON.stringify({ kind: "suite", pid: 2 ** 22 + 2, repo: "/home/alice/repo" }));
+  writeFileSync(liveCall, JSON.stringify({ kind: "call", pid: process.pid, role: "critic" }));
+  writeFileSync(unrelated, JSON.stringify({ kind: "call", pid: 2 ** 22 + 1, role: "actor" }));
+
+  const res = hostLoad({
+    store: { path: store, source: "test" },
+    env: { SELF_LOOP_LOAD_DIR: loadDir },
+    measure: () => ({ load1: 0, cores: 4, availableGiB: 64, totalGiB: 64, load: "test", memory: "test", total: "test" }),
+  });
+  assert.equal(res.calls.length, 1);
+  assert.equal(res.calls[0].role, "critic");
+  assert.equal(existsSync(deadCall), false);
+  assert.equal(existsSync(deadSuite), false);
+  assert.equal(existsSync(liveCall), true);
+  assert.equal(existsSync(unrelated), true);
+});

@@ -1,6 +1,6 @@
 // P-0001, P-0003, I-0001, D-0009, D-0010, D-0025, D-0060, R-0032-reviewer-architecture
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -311,7 +311,11 @@ export function addProduct(path, { name, records, aliases = [] }) {
   return value;
 }
 
-const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; } };
+const pidState = pid => {
+  if (!Number.isInteger(pid) || pid <= 0) return "invalid";
+  try { process.kill(pid, 0); return "alive"; }
+  catch (error) { return error.code === "EPERM" ? "alive" : error.code === "ESRCH" ? "dead" : "invalid"; }
+};
 
 export function hostLoad({ store, cfg = null, env = process.env, measure = measureHost } = {}) {
   const problems = [], calls = [];
@@ -342,9 +346,15 @@ export function hostLoad({ store, cfg = null, env = process.env, measure = measu
   for (const entry of entries.sort()) {
     const kind = /^(call|suite)-\d+-\d+\.json$/.exec(entry)?.[1];
     if (!kind) continue;
+    const file = join(dir, entry);
     let lease;
-    try { lease = JSON.parse(readFileSync(join(dir, entry), "utf8")); } catch { continue; }
-    if (lease?.kind !== kind || !Number.isInteger(lease.pid) || !alive(lease.pid)) continue;
+    try { lease = JSON.parse(readFileSync(file, "utf8")); } catch { continue; }
+    if (lease?.kind !== kind || !Number.isInteger(lease.pid)) continue;
+    const state = pidState(lease.pid);
+    if (state !== "alive") {
+      if (state === "dead") try { unlinkSync(file); } catch {}
+      continue;
+    }
     if (kind === "call" && HEAVY_ROLES.includes(lease.role))
       calls.push({ kind, role: lease.role, pid: lease.pid, id: lease.id ?? null, records: lease.records ?? null,
         line: `running ${lease.role} call${lease.id ? ` ${lease.id}` : ""} · pid ${lease.pid} · ${lease.records ?? "records unknown"}` });

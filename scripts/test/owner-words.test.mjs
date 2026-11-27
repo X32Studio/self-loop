@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { antigravityTranscript } from "../lib/antigravity-words.mjs";
-import { appendWords, claudeSessionWords, claudeSlug, codexSessionWords, committedWords, transcriptWords, WORDS } from "../lib/owner-words.mjs";
+import { appendWords, captureOwnerText, claudeSessionWords, claudeSlug, codexSessionWords, committedWords, findVerbatimQuoteMatches, isRoutineCheckInCandidate, isSubstantiveOwnerWord, ownerPrompt, T3_SCHEDULED_TASK_NOTICE, transcriptWords, WORDS } from "../lib/owner-words.mjs";
 import { hookWord } from "../owner-words.mjs";
 import { sessionOpenWords } from "../word-gate.mjs";
 import { openWords } from "../records-check.mjs";
@@ -26,7 +26,7 @@ test("Claude: the owner's prompts count; notices, tool results, summaries and ag
   const dir = temp();
   const lead = write(join(dir, "lead.jsonl"), [
     claudeRow("Context handoff (full_thread_summary):\nsummary"),
-    claudeRow("实现方用opus 5.5 xhigh，攻击方用gpt 6.2 sol"),
+    claudeRow("实现方用opus 4.6 xhigh，攻击方用gpt 5.4"),
     claudeRow("<task-notification>\n<task-id>x</task-id>", { promptSource: "system", origin: { kind: "task-notification" } }),
     claudeRow("Delegated task node:delegated-task:abc [completed]: done"),
     claudeRow("This session is being continued from a previous conversation", { isCompactSummary: true }),
@@ -34,7 +34,7 @@ test("Claude: the owner's prompts count; notices, tool results, summaries and ag
     claudeRow("可以"), claudeRow("可以"),
   ]);
   const words = claudeSessionWords(lead);
-  assert.deepEqual(words.map(w => w.text), ["实现方用opus 5.5 xhigh，攻击方用gpt 6.2 sol", "可以", "可以"]);
+  assert.deepEqual(words.map(w => w.text), ["实现方用opus 4.6 xhigh，攻击方用gpt 5.4", "可以", "可以"]);
   assert.notEqual(words[1].id, words[2].id, "the same text twice in a session is two words");
   const child = write(join(dir, "child.jsonl"), [claudeRow("Act as the implementation sub-agent for this task.\n\nself-loop call R-0042-actor · nonce n"), claudeRow("继续")]);
   assert.deepEqual(claudeSessionWords(child), [], "a session T3 started for an agent holds no owner words");
@@ -71,8 +71,8 @@ test("a T3 context hand-off: the summary is not the owner's, the message after i
 
 test("Codex: only sessions the owner drove inside the project; injected context is not the owner's", () => {
   const dir = temp();
-  const owner = write(join(dir, "o.jsonl"), codexRows({ id: "c1", source: "vscode", originator: "T3 Code" }, ["# AGENTS.md instructions for /work", "Name the project example-app"]));
-  assert.deepEqual(codexSessionWords(owner, [project]).map(w => w.text), ["Name the project example-app"]);
+  const owner = write(join(dir, "o.jsonl"), codexRows({ id: "c1", source: "vscode", originator: "T3 Code" }, ["# AGENTS.md instructions for /work", "项目叫example-app，用作通用示例"]));
+  assert.deepEqual(codexSessionWords(owner, [project]).map(w => w.text), ["项目叫example-app，用作通用示例"]);
   for (const meta of [{ thread_source: "subagent" }, { forked_from_id: "c1" }, { parent_thread_id: "c1" }, { source: "exec", originator: "codex_exec" }])
     assert.deepEqual(codexSessionWords(write(join(dir, `${JSON.stringify(meta).length}.jsonl`), codexRows(meta, ["x"])), [project]), [], JSON.stringify(meta));
   assert.deepEqual(codexSessionWords(write(join(dir, "else.jsonl"), codexRows({ cwd: "/elsewhere" }, ["x"])), [project]), []);
@@ -463,4 +463,129 @@ test("SessionStart --hook antigravity deduplicates init --register by canonical 
   const dualMsg = JSON.parse(runHook({ hookEventName: "SessionStart", conversationId: "s3", cwd: dual.product }).stdout).injectSteps[0].systemMessage.systemMessage;
   assert.match(dualMsg, /This session: workspace .* matches multiple products:.*dual.*in-repo/);
   assert.doesNotMatch(dualMsg, /Phase v1 · /);
+});
+
+test("F-0015: scheduled-task notices and chat-history-summary envelopes filter cleanly while mid-sentence mentions survive", () => {
+  const dir = temp("ow-f15-env-");
+  const filtered = [
+    '[T3 Code: scheduled task "heartbeat"]',
+    '[T3 Code: scheduled task "nightly"]   ',
+    '[T3 Code: scheduled task "nightly"]\nRun health checks.',
+    '[T3 Code: scheduled task "nightly"]\r\n\r\nRun checks.',
+    "<chat-history-summary>\nOld context.\n</chat-history-summary>",
+    '<chat-history-summary>\nOld context.\n</chat-history-summary>\n\n[T3 Code: scheduled task "tick"]\nRun.',
+  ];
+  for (const sample of filtered) {
+    assert.equal(ownerPrompt(sample), null, sample);
+    assert.equal(captureOwnerText(sample), null, sample);
+    assert.equal(isSubstantiveOwnerWord(sample), false, sample);
+  }
+  assert.equal(T3_SCHEDULED_TASK_NOTICE.test(filtered[0]), true);
+  assert.equal(T3_SCHEDULED_TASK_NOTICE.test(filtered[2]), true);
+
+  const preserved = [
+    'Why did [T3 Code: scheduled task "nightly"] fire twice?',
+    '[T3 Code: scheduled task "nightly"] fired twice today.',
+    'Please inspect:\n[T3 Code: scheduled task "nightly"]\nRun checks.',
+    "Keep <chat-history-summary>mentioned</chat-history-summary> in prose.",
+  ];
+  for (const sample of preserved) {
+    assert.deepEqual(ownerPrompt(sample), { text: sample }, sample);
+    assert.equal(captureOwnerText(sample), sample, sample);
+    assert.equal(isSubstantiveOwnerWord(sample), true, sample);
+  }
+  const trailing = "<chat-history-summary>\nSummary.\n</chat-history-summary>\n\nFix the remaining timeout.";
+  assert.deepEqual(ownerPrompt(trailing), { text: "Fix the remaining timeout." });
+  assert.equal(isSubstantiveOwnerWord(trailing), true);
+
+  const all = [...filtered, ...preserved, trailing];
+  const expected = [...preserved, "Fix the remaining timeout."];
+  assert.deepEqual(claudeSessionWords(write(join(dir, "c.jsonl"), all.map(t => claudeRow(t)))).map(w => w.text), expected);
+  assert.deepEqual(codexSessionWords(write(join(dir, "x.jsonl"), codexRows({ id: "cx-env" }, all)), [project]).map(w => w.text), expected);
+});
+
+test("F-0015: atomic multi-ID mark supports comma/repeated/--ids, idempotent batch skip, and exit 64 on unknown IDs", () => {
+  const r = records();
+  const ws = [1, 2, 3, 4].map(n => ({ id: `W-000000000${n}`, time: `2026-11-27T00:0${n}:00Z`, source: "claude", session: "s1", text: `word ${n}`, sha256: `h${n}` }));
+  appendWords(r, ws);
+  const cli = (...a) => spawnSync(process.execPath, [join(scripts, "owner-words.mjs"), ...a, "--records", r], { encoding: "utf8" });
+
+  const single = cli("mark", "--id", "W-0000000001", "--as", "routine", "--note", "ack");
+  assert.equal(single.status, 0, single.stderr);
+  assert.equal(JSON.parse(single.stdout).id, "W-0000000001");
+  assert.equal(cli("mark", "--id", "W-0000000001", "--as", "routine", "--note", "ack").status, 64);
+
+  const commitsBefore = Number(git(r, "rev-list", "--count", "HEAD"));
+  const badBatch = cli("mark", "--ids", "W-0000000002,W-aaaaaaaaaa,W-bbbbbbbbbb", "--as", "routine", "--note", "ack");
+  assert.equal(badBatch.status, 64);
+  assert.match(badBatch.stderr, /W-aaaaaaaaaa.*W-bbbbbbbbbb/);
+  assert.equal(Number(git(r, "rev-list", "--count", "HEAD")), commitsBefore);
+
+  const comma = cli("mark", "--id", "W-0000000001,W-0000000002,W-0000000003,W-0000000002", "--as", "routine", "--note", "status");
+  assert.equal(comma.status, 0, comma.stderr);
+  const commaJson = JSON.parse(comma.stdout);
+  assert.deepEqual(commaJson.marked.map(m => m.id), ["W-0000000002", "W-0000000003"]);
+  assert.deepEqual(commaJson.skipped, ["W-0000000001"]);
+  assert.equal(Number(git(r, "rev-list", "--count", "HEAD")), commitsBefore + 1);
+
+  const repeated = cli("mark", "--id", "W-0000000003", "--id", "W-0000000004", "--as", "routine", "--note", "status");
+  assert.equal(repeated.status, 0, repeated.stderr);
+  const repJson = JSON.parse(repeated.stdout);
+  assert.deepEqual(repJson.marked.map(m => m.id), ["W-0000000004"]);
+  assert.deepEqual(repJson.skipped, ["W-0000000003"]);
+  assert.equal(Number(git(r, "rev-list", "--count", "HEAD")), commitsBefore + 2);
+
+  const allSkipped = cli("mark", "--ids", "W-0000000001,W-0000000004", "--as", "routine", "--note", "status");
+  assert.equal(allSkipped.status, 0, allSkipped.stderr);
+  assert.deepEqual(JSON.parse(allSkipped.stdout), { marked: [], skipped: ["W-0000000001", "W-0000000004"] });
+  assert.equal(Number(git(r, "rev-list", "--count", "HEAD")), commitsBefore + 2);
+
+  assert.equal(cli("mark", "--ids", " , ", "--as", "routine", "--note", "empty").status, 64);
+  assert.equal(cli("open").status, 0);
+});
+
+test("F-0015: verbatim-quote match hints and routine check-in triage are read-only and preserve open --json array", () => {
+  const r = records();
+  const wExact = { id: "W-1111111111", time: "2026-11-27T01:00:00Z", source: "claude", session: "s1", text: "Support multi-ID batch marking atomically", sha256: "a" };
+  const wClause = { id: "W-2222222222", time: "2026-11-27T01:01:00Z", source: "claude", session: "s1", text: "先做第一项，确保系统信封过滤零误杀并且保留人类正文，然后再做测试。", sha256: "b" };
+  const wCited = { id: "W-3333333333", time: "2026-11-27T01:02:00Z", source: "claude", session: "s1", text: "Already cited verbatim sentence here", sha256: "c" };
+  const wRoutine1 = { id: "W-4444444444", time: "2026-11-27T01:03:00Z", source: "claude", session: "s1", text: "进展如何？", sha256: "d" };
+  const wRoutine2 = { id: "W-5555555555", time: "2026-11-27T01:04:00Z", source: "claude", session: "s1", text: "继续跑吧！", sha256: "e" };
+  appendWords(r, [wExact, wClause, wCited, wRoutine1, wRoutine2]);
+  mkdirSync(join(r, "purpose"), { recursive: true });
+  mkdirSync(join(r, "decisions"), { recursive: true });
+  writeFileSync(join(r, "purpose/P-0001.md"), "# P-0001\n\nRequirement: Support multi-ID  batch\nmarking atomically.\n\nAlso Already cited verbatim sentence here (W-3333333333).\n");
+  writeFileSync(join(r, "decisions/D-0001.md"), "# D-0001\n\nRule: 确保系统信封过滤零误杀并且保留人类正文。\n");
+  git(r, "add", "purpose/P-0001.md", "decisions/D-0001.md");
+  git(r, "commit", "-qm", "add records");
+
+  for (const ok of ["进展如何", "进展如何？", "继续跑吧！", "ok", "go ahead.", "status?"]) assert.equal(isRoutineCheckInCandidate(ok), true, ok);
+  for (const no of ["可以，但先改权限模型", "", "Support multi-ID batch marking atomically"]) assert.equal(isRoutineCheckInCandidate(no), false, no);
+
+  const open = openWords(r);
+  assert.deepEqual(findVerbatimQuoteMatches(r, open), [
+    { wordId: "W-1111111111", recordId: "P-0001", path: "purpose/P-0001.md" },
+    { wordId: "W-2222222222", recordId: "D-0001", path: "decisions/D-0001.md" },
+  ]);
+
+  const cli = (...a) => spawnSync(process.execPath, [join(scripts, "owner-words.mjs"), ...a, "--records", r], { encoding: "utf8" });
+  const jsonDefault = cli("open", "--json");
+  assert.equal(jsonDefault.status, 2);
+  assert.equal(Array.isArray(JSON.parse(jsonDefault.stdout)), true);
+  assert.equal(JSON.parse(jsonDefault.stdout).length, 4);
+
+  const jsonHints = cli("open", "--json", "--hints");
+  assert.equal(jsonHints.status, 2);
+  const parsedHints = JSON.parse(jsonHints.stdout);
+  assert.equal(parsedHints.open.length, 4);
+  assert.equal(parsedHints.quoteMatches.length, 2);
+  assert.deepEqual(parsedHints.routineCandidates, ["W-4444444444", "W-5555555555"]);
+  assert.match(parsedHints.routineHint, /--ids W-4444444444,W-5555555555 --as routine --note "status check-in"/);
+
+  const human = cli("open");
+  assert.equal(human.status, 2);
+  assert.match(human.stdout, /\[quote-match\] W-1111111111 quoted in P-0001 \(purpose\/P-0001\.md\) without citation -> add "words: W-1111111111"/);
+  assert.match(human.stdout, /\[quote-match\] W-2222222222 quoted in D-0001 \(decisions\/D-0001\.md\) without citation -> add "words: W-2222222222"/);
+  assert.match(human.stdout, /Hint \(routine check-ins\): node scripts\/owner-words\.mjs mark --records .* --ids W-4444444444,W-5555555555 --as routine --note "status check-in"/);
+  assert.equal(openWords(r).length, 4);
 });

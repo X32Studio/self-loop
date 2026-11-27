@@ -1,11 +1,14 @@
-// D-0016, D-0023, R-0006-judge, design/driver.md#comments
-import { directiveOf, isPointer } from "./directives.mjs";
-import { isDeepStrictEqual } from "node:util";
+// D-0016, D-0023, F-0015, P-0014, P-0015, R-0006-judge, design/driver.md#comments
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { recordsSnapshot } from "./records-commit.mjs";
-import { parseHandoffs, HANDOFFS } from "./handoff.mjs";
-import { blobs, regularFiles, git } from "./git-plumbing.mjs";
-import { LEXERS, lexJs, establishedJs, lexicalCoverage } from "./lexers.mjs";
+import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { directiveOf, isPointer } from "./directives.mjs";
+import { blobs, git, regularFiles, run } from "./git-plumbing.mjs";
+import { HANDOFFS, parseHandoffs } from "./handoff.mjs";
+import { establishedJs, LEXERS, lexJs, lexicalCoverage } from "./lexers.mjs";
 
 export { DIRECTIVES, directiveOf, isPointer, REFERENCE } from "./directives.mjs";
 export { LEXERS, SQL_READINGS } from "./lexers.mjs";
@@ -204,44 +207,139 @@ export function addedProse(files, options = {}) {
   });
 }
 
-export function proseInTree(repo, treeish, { records } = {}) {
-  const resolutions = records ? commentResolutions(records) : [];
-  const entries = regularFiles(repo, treeish).filter(entry => commentCandidate(entry.path));
-  const contents = blobs(repo, entries.map(entry => entry.sha));
-  const lines = entries.flatMap((entry, k) => proseLines(entry.path, contents[k].toString("utf8"), { resolutions }).map(line => ({ path: entry.path, ...line })));
-  const pending = lines.filter(line => line.status === "pending");
-  if (pending.length) throw new Error(`pending independent comment resolution (D-0016): ${JSON.stringify(pending)}`);
-  return lines;
+// F-0015, P-0014, P-0015, R-0055-judge-frame-hygiene
+const MAX_PROSE_CACHE = 16;
+const RES_PATH_RE = /^sealed\/judge\/\d{4}\/[A-Za-z0-9._-]+-\d+\/out\/comment-resolutions\.json$/;
+
+export class ProseBudgetExceededError extends Error {
+  constructor(reason) {
+    super(reason);
+    this.name = "ProseBudgetExceededError";
+    this.code = "PROSE_BUDGET_EXCEEDED";
+    this.deferred = true;
+    this.reason = reason;
+  }
 }
 
-// R-0008-judge-frame, D-0016
+function gitShowRaw(repo, spec) {
+  const r = spawnSync("git", ["-C", repo, "--no-replace-objects", "show", spec],
+    { encoding: "utf8", maxBuffer: 1 << 30, env: { GIT_TERMINAL_PROMPT: "0", ...process.env } });
+  return r.status === 0 ? r.stdout : null;
+}
+
+function batchCatFiles(repo, specs) {
+  if (!specs.length) return [];
+  const out = run("git", ["-C", repo, "--no-replace-objects", "cat-file", "--batch"], { input: `${specs.join("\n")}\n` });
+  const result = [];
+  let at = 0;
+  for (let i = 0; i < specs.length; i++) {
+    const nl = out.indexOf(10, at), m = /^[0-9a-f]{40} (\S+) (\d+)$/.exec(out.subarray(at, nl).toString("utf8"));
+    if (!m) { result.push(null); at = nl + 1; continue; }
+    const size = Number(m[2]), start = nl + 1;
+    result.push(m[1] === "blob" ? out.subarray(start, start + size) : null);
+    at = start + size + 1;
+  }
+  return result;
+}
+
+export function proseCacheDir(repo) {
+  try {
+    const commonDir = realpathSync(git(repo, "--no-replace-objects", "rev-parse", "--path-format=absolute", "--git-common-dir"));
+    const cacheRoot = process.env.SELF_LOOP_CACHE_DIR || join(tmpdir(), "self-loop-cache");
+    const repoKey = createHash("sha256").update(commonDir).digest("hex").slice(0, 16);
+    return join(cacheRoot, repoKey, "prose-cache");
+  } catch { return null; }
+}
+
+function proseCachePaths(repo, treeish, resolutions) {
+  try {
+    const dir = proseCacheDir(repo);
+    if (!dir) return null;
+    const treeOid = git(repo, "--no-replace-objects", "rev-parse", `${treeish}^{tree}`);
+    const resDigest = createHash("sha256").update(JSON.stringify(resolutions)).digest("hex");
+    return { treeOid, resDigest, dir, file: join(dir, `prose-${treeOid}-${resDigest.slice(0, 16)}.json`) };
+  } catch { return null; }
+}
+
+function writeProseCache(info, lines) {
+  if (!info) return;
+  const tmp = join(info.dir, `.prose-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`);
+  try {
+    mkdirSync(info.dir, { recursive: true });
+    writeFileSync(tmp, `${JSON.stringify({ treeOid: info.treeOid, resDigest: info.resDigest, lines })}\n`);
+    renameSync(tmp, info.file);
+    const kept = readdirSync(info.dir).filter(n => n.startsWith("prose-") && n.endsWith(".json"))
+      .map(n => { const p = join(info.dir, n); try { return { p, t: statSync(p).mtimeMs }; } catch { return null; } })
+      .filter(Boolean).sort((a, b) => b.t - a.t || b.p.localeCompare(a.p));
+    for (const old of kept.slice(MAX_PROSE_CACHE)) { try { unlinkSync(old.p); } catch {} }
+  } catch { try { unlinkSync(tmp); } catch {} }
+}
+
+export function proseInTree(repo, treeish, { records, cache = false, maxFiles = null, maxMs = null, deferOnBudget = false } = {}) {
+  const resolutions = records ? commentResolutions(records) : [];
+  const cacheInfo = cache ? proseCachePaths(repo, treeish, resolutions) : null;
+  if (cacheInfo) {
+    try {
+      const cached = JSON.parse(readFileSync(cacheInfo.file, "utf8"));
+      if (cached && cached.treeOid === cacheInfo.treeOid && cached.resDigest === cacheInfo.resDigest && Array.isArray(cached.lines))
+        return deferOnBudget ? { lines: cached.lines, deferred: false, reason: null, cached: true } : cached.lines;
+    } catch {}
+  }
+  const defer = reason => { if (deferOnBudget) return { lines: null, deferred: true, reason }; throw new ProseBudgetExceededError(reason); };
+  const startedAt = Date.now(), entries = regularFiles(repo, treeish).filter(entry => commentCandidate(entry.path));
+  if (Number.isFinite(maxFiles) && maxFiles >= 0 && entries.length > maxFiles)
+    return defer(`proseInTree deferred: ${entries.length} candidate files exceed budget (${maxFiles})`);
+  const overTime = () => Number.isFinite(maxMs) && maxMs >= 0 && (maxMs === 0 ? true : Date.now() - startedAt > maxMs);
+  if (entries.length && overTime()) return defer(`proseInTree deferred: elapsed ${Date.now() - startedAt}ms exceeded budget (${maxMs}ms)`);
+  const contents = blobs(repo, entries.map(entry => entry.sha)), lines = [];
+  for (let k = 0; k < entries.length; k++) {
+    if (overTime()) return defer(`proseInTree deferred: elapsed ${Date.now() - startedAt}ms exceeded budget (${maxMs}ms)`);
+    for (const line of proseLines(entries[k].path, contents[k].toString("utf8"), { resolutions })) lines.push({ path: entries[k].path, ...line });
+  }
+  const pending = lines.filter(line => line.status === "pending");
+  if (pending.length) throw new Error(`pending independent comment resolution (D-0016): ${JSON.stringify(pending)}`);
+  writeProseCache(cacheInfo, lines);
+  return deferOnBudget ? { lines, deferred: false, reason: null, cached: false } : lines;
+}
+
+// R-0008-judge-frame, D-0016, F-0015, P-0014, P-0015, R-0055-judge-frame-hygiene
 export function commentResolutions(records) {
-  const state = recordsSnapshot(records);
-  const resolutions = [];
-  const handoffs = parseHandoffs(state.read(HANDOFFS));
+  const rawHandoffs = gitShowRaw(records, `HEAD:${HANDOFFS}`);
+  if (!rawHandoffs) return [];
+  const handoffs = parseHandoffs(rawHandoffs);
   const authors = new Set(handoffs.filter(h => h.role !== "judge").map(h => h.agent?.session).filter(Boolean));
-  const publications = new Map();
-  if (handoffs.some(h => h.role === "judge")) {
-    for (const commit of git(records, "log", "--first-parent", "--reverse", "--format=%H", state.head, "--", HANDOFFS).split("\n").filter(Boolean)) {
-      const snapshot = recordsSnapshot(records, commit);
-      for (const h of parseHandoffs(snapshot.read(HANDOFFS))) {
-        const key = `${h.id}:${h.attempt}`;
-        if (!publications.has(key)) publications.set(key, { h, snapshot });
-      }
+  const candidates = [];
+  for (const h of handoffs) {
+    if (h.role !== "judge" || !Array.isArray(h.files) || !h.files.some(f => RES_PATH_RE.test(f))) continue;
+    if (h.audit.violations !== 0 || authors.has(h.agent?.session)) continue;
+    const prefix = `sealed/judge/${String(h.round).padStart(4, "0")}/${h.step}-${h.attempt}`;
+    const file = `${prefix}/out/comment-resolutions.json`, auditFile = `${prefix}-audit.json`;
+    if (!h.files.includes(file) || !h.files.includes(auditFile)) continue;
+    candidates.push({ h, key: `${h.id}:${h.attempt}`, file, auditFile });
+  }
+  if (!candidates.length) return [];
+  const commits = git(records, "--no-replace-objects", "log", "--first-parent", "--reverse", "--format=%H", "HEAD", "--", HANDOFFS)
+    .split("\n").filter(Boolean);
+  const wanted = new Set(candidates.map(c => c.key)), publications = new Map();
+  const handoffBlobs = batchCatFiles(records, commits.map(c => `${c}:${HANDOFFS}`));
+  for (let i = 0; i < commits.length && publications.size < wanted.size; i++) {
+    if (!handoffBlobs[i]) continue;
+    for (const ph of parseHandoffs(handoffBlobs[i].toString("utf8"))) {
+      const key = `${ph.id}:${ph.attempt}`;
+      if (wanted.has(key) && !publications.has(key)) publications.set(key, { h: ph, commit: commits[i] });
     }
   }
-  for (const h of handoffs) {
-    const publication = publications.get(`${h.id}:${h.attempt}`);
-    if (!publication || !isDeepStrictEqual(publication.h, h)) continue;
-    if (h.role !== "judge" || h.audit.violations !== 0 || authors.has(h.agent?.session)) continue;
-    const prefix = `sealed/judge/${String(h.round).padStart(4, "0")}/${h.step}-${h.attempt}`;
-    const file = `${prefix}/out/comment-resolutions.json`;
-    const auditFile = `${prefix}-audit.json`;
-    if (!h.files.includes(file) || !h.files.includes(auditFile)) continue;
+  const matched = candidates.map(c => ({ ...c, pub: publications.get(c.key) })).filter(c => c.pub && isDeepStrictEqual(c.pub.h, c.h));
+  if (!matched.length) return [];
+  const fetched = batchCatFiles(records, matched.flatMap(c => [`${c.pub.commit}:${c.auditFile}`, `${c.pub.commit}:${c.file}`]));
+  const resolutions = [];
+  for (let i = 0; i < matched.length; i++) {
+    const { h } = matched[i], auditBuf = fetched[i * 2], resBuf = fetched[i * 2 + 1];
+    if (!auditBuf || !resBuf) continue;
     try {
-      const audit = JSON.parse(publication.snapshot.read(auditFile));
+      const audit = JSON.parse(auditBuf.toString("utf8"));
       if (audit.id !== h.id || audit.role !== "judge" || audit.attempt !== h.attempt || audit.exit !== 0 || audit.agent?.runner !== h.agent?.runner || audit.agent?.session !== h.agent?.session) continue;
-      const rows = JSON.parse(publication.snapshot.read(file));
+      const rows = JSON.parse(resBuf.toString("utf8"));
       if (!Array.isArray(rows)) continue;
       for (const row of rows) {
         if (row.rule !== "D-0016" || !/^[a-f0-9]{64}$/.test(row.source ?? "") || typeof row.evidence !== "string" || !row.evidence.trim()

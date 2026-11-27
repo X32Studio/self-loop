@@ -435,13 +435,13 @@ baseline-2026-11-20/s4/judge/r27/r26-single-desk-retry.log
 baseline-2026-11-20/s4/judge/r28/upgrade-4d41fb0.json
 baseline-2026-11-20/s4/judge/r28/work-4d41fb0/backup-new/artifacts.git/objects/bc/6546f3ebe3fd4990f09f79da5a20c7d372a130
 baseline-2026-11-20/s4/judge/r28/work-4d41fb0/home/artifacts.git/objects/96/e13f6624a16aedaffa2ea2907b1a0993272e71
-baseline-2026-11-20/s4/judge/r28/work-4fad72e/home/app.sqlite-wal
+baseline-2026-11-20/s4/judge/r28/work-4fad72e/home/example-app.sqlite-wal
 baseline-2026-11-20/s4/judge/r28/work-91c57fd/backup-old/artifacts.git/refs/example-app/deliveries/2993506a-c2d1-4871-b7f8-aed9af7b6fd4/7acaa6a0-dfdf-40d3-834c-a6289842eab1
 baseline-2026-11-20/s4/judge/r29/dump-4fad72e/2-df613e30-5d70-4172-afc4-fc97041a18cf.json
 baseline-2026-11-20/s4/judge/r29/upgrade-4fad72e.log
 baseline-2026-11-20/s4/judge/r29/work-4fad72e/home/artifacts.git/HEAD
 baseline-2026-11-20/s4/judge/r29/work-91c57fd/backup-old/artifacts.git/objects/4d/26a84676b1b381dc4616bdb6617a732310f678
-baseline-2026-11-20/s4/judge/r29/work-91c57fd/home/app.sqlite
+baseline-2026-11-20/s4/judge/r29/work-91c57fd/home/example-app.sqlite
 baseline-2026-11-20/s4/judge/r29/work-strict/backup-old/artifacts.git/objects/f1/2a7e16664accf4597a1533e80b7dcfe8ffe5e1
 baseline-2026-11-20/s4/judge/r30/dump-4fad72e/1-cef19d1d-2b89-43b8-813a-31f067a1d1b3.json
 baseline-2026-11-20/s4/judge/r30/public-2.time

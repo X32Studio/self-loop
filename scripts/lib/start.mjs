@@ -1,12 +1,39 @@
-// F-0003, F-0009, I-0001, D-0052, D-0060, R-0033-judge-hooks
+// F-0003, F-0009, F-0015, P-0014, P-0015, I-0001, D-0016, D-0052, D-0060, R-0033-judge-hooks, R-0055-judge-frame-hygiene
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { load, Stop } from "../call.mjs";
 import { UsageError } from "./args.mjs";
+import { git } from "./git-plumbing.mjs";
 import { checkAntigravityHooks } from "./hooks.mjs";
+import { liveEvidenceStats } from "./records-prune.mjs";
 import { loadRegistry, LocalLoopError, LOOP, productState, resolveConfig } from "./registry.mjs";
+import { MAX_LIVE_EVIDENCE_BYTES, MAX_LIVE_EVIDENCE_FILES, MAX_STALE_WORKSPACES } from "./thresholds.mjs";
 import { discoveryFindings, findingLine, idleFindings, uncheckedFindings, inspectProduct, liveStallFinding, quietCount } from "./tick.mjs";
+import { cleanWorkDir } from "./work-hygiene.mjs";
 import { nextLines, queryClock, recordsOf } from "../loop.mjs";
+
+function probeHygieneReadOnly(cfg, state) {
+  const findings = [];
+  if (!existsSync(join(cfg.records, ".githooks", "pre-commit"))) {
+    findings.push(`records pre-commit hook missing: run node scripts/self-loop.mjs hooks install --records ${cfg.records}`);
+  } else {
+    let hooksPath = "";
+    try { hooksPath = git(cfg.records, "config", "--local", "--get", "core.hooksPath"); } catch {}
+    if (!hooksPath) findings.push(`records core.hooksPath is unset: run node scripts/self-loop.mjs hooks install --records ${cfg.records}`);
+  }
+  try {
+    const ev = liveEvidenceStats({ repo: cfg.records, head: state?.revision ?? "HEAD", files: state?.files ?? [], read: state?.read });
+    const maxRound = Math.max(0, ...(state?.handoffs ?? []).map(h => Number.isInteger(h.round) ? h.round : 0));
+    const work = cleanWorkDir(cfg.workDir, { maxRound, recordedIds: new Set((state?.handoffs ?? []).map(h => h.id)), apply: false });
+    const over = [];
+    if (ev.fileCount > MAX_LIVE_EVIDENCE_FILES) over.push(`${ev.fileCount} live evidence files`);
+    if (ev.totalBytes > MAX_LIVE_EVIDENCE_BYTES) over.push(`${Math.round(ev.totalBytes / 1048576)} MiB live evidence`);
+    if (ev.oversizedAudits.length) over.push(`${ev.oversizedAudits.length} oversized audit(s)`);
+    if (work.candidates.length > MAX_STALE_WORKSPACES) over.push(`${work.candidates.length} stale workspace(s)`);
+    if (over.length) findings.push(`operational hygiene (${over.join(", ")}): run node scripts/self-loop.mjs clean --config ${cfg.configFile ?? join(cfg.records, LOOP)} --apply`);
+  } catch {}
+  return findings;
+}
 
 function watchFindings(i, now) {
   if (i.problem) return [{ kind: i.problem.kind, ...i.where, detail: i.problem.detail }];
@@ -42,8 +69,14 @@ function sessionOf({ config, env, cwd, store, inspected, clock, sessionRoute = n
     }
   }
   const session = { product: resolved.product?.name ?? null, records: cfg.records, config: resolved.config, source: resolved.source, next: null, error: null };
-  try { session.next = nextLines(cfg, resolved.config, state ?? recordsOf(cfg), { store, ...clock }); }
+  let loadedState = state ?? null;
+  try {
+    loadedState ??= recordsOf(cfg);
+    session.next = nextLines(cfg, resolved.config, loadedState, { store, ...clock });
+  }
   catch (e) { session.error = `next failed: ${e.message}`; }
+  const hygieneFindings = probeHygieneReadOnly(cfg, loadedState);
+  session.hygiene = { healthy: hygieneFindings.length === 0, findings: hygieneFindings };
   const probe = checkAntigravityHooks({ cfg, env, cwd });
   if (probe.detected) {
     session.hooks = { harness: probe.harness, scope: probe.scope, healthy: probe.healthy, ok: probe.ok, findings: probe.findings };
@@ -98,6 +131,9 @@ export function startText(report, { selfLoop = "self-loop.mjs" } = {}) {
     lines.push(`This session: ${session.product ?? "configured product"} · ${session.records} · ${session.config} (${session.source})`);
     if (session.hooks && !session.hooks.healthy && session.hooks.findings.length) {
       lines.push(`hooks (${session.hooks.harness}): ${session.hooks.findings.join("; ")}`);
+    }
+    if (!session.next && session.hygiene && !session.hygiene.healthy && session.hygiene.findings.length) {
+      lines.push(`hygiene: ${session.hygiene.findings.join("; ")}`);
     }
     lines.push(session.next ?? session.error);
   }

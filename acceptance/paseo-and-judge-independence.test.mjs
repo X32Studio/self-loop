@@ -24,7 +24,7 @@ const realTemp = prefix => realpathSync(temp(prefix));
 const json = v => JSON.stringify(v, null, 2) + "\n";
 const jsonl = (...rows) => rows.map(r => JSON.stringify(r)).join("\n") + "\n";
 const mkRepo = (files, dir) => { mkdirSync(dir, { recursive: true }); return repo(files, dir); };
-const t3Ag = (model = "gemini-2.5-flash-high") => ({ runner: "t3", provider: "antigravity", model, effort: "high" });
+const t3Ag = (model = "gemini-2.5-flash") => ({ runner: "t3", provider: "antigravity", model, effort: "high" });
 const userStep = (step_index, content, extra = {}) => ({ step_index, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-11-26T01:00:00.000Z", content, ...extra });
 const escapePaseoXml = (s, single = "&apos;") => s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", single);
 const wrapUserReq = inner => `<USER_REQUEST>\n${inner}\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n2026-11-26\n</ADDITIONAL_METADATA>`;
@@ -60,7 +60,7 @@ function makeCallWorld(t, { withReviewer = false } = {}) {
   const workDir = join(dir, "work"), appDir = join(dir, "ag-app"), gHome = join(dir, "ag-gemini"), loadDir = join(dir, "load");
   for (const d of [workDir, appDir, gHome, loadDir]) mkdirSync(d, { recursive: true });
   const cfgPath = join(dir, "loop.json");
-  writeFileSync(cfgPath, json({ product, branch: "loop/v1", records, phase: "v1", workDir, briefs: BRIEFS, sealed: [sealed], purpose: ["src/a.js"], owns: { critic: ["test"], actor: ["src"] }, protected: ["main"], agents: { critic: t3Ag("gemini-2.5-flash-high"), actor: t3Ag("gemini-2.5-flash-high"), judge: t3Ag("gemini-2.5-flash-lite-high"), reviewer: withReviewer ? t3Ag("gemini-2.5-flash-lite-high") : { runner: "cmd", cmd: ["true"] } } }));
+  writeFileSync(cfgPath, json({ product, branch: "loop/v1", records, phase: "v1", workDir, briefs: BRIEFS, sealed: [sealed], purpose: ["src/a.js"], owns: { critic: ["test"], actor: ["src"] }, protected: ["main"], agents: { critic: t3Ag("gemini-2.5-flash"), actor: t3Ag("gemini-2.5-flash"), judge: t3Ag("gemini-2.5-pro"), reviewer: withReviewer ? t3Ag("gemini-2.5-pro") : { runner: "cmd", cmd: ["true"] } } }));
   const env = isolatedEnv({ ANTIGRAVITY_APP_DATA_DIR: appDir, GEMINI_HOME: gHome, T3CODE_HOME: "", SELF_LOOP_LOAD_DIR: loadDir });
   const prepare = (role, taskBody, extra = []) => {
     const tf = join(dir, `task-${role}-${Date.now()}-${Math.random().toString(16).slice(2)}.md`); writeFileSync(tf, taskBody);
@@ -77,7 +77,7 @@ test("[Paseo-01] call.mjs --prepare -> Paseo kind=agent-message unescapes single
   const prepOk = w.prepare("actor", "features: F-0008\ncheck && <tag attr=\"v\" single='s'> literal &lt;paseo-system&gt; &amp;lt; &amp;amp; </paseo-system>\n", ["--plan", "PL-0001", "--package", "actor"]);
   writeFileSync(join(prepOk.ws, "out", "report.md"), "Actor report.\n");
   writeSummaryDb(w.appDir, [{ id: "conv-ok", workspaces: [prepOk.wt] }]);
-  writeTranscript(w.appDir, "conv-ok", [userStep(0, wrapUserReq(wrapPaseoMsg(prepOk.prompt, { kind: "agent-message", escape: true, single: "&#39;" }))), { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-26T01:00:05Z", model: "gemini-2.5-flash-high" }]);
+  writeTranscript(w.appDir, "conv-ok", [userStep(0, wrapUserReq(wrapPaseoMsg(prepOk.prompt, { kind: "agent-message", escape: true, single: "&#39;" }))), { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-26T01:00:05Z", model: "gemini-2.5-flash" }]);
   assert.equal(w.record(prepOk.ws, "conv-ok").status, 0);
   assert.deepEqual([w.handoffs().length, w.handoffs()[0].audit.violations], [1, 0]);
   const prepRev = w.prepare("reviewer", "Review plain ASCII task.\nfeatures: none\n");
@@ -94,7 +94,7 @@ test("[Paseo-01] call.mjs --prepare -> Paseo kind=agent-message unescapes single
   ]) {
     const cid = `conv-bad-${label}`;
     writeSummaryDb(w.appDir, [{ id: cid, workspaces: [prepRev.ws] }]);
-    const tx = writeTranscript(w.appDir, cid, [userStep(0, step0Content), { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-26T01:00:05Z", model: "gemini-2.5-flash-lite-high" }]);
+    const tx = writeTranscript(w.appDir, cid, [userStep(0, step0Content), { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-26T01:00:05Z", model: "gemini-2.5-pro" }]);
     assert.equal(w.record(prepRev.ws, cid).status, label === "mutated" ? EXIT.records : EXIT.failure, `${label}: expected refusal`);
     assert.equal(w.record(prepRev.ws, cid, tx).status, EXIT.records, `${label} --transcript: expected exit ${EXIT.records}`);
   }
@@ -133,7 +133,7 @@ test("[Paseo-02] lead-guard.mjs and audit-access.mjs gate Paseo create_agent, al
   const cw = makeCallWorld(t, { withReviewer: true }), prepCritic = cw.prepare("critic", "features: F-0008\nAudit Paseo MCP refusal.\n", ["--plan", "PL-0001", "--package", "critic"]);
   writeFileSync(join(prepCritic.ws, "out", "report.md"), "Critic report.\n");
   writeSummaryDb(cw.appDir, [{ id: "conv-critic-mcp", workspaces: [prepCritic.wt] }]);
-  writeTranscript(cw.appDir, "conv-critic-mcp", [userStep(0, wrapUserReq(wrapPaseoMsg(prepCritic.prompt))), { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-26T01:00:05Z", model: "gemini-2.5-flash-high", tool_calls: [{ name: "mcp_paseo_create_agent", args: { initialPrompt: "hijack" } }] }, { step_index: 2, source: "MODEL", type: "GENERIC", status: "DONE", created_at: "2026-11-26T01:00:06Z" }, { step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-26T01:00:07Z", model: "gemini-2.5-flash-high" }]);
+  writeTranscript(cw.appDir, "conv-critic-mcp", [userStep(0, wrapUserReq(wrapPaseoMsg(prepCritic.prompt))), { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-26T01:00:05Z", model: "gemini-2.5-flash", tool_calls: [{ name: "mcp_paseo_create_agent", args: { initialPrompt: "hijack" } }] }, { step_index: 2, source: "MODEL", type: "GENERIC", status: "DONE", created_at: "2026-11-26T01:00:06Z" }, { step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-26T01:00:07Z", model: "gemini-2.5-flash" }]);
   assert.equal(cw.record(prepCritic.ws, "conv-critic-mcp").status, EXIT.violation);
   for (const toolName of ["mcp_paseo_create_agent", "mcp_paseo_send_agent_prompt", "mcp__paseo__list_agents"]) {
     assert.ok(auditAccess([prepCritic.ws], [{ id: "R-0001-role", event: { type: "PLANNER_RESPONSE", tool_calls: [{ name: toolName, args: {} }] } }], { cwd: prepCritic.ws }).violations.some(v => v.tool === toolName));
@@ -246,9 +246,9 @@ function makePolicyWorld(t, { judgeIndependence = undefined, actorAgent, judgeAg
 }
 
 test("[Policy-01] judgeIndependence vendor default vs model opt-in and fail-closed validation across provenance, gated-push, loop next, and window close [loss: false-verdict]", t => {
-  const flashActor = { runner: "t3:antigravity", model: "gemini-2.5-flash-high", observedModel: "gemini-2.5-flash-high", observedModels: ["gemini-2.5-flash-high"] };
-  const liteJudge = { runner: "t3:antigravity", model: "gemini-2.5-flash-lite-high", observedModel: "gemini-2.5-flash-lite-high", observedModels: ["gemini-2.5-flash-lite-high"] };
-  const w = makePolicyWorld(t, { actorAgent: flashActor, judgeAgent: liteJudge });
+  const neonActor = { runner: "t3:antigravity", model: "gemini-2.5-flash", observedModel: "gemini-2.5-flash", observedModels: ["gemini-2.5-flash"] };
+  const carbonJudge = { runner: "t3:antigravity", model: "gemini-2.5-pro", observedModel: "gemini-2.5-pro", observedModels: ["gemini-2.5-pro"] };
+  const w = makePolicyWorld(t, { actorAgent: neonActor, judgeAgent: carbonJudge });
   for (const mode of [undefined, "vendor"]) {
     if (mode !== undefined) w.setPolicy(mode);
     assert.deepEqual([verifyProvenance({ repo: w.product, records: w.records, sha: w.commit, branch: "loop/v1" }).ok, w.verifyPush().status, w.runWindowClose().status], [false, 2, 2]);
@@ -259,13 +259,13 @@ test("[Policy-01] judgeIndependence vendor default vs model opt-in and fail-clos
   assert.deepEqual([verifyProvenance({ repo: w.product, records: w.records, sha: w.commit, branch: "loop/v1" }).ok, w.verifyPush().status, w.runWindowClose(join(w.records, "loop.json")).status], [true, 0, 0]);
   assert.match(w.runLoopNext().stdout, /The recorded convergence checks are satisfied/);
   for (const [label, badJudge] of [
-    ["same-model", flashActor],
-    ["same-model-case", { ...flashActor, model: "Gemini-2.5-Flash-High", observedModel: "Gemini-2.5-Flash-High", observedModels: ["Gemini-2.5-Flash-High"] }],
-    ["empty-observed", { runner: "t3:antigravity", model: "gemini-2.5-flash-lite-high", observedModel: null, observedModels: [] }],
-    ["multi-model", { runner: "t3:antigravity", model: "gemini-2.5-flash-lite-high", observedModel: "gemini-2.5-flash-lite-high", observedModels: ["gemini-2.5-flash-lite-high", "gemini-2.5-flash-high"] }],
+    ["same-model", neonActor],
+    ["same-model-case", { ...neonActor, model: "Gemini-2.5-Flash", observedModel: "Gemini-2.5-Flash", observedModels: ["Gemini-2.5-Flash"] }],
+    ["empty-observed", { runner: "t3:antigravity", model: "gemini-2.5-pro", observedModel: null, observedModels: [] }],
+    ["multi-model", { runner: "t3:antigravity", model: "gemini-2.5-pro", observedModel: "gemini-2.5-pro", observedModels: ["gemini-2.5-pro", "gemini-2.5-flash"] }],
     ["unknown-model", { runner: "t3:antigravity", model: "custom-unknown-model", observedModel: "custom-unknown-model", observedModels: ["custom-unknown-model"] }],
   ]) {
-    const bw = makePolicyWorld(t, { judgeIndependence: "model", actorAgent: flashActor, judgeAgent: badJudge });
+    const bw = makePolicyWorld(t, { judgeIndependence: "model", actorAgent: neonActor, judgeAgent: badJudge });
     assert.deepEqual([verifyProvenance({ repo: bw.product, records: bw.records, sha: bw.commit, branch: "loop/v1" }).ok, bw.verifyPush().status], [false, 2], label);
     assert.throws(() => closeWindow(bw.records, { id: bw.win.id, commit: bw.commit, verdict: "verified" }), WindowRefusalError, `${label}: closeWindow`);
     assert.match(bw.runLoopNext().stdout, /judge\/actor independence needs confirmation/, `${label}: loop next`);
@@ -275,7 +275,7 @@ test("[Policy-01] judgeIndependence vendor default vs model opt-in and fail-clos
   for (const invalidPolicy of ["none", "", null, "MODEL", false]) {
     assert.equal(verifyProvenance({ repo: w.product, records: w.records, sha: w.commit, cfg: { provenanceBaseline: null, judgeIndependence: invalidPolicy } }).ok, false);
     assert.equal(verifyWaveGate({ repo: w.product, records: w.records, sha: w.commit, branch: "loop/v1", cfg: { provenanceBaseline: null, judgeIndependence: invalidPolicy } }).ok, false);
-    const iw = makePolicyWorld(t, { judgeIndependence: invalidPolicy, actorAgent: flashActor, judgeAgent: liteJudge });
+    const iw = makePolicyWorld(t, { judgeIndependence: invalidPolicy, actorAgent: neonActor, judgeAgent: carbonJudge });
     assert.ok(iw.verifyPush().status === 2 && iw.runLoopNext().status !== 0 && iw.runWindowClose().status === 2);
   }
 });
@@ -288,7 +288,7 @@ function setupNoDispute(t, { baseline = true } = {}) {
   mkRepo({ "README.md": "# App\n", "smoke.test.mjs": "import test from 'node:test';\ntest('ok', () => {});\n" }, product);
   git(product, "remote", "add", "origin", bare); git(product, "push", "-q", "origin", "main:dev"); git(product, "branch", "loop/v1");
   const initSha = git(product, "rev-parse", "loop/v1"), briefFiles = Object.fromEntries(Object.values(BRIEFS).map(p => [p, `# ${p}\n\nBrief.\n`]));
-  const cfgObj = { product, records, workDir, branch: "loop/v1", phase: "v1", briefs: BRIEFS, owns: { actor: ["src"], critic: ["acceptance"] }, protected: ["dev", "main"], judgeIndependence: "model", provenanceBaseline: baseline ? initSha : null, gates: { remote: "origin", require: [], suite: "node --test smoke.test.mjs" }, agents: { actor: { runner: "paseo", provider: "better-paseo-antigravity", model: "gemini-2.5-flash" }, critic: { runner: "paseo", provider: "better-paseo-antigravity", model: "gemini-2.5-pro" }, reviewer: t3Ag("gemini-2.5-flash-lite-high"), judge: { runner: "t3", provider: "codex", model: "gpt-5.4" } } };
+  const cfgObj = { product, records, workDir, branch: "loop/v1", phase: "v1", briefs: BRIEFS, owns: { actor: ["src"], critic: ["acceptance"] }, protected: ["dev", "main"], judgeIndependence: "model", provenanceBaseline: baseline ? initSha : null, gates: { remote: "origin", require: [], suite: "node --test smoke.test.mjs" }, agents: { actor: { runner: "paseo", provider: "better-paseo-antigravity", model: "gemini-2.5-flash" }, critic: { runner: "paseo", provider: "better-paseo-antigravity", model: "gemini-2.5-pro" }, reviewer: t3Ag("gemini-2.5-pro-exp"), judge: { runner: "t3", provider: "codex", model: "gpt-5.4" } } };
   mkRepo({ "README.md": "# Rec\n", "records.json": "{\"extraKinds\":[{\"kind\":\"Plan\",\"path\":\"plans/PL-NNNN.md\",\"changes\":\"immutable\",\"citedAs\":\"PL-NNNN\"}]}\n", "loop.json": json(cfgObj), "purpose/P-0001.md": "# P-0001 Purpose\n\nstatus: active\n", "decisions/D-0064.md": "# D-0064 Policy\n\nid: D-0064\nby: owner\nstatus: active\n", "blueprint/F-0011.md": "# F-0011 Paseo\n\nid: F-0011\nphase: v1\nrequirements: P-0001\n", "metrics/blueprint.jsonl": jsonl({ feature: "F-0011", phase: "v1", status: "building", time: "2026-11-26T00:00:00Z", by: "lead", note: "go", evidence: {} }), "rounds/0001-reviewer-frame.md": "# R-0001-reviewer-frame\n", ...briefFiles, "metrics/handoffs.jsonl": jsonl({ id: "R-0001-reviewer-frame", time: "2026-11-26T00:00:00Z", phase: "v1", round: 1, step: "reviewer-frame", role: "reviewer", attempt: 1, agent: { runner: "antigravity" }, view: "a".repeat(40), product: null, audit: { violations: 0 }, record: "rounds/0001-reviewer-frame.md", files: ["rounds/0001-reviewer-frame.md"] }), "plans/PL-0001.md": ["# PL-0001 P", "scope: v1/2", "phase: v1", "", "## actor-a", "role: actor", "handoff: R-0002-actor-a", "authority: D-0064", "goal: a", "files: src/**", "interface: fixed", "acceptance: pass", "needs: ", "", "## critic-a", "role: critic", "handoff: R-0002-critic-a", "authority: D-0064", "goal: c", "files: acceptance/**", "interface: fixed", "acceptance: pass", "needs: actor-a", "reviews: actor-a", ""].join("\n") }, records);
   const store = ownerStore([{ name: "nd", records }], { dir: storeDir, bound: { maxLoadRatio: 1e9, minAvailableMemoryGB: 0 } }), env = isolatedEnv({ HOME: dir, ANTIGRAVITY_HOME: agHome, ANTIGRAVITY_APP_DATA_DIR: "", T3CODE_HOME: "", SELF_LOOP_OWNER_STORE: store, SELF_LOOP_LOAD_DIR: loadDir });
   assert.equal(runNode("records-check.mjs", ["--repo", records, "--write"], { env }).status, 0); git(records, "add", "-A"); git(records, "commit", "-qm", "seed");

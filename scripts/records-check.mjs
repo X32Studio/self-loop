@@ -1,22 +1,23 @@
 #!/usr/bin/env node
-// D-0015, D-0016, D-0064, D-0067
+// D-0015, D-0016, D-0064, D-0067, F-0015, R-0055-judge-frame-hygiene, R-0055-judge-frame-alphax
 import "./lib/unbind-git.mjs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cli, need, parseArgs } from "./lib/args.mjs";
+import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
 import { ANSWERS, parseEvents, replacementProblems } from "./decisions.mjs";
 import { HANDOFFS, LEAD_PATCH_ROLE, parseHandoffs } from "./lib/handoff.mjs";
 import { BLUEPRINT, FEATURE_EVENTS, FEATURE_FILE, inspectBlueprint, renderBlueprint } from "./lib/blueprint.mjs";
 import { blueprintAlarms, ownerAlarms } from "./lib/blueprint-alarms.mjs";
 import { rowReceiptProblem } from "./lib/ci-receipt.mjs";
-import { blobs, regularFiles } from "./lib/git-plumbing.mjs";
+import { blobs, regularFiles, run } from "./lib/git-plumbing.mjs";
 import { BAR, judgeBarFindings } from "./lib/judge-bar.mjs";
 import { MARKS, parseWords, wordClasses, WORDS } from "./lib/owner-words.mjs";
+import { isPrunablePath, parsePruneManifests, pruneAndCompactRecords, verifyPruneTombstones } from "./lib/records-prune.mjs";
 import { ssotRecordsFindings } from "./lib/ssot.mjs";
-import { parseWindows, WINDOWS } from "./lib/window.mjs";
+import { parseWindows, WINDOWS } from "./lib/window-state.mjs";
 import { parseRows, TRAJECTORY } from "./trajectory.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -28,6 +29,7 @@ const gitEnv = () => ({ GIT_TERMINAL_PROMPT: "0", ...process.env });
 const QUOTED = new Set(["Backtests", "Evidence", "Blueprint evidence", "Sealed", "Index", "Blueprint view"]);
 const JSONL = /\.jsonl$/i;
 const TEXT = /\.(md|tsv|json|txt|mjs|js|ts|ya?ml)$/i;
+const INVALID_STAGED_PATH = /["\x00-\x1f]|^\s|\s$/;
 
 function templateSource(template, { anchored }) {
   let source = "";
@@ -53,27 +55,24 @@ export function parseLayout(recordsMd, extraKinds = []) {
     if (/^-+$/.test(cells[0])) continue;
     rows.push({ kind: cells[0], path: cells[1], changes: cells[3] ?? "", citedAs: cells[4] ?? "" });
   }
+  const repoRow = rows.find(row => row.kind === "Repository");
+  if (repoRow && !repoRow.path.includes("`.githooks/pre-commit`")) repoRow.path += ", `.githooks/pre-commit`";
+  if (!rows.some(row => row.kind === "Prune")) rows.push({ kind: "Prune", path: "`prune/PR-NNNN.md`", changes: "immutable", citedAs: "`PR-NNNN`" });
   for (const extra of extraKinds) {
     const path = `\`${extra.path}\``;
     const native = rows.findIndex(row => row.kind === extra.kind && row.path === path);
     if (native !== -1) rows.splice(native, 1);
-    rows.push({
-      kind: extra.kind, path, changes: extra.changes ?? "", citedAs: extra.citedAs ? `\`${extra.citedAs}\`` : "",
-      settlesOwnerWords: extra.settlesOwnerWords === true,
-    });
+    rows.push({ kind: extra.kind, path, changes: extra.changes ?? "", citedAs: extra.citedAs ? `\`${extra.citedAs}\`` : "", settlesOwnerWords: extra.settlesOwnerWords === true });
   }
   if (!rows.length) throw new Error("no layout table found (a row starting with | Kind | Path |)");
   return rows.map(({ kind, path, changes, citedAs, settlesOwnerWords }) => {
     const paths = [...path.matchAll(/`([^`]+)`/g)].map(m => m[1]);
     const cite = [...citedAs.matchAll(/`([^`]+)`/g)].map(m => m[1]).find(c => !c.includes("/"));
     return {
-      kind,
-      paths,
-      settlesOwnerWords,
+      kind, paths, settlesOwnerWords,
       changes: /append-only/i.test(changes) ? "append-only" : /immutable/i.test(changes) ? "immutable" : "editable",
       matchers: paths.map(p => new RegExp(`^${templateSource(p, { anchored: true })}$`)),
-      cite,
-      idPattern: cite && paths.some(path => !JSONL.test(path)) ? templateSource(cite, { anchored: false }) : null,
+      cite, idPattern: cite && paths.some(p => !JSONL.test(p)) ? templateSource(cite, { anchored: false }) : null,
     };
   });
 }
@@ -115,8 +114,7 @@ const wordCitation = new RegExp(`(?<![\\w-])${WORD_ID}(?![\\w-])`, "g");
 const wordList = new RegExp(`^${WORD_ID}(?:[, \\t]+${WORD_ID})*$`);
 const wordIds = text => text.matchAll(wordCitation);
 const DISTILLATIONS = new Set(["Purpose", "Decisions", "Blueprint", "Interventions", "Lessons"]);
-const ownerCitation = (path, record) => TEXT.test(path)
-  && (DISTILLATIONS.has(record?.kind) || record?.settlesOwnerWords === true);
+const ownerCitation = (path, record) => TEXT.test(path) && (DISTILLATIONS.has(record?.kind) || record?.settlesOwnerWords === true);
 
 function ownerWordState(read, citations, hasRecord) {
   const words = parseWords(read(WORDS));
@@ -142,8 +140,7 @@ function ownerTree(repo, rev, { extra = () => false } = {}) {
   const classified = all.map(f => ({ ...f, record: classify(layout, f.path) }));
   const ids = new Map(classified.filter(f => f.record?.id).map(f => [f.record.id, f.path]));
   const interventions = classified.filter(f => f.record?.kind === "Interventions" && TEXT.test(f.path));
-  const selected = classified.filter(f => f.path === WORDS || f.path === MARKS || ownerCitation(f.path, f.record)
-    || f.record?.kind === "Interventions" || extra(f.path));
+  const selected = classified.filter(f => f.path === WORDS || f.path === MARKS || ownerCitation(f.path, f.record) || f.record?.kind === "Interventions" || extra(f.path));
   const content = new Map(blobs(repo, selected.map(f => f.sha)).map((bytes, i) => [selected[i].path, bytes.toString("utf8")]));
   const read = path => content.get(path) ?? "";
   const citations = selected.filter(f => f.path !== WORDS && f.path !== MARKS && ownerCitation(f.path, f.record)).map(f => read(f.path));
@@ -276,8 +273,7 @@ function checkOwnerWords(records, texts, read, has, ids, failures, screening) {
     }
     const citations = (fields.get("words") ?? "").replaceAll("`", "");
     const named = new Set(wordList.test(citations) ? [...wordIds(citations)].map(m => m[0]) : []);
-    for (const id of named)
-      if (!known.has(id)) failures.push({ rule: "unknown-owner-word", path, detail: `words: names ${id}, missing from ${WORDS}` });
+    for (const id of named) if (!known.has(id)) failures.push({ rule: "unknown-owner-word", path, detail: `words: names ${id}, missing from ${WORDS}` });
     const date = fields.get("date") ?? "";
     if (/^\d{4}-\d{2}-\d{2}$/.test(date) && date >= "2026-11-21" && !named.size)
       screening.push({ rule: "purpose-words", path, detail: `purpose dated ${date} needs a words: line naming recorded owner words` });
@@ -309,7 +305,7 @@ function sealedScreenText(record, text) {
 
 const ownStatus = text => /^status:\s*(.+)$/mi.exec(text)?.[1]?.trim() ?? "";
 
-export function inspect(repo, { layoutText, config = {}, files, own, screenOnly, read, blueprint: includeBlueprint = true } = {}) {
+export function inspect(repo, { layoutText, config = {}, files, own, screenOnly, read, blueprint: includeBlueprint = true, fast = false } = {}) {
   repo = resolve(repo);
   const given = Boolean(read && files);
   read ??= p => readFileSync(join(repo, p), "utf8");
@@ -319,28 +315,20 @@ export function inspect(repo, { layoutText, config = {}, files, own, screenOnly,
   const untracked = files || !existsSync(join(repo, ".git")) ? [] : listFiles(repo, { untracked: true });
   files = (files ?? listFiles(repo)).filter(p => given || existsSync(join(repo, p))).sort();
   const checked = new Set(own ?? files);
-  const records = [];
-  const failures = [];
-  const screening = [];
-  const ids = new Map();
+  const records = [], failures = [], screening = [], ids = new Map();
   for (const path of files) {
     const c = classify(layout, path);
-    if (!c) {
-      (checked.has(path) ? failures : screening).push({ rule: "undeclared", path, detail: "no declared kind and path (RECORDS.md layout or records.json extraKinds)" });
-      continue;
-    }
+    if (!c) { (checked.has(path) ? failures : screening).push({ rule: "undeclared", path, detail: "no declared kind and path (RECORDS.md layout or records.json extraKinds)" }); continue; }
     records.push({ path, ...c });
     if (c.id) ids.set(c.id, path);
   }
   for (const path of untracked) screening.push({ rule: "untracked", path, detail: `not committed or staged, so not in the index${classify(layout, path) ? "" : "; no declared kind either"}` });
-  const idRegex = idRegexOf(layout);
-  const has = new Set(files);
+  const idRegex = idRegexOf(layout), has = new Set(files), prunedByPath = parsePruneManifests(files, read);
   let handoffs = [];
   if (has.has(HANDOFFS)) {
     try {
       handoffs = parseHandoffs(read(HANDOFFS));
-      const seen = new Set();
-      const seenLeadPatch = new Set();
+      const seen = new Set(), seenLeadPatch = new Set(), tombstoneChecks = [];
       for (const h of handoffs) {
         if (h.role === LEAD_PATCH_ROLE) {
           if (seenLeadPatch.has(h.id)) failures.push({ rule: "handoff", path: HANDOFFS, detail: `two hand-offs for ${h.id}` });
@@ -349,31 +337,30 @@ export function inspect(repo, { layoutText, config = {}, files, own, screenOnly,
         }
         if (seen.has(h.record)) failures.push({ rule: "handoff", path: HANDOFFS, detail: `two hand-offs for ${h.record}` });
         seen.add(h.record);
-        for (const f of h.files) if (!has.has(f)) failures.push({ rule: "handoff", path: HANDOFFS, detail: `${h.id} names ${f}, which the records do not hold` });
+        for (const f of h.files) {
+          if (has.has(f)) continue;
+          const entry = prunedByPath.get(f);
+          if (entry && entry.action === "pruned" && isPrunablePath(f)) tombstoneChecks.push({ h, f, entry });
+          else failures.push({ rule: "handoff", path: HANDOFFS, detail: `${h.id} names ${f}, which the records do not hold` });
+        }
       }
+      verifyPruneTombstones(repo, tombstoneChecks, failures, screening);
     } catch (e) { failures.push({ rule: "handoff", path: HANDOFFS, detail: e.message }); }
   }
-  if (has.has(WINDOWS)) {
-    try { parseWindows(read(WINDOWS), WINDOWS); }
-    catch (e) { failures.push({ rule: "window", path: WINDOWS, detail: e.message }); }
-  }
+  if (has.has(WINDOWS)) try { parseWindows(read(WINDOWS), WINDOWS); } catch (e) { failures.push({ rule: "window", path: WINDOWS, detail: e.message }); }
   const roleView = new Set([...handoffs.map(h => h.record).filter(Boolean), ...(config.publicImports ?? [])]);
   const isPublicMaterial = record => record.kind !== "Sealed" && (roleView.has(record.path) || isPublicKind(record.kind));
-  const supersededBy = new Map();
-  const decisionCitations = new Set();
-  const texts = new Map();
+  const supersededBy = new Map(), decisionCitations = new Set(), texts = new Map();
   for (const record of records) {
+    if (fast && (QUOTED.has(record.kind) || record.kind === "Prune")) continue;
     if (!TEXT.test(record.path) && !(JSONL.test(record.path) && isPublicMaterial(record))) continue;
     const text = read(record.path);
     texts.set(record.path, text);
     if (record.kind === "Decisions") for (const m of text.matchAll(idRegex)) decisionCitations.add(m[0]);
-    for (const m of text.matchAll(/^supersedes:\s*(.+)$/gmi))
-      for (const target of m[1].split(/[,\s]+/).filter(Boolean)) supersededBy.set(target, record.id ?? record.path);
+    for (const m of text.matchAll(/^supersedes:\s*(.+)$/gmi)) for (const target of m[1].split(/[,\s]+/).filter(Boolean)) supersededBy.set(target, record.id ?? record.path);
   }
   const latestActorWrite = new Map();
-  for (const [i, h] of handoffs.entries()) {
-    if (h.role === "actor") for (const path of h.files) latestActorWrite.set(path, i);
-  }
+  for (const [i, h] of handoffs.entries()) if (h.role === "actor") for (const path of h.files) latestActorWrite.set(path, i);
   for (const [i, h] of handoffs.entries()) {
     if (decisionCitations.has(h.id)) continue;
     for (const conflict of h.designConflicts ?? []) {
@@ -383,42 +370,40 @@ export function inspect(repo, { layoutText, config = {}, files, own, screenOnly,
         detail: `${h.id} proposed a design based on an older view. The current design changed at ${conflict.changed}${conflict.writer ? ` (prior design hand-off ${conflict.writer})` : ""}. Compare ${conflict.proposal} with the current design` });
     }
   }
-  const screened = screenOnly ? new Set(screenOnly) : null;
-  for (const record of records) {
-    const text = texts.get(record.path);
-    if (text === undefined || screened && !screened.has(record.path)) continue;
-    const lineOf = index => text.slice(0, index).split("\n").length;
-    const role = record.kind === "Rounds" ? /\d{4}-([a-z]+)/.exec(record.path)?.[1] : record.kind === "Engines" ? /([^/]+)\.md$/.exec(record.path)?.[1] : null;
-    const publicMaterial = isPublicMaterial(record);
-    if (publicMaterial || role && !sealedReaders.has(role)) {
-      const material = sealedScreenText(record, text);
-      for (const root of sealedRoots) {
-        const forms = [root, ...(root.startsWith(`${repo}/`) ? [root.slice(repo.length + 1) + "/"] : [])];
-        for (const form of forms) {
-          const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          const tail = form.endsWith("/") ? "[\\w.@/-]*" : "(?:/[\\w.@/-]*)?(?![\\w@/-]|\\.[\\w.@-])";
-          const re = new RegExp(`(?<![\\w./-])${escaped}${tail}`, "g");
-          for (const m of material.matchAll(re))
-            screening.push({ rule: "sealed-path", path: record.path, line: material.slice(0, m.index).split("\n").length,
-              detail: `${publicMaterial ? "public role" : role} material names sealed path ${m[0]}` });
+  if (!fast) {
+    const screened = screenOnly ? new Set(screenOnly) : null;
+    for (const record of records) {
+      const text = texts.get(record.path);
+      if (text === undefined || screened && !screened.has(record.path)) continue;
+      const lineOf = index => text.slice(0, index).split("\n").length;
+      const role = record.kind === "Rounds" ? /\d{4}-([a-z]+)/.exec(record.path)?.[1] : record.kind === "Engines" ? /([^/]+)\.md$/.exec(record.path)?.[1] : null;
+      const publicMaterial = isPublicMaterial(record);
+      if (publicMaterial || role && !sealedReaders.has(role)) {
+        const material = sealedScreenText(record, text);
+        for (const root of sealedRoots) {
+          for (const form of [root, ...(root.startsWith(`${repo}/`) ? [root.slice(repo.length + 1) + "/"] : [])]) {
+            const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const tail = form.endsWith("/") ? "[\\w.@/-]*" : "(?:/[\\w.@/-]*)?(?![\\w@/-]|\\.[\\w.@-])";
+            for (const m of material.matchAll(new RegExp(`(?<![\\w./-])${escaped}${tail}`, "g")))
+              screening.push({ rule: "sealed-path", path: record.path, line: material.slice(0, m.index).split("\n").length,
+                detail: `${publicMaterial ? "public role" : role} material names sealed path ${m[0]}` });
+          }
         }
       }
+      if (!TEXT.test(record.path) || QUOTED.has(record.kind) || record.kind === "Prune") continue;
+      for (const m of text.matchAll(idRegex))
+        if (!ids.has(m[0]) && m[0] !== record.id) screening.push({ rule: "dangling-id", path: record.path, line: lineOf(m.index), detail: `cites ${m[0]}, which no record carries` });
+      screen(repo, record, text, lineOf, ids, screening, prunedByPath);
     }
-    if (!TEXT.test(record.path) || QUOTED.has(record.kind)) continue;
-    for (const m of text.matchAll(idRegex))
-      if (!ids.has(m[0]) && m[0] !== record.id)
-        screening.push({ rule: "dangling-id", path: record.path, line: lineOf(m.index), detail: `cites ${m[0]}, which no record carries` });
-    screen(repo, record, text, lineOf, ids, screening);
+    screenChanged(repo, records, screening);
   }
-  screenChanged(repo, records, screening);
   const answered = new Set(), replaced = new Map();
   if (has.has(ANSWERS)) {
     try {
       const events = parseEvents(read(ANSWERS));
       for (const e of events) if ("replacedBy" in e) { if (!replaced.has(e.batch)) replaced.set(e.batch, e.replacedBy); } else answered.add(e.batch);
       const batch = id => `owner/${id}.md`;
-      for (const detail of replacementProblems(events, { exists: id => has.has(batch(id)), textOf: id => read(batch(id)) }))
-        failures.push({ rule: "answers", path: ANSWERS, detail });
+      for (const detail of replacementProblems(events, { exists: id => has.has(batch(id)), textOf: id => read(batch(id)) })) failures.push({ rule: "answers", path: ANSWERS, detail });
     } catch (e) { failures.push({ rule: "answers", path: ANSWERS, detail: e.message }); }
   }
   let blueprint;
@@ -428,8 +413,7 @@ export function inspect(repo, { layoutText, config = {}, files, own, screenOnly,
       const raised = raisedFirstFindings({ states: owner.states, ids, idRegex,
         interventions: records.filter(r => r.kind === "Interventions" && texts.has(r.path)).map(r => ({ path: r.path, id: r.id, text: texts.get(r.path) })),
         firstCommit: existsSync(join(repo, ".git")) ? firstCommits(repo) : () => undefined });
-      for (const f of raised.failures)
-        (checked.has(f.path) || checked.has(WORDS) || checked.has(MARKS) ? failures : screening).push(f);
+      for (const f of raised.failures) (checked.has(f.path) || checked.has(WORDS) || checked.has(MARKS) ? failures : screening).push(f);
       screening.push(...raised.screening);
     }
     blueprint = inspectBlueprint(repo, { files, read, handoffs });
@@ -458,17 +442,14 @@ export function inspect(repo, { layoutText, config = {}, files, own, screenOnly,
       const { phase } = JSON.parse(read("loop.json"));
       if (phase) {
         const currentDesigns = new Set(handoffs.filter(h => h.role === "actor" && h.phase === phase).flatMap(h => h.files));
-        for (const { kind, path } of records) {
-          if (kind === "Design" && !currentDesigns.has(path))
-            screening.push({ rule: "stale-design", path, detail: `no actor hand-off wrote this design in phase ${phase}` });
-        }
+        for (const { kind, path } of records) if (kind === "Design" && !currentDesigns.has(path)) screening.push({ rule: "stale-design", path, detail: `no actor hand-off wrote this design in phase ${phase}` });
       }
     }
     const ssotRec = ssotRecordsFindings(repo, { has, read, given });
     failures.push(...ssotRec.failures);
     screening.push(...ssotRec.screening);
   }
-  return { repo, layout, files, records, ids, supersededBy, failures, screening, sealedRoots, answered, replaced, read, blueprint };
+  return { repo, layout, files, records, ids, supersededBy, failures, screening, sealedRoots, answered, replaced, read, blueprint, prunedByPath };
 }
 
 function screenChanged(repo, records, screening) {
@@ -495,7 +476,7 @@ const SECRET = [
 ];
 const SCRATCH = /(?:^|[\s(\[`'"])((?:\/private)?\/tmp\/[^\s)\]`'"]+|\/var\/folders\/[^\s)\]`'"]+)/g;
 
-function screen(repo, record, text, lineOf, ids, screening) {
+function screen(repo, record, text, lineOf, ids, screening, prunedByPath) {
   const add = (rule, index, detail) => screening.push({ rule, path: record.path, line: lineOf(index), detail });
   for (const m of text.matchAll(/(?<![\w@/.-])((?:\/|\.{0,2}\/)?[\w.@-]+(?:\/[\w.@-]+)*\.[A-Za-z]{1,8}):(\d+)\b/g))
     if (!/@[0-9a-f]{7,40}$/.test(m[1]) && !/^\d+\.\d+$/.test(m[1])) add("bare-line-citation", m.index, `${m[1]}:${m[2]} names a line without a commit`);
@@ -508,14 +489,18 @@ function screen(repo, record, text, lineOf, ids, screening) {
   }
   for (const m of text.matchAll(/(evidence\/\d{4}\/[^\s)`'"]+)\s+sha256:([0-9a-f]{64})/g)) {
     const file = join(repo, m[1]);
-    if (!existsSync(file)) { add("digest", m.index, `${m[1]} cited by digest does not exist`); continue; }
+    if (!existsSync(file)) {
+      const pruned = prunedByPath?.get(m[1]);
+      if (pruned) { if (pruned.sha256 !== m[2]) add("digest", m.index, `${m[1]} (${pruned.prId}) has sha256 ${pruned.sha256.slice(0, 12)}…, cited ${m[2].slice(0, 12)}…`); }
+      else add("digest", m.index, `${m[1]} cited by digest does not exist`);
+      continue;
+    }
     const actual = createHash("sha256").update(readFileSync(file)).digest("hex");
-    if (actual !== m[2]) add("digest", m.index, `${m[1]} has sha256 ${actual.slice(0, 12)}…, cited ${m[2].slice(0, 12)}…`);
+    const compacted = prunedByPath?.get(m[1]);
+    if (actual !== m[2] && !(compacted?.action === "compacted" && compacted.sha256 === m[2]))
+      add("digest", m.index, `${m[1]} has sha256 ${actual.slice(0, 12)}…, cited ${m[2].slice(0, 12)}…`);
   }
-  for (const pattern of SECRET) {
-    const m = pattern.exec(text);
-    if (m) add("secret", m.index, `secret-like string (${pattern.source.slice(0, 24)}…)`);
-  }
+  for (const pattern of SECRET) { const m = pattern.exec(text); if (m) add("secret", m.index, `secret-like string (${pattern.source.slice(0, 24)}…)`); }
   if (record.kind === "Design")
     for (const m of text.matchAll(/^#{1,6}\s.*(?:\bRound\s+\d+|第\s*\d+\s*轮)/gmi)) add("history-in-design", m.index, `history heading in a design file: ${m[0].trim()}`);
 }
@@ -562,8 +547,64 @@ export function indexOfTree(repo, treeish, { layoutText = readFileSync(DEFAULT_L
   const layout = parseLayout(layoutText, config.extraKinds ?? []);
   const shown = all.filter(e => e.path === ANSWERS || (/\.md$/.test(e.path) && !QUOTED.has(classify(layout, e.path)?.kind)));
   const contents = new Map(blobs(repo, shown.map(e => e.sha)).map((bytes, i) => [shown[i].path, bytes.toString("utf8")]));
-  const state = inspect(repo, { layoutText, config, files: all.map(e => e.path), screenOnly: [], blueprint: false, read: p => contents.get(p) ?? "" });
-  return renderIndex(state);
+  return renderIndex(inspect(repo, { layoutText, config, files: all.map(e => e.path), screenOnly: [], blueprint: false, fast: true, read: p => contents.get(p) ?? "" }));
+}
+
+export function checkStaged(repo, { layoutText = readFileSync(DEFAULT_LAYOUT, "utf8") } = {}) {
+  repo = resolve(repo);
+  const tokens = run("git", ["-C", repo, "diff", "--cached", "--name-status", "-z", "--diff-filter=ACMRD"], { encoding: "utf8" }).split("\0");
+  const stagedAcmr = [];
+  let stagedCount = 0;
+  for (let i = 0; i < tokens.length; i++) {
+    const st = tokens[i];
+    if (!st) continue;
+    stagedCount++;
+    if (st[0] === "R" || st[0] === "C") { i++; const p = tokens[++i]; if (p) stagedAcmr.push(p); }
+    else { const p = tokens[++i]; if (st[0] !== "D" && p) stagedAcmr.push(p); }
+  }
+  if (!stagedCount) return { ok: true, failures: [], stagedCount: 0 };
+
+  const stagedFiles = new Map();
+  for (const entry of run("git", ["-C", repo, "ls-files", "--stage", "-z"], { encoding: "utf8" }).split("\0")) {
+    const tab = entry.indexOf("\t");
+    if (tab < 0) continue;
+    const [mode, sha] = entry.slice(0, tab).split(" ");
+    if (mode === "100644" || mode === "100755") stagedFiles.set(entry.slice(tab + 1), sha);
+  }
+  const config = stagedFiles.has("records.json") ? JSON.parse(blobs(repo, [stagedFiles.get("records.json")])[0].toString("utf8")) : {};
+  const layout = parseLayout(layoutText, config.extraKinds ?? []);
+  const failures = [];
+  for (const p of stagedAcmr) {
+    if (INVALID_STAGED_PATH.test(p) || !classify(layout, p))
+      failures.push({ rule: "staged-stray-file", path: p, detail: `staged path is outside declared RECORDS.md kinds and records.json extraKinds (unstage with: git reset HEAD -- ${JSON.stringify(p)})` });
+  }
+  const allPaths = [...stagedFiles.keys()].sort();
+  const hasBp = allPaths.some(p => p === BLUEPRINT || p === FEATURE_EVENTS || FEATURE_FILE.test(p));
+  const toRead = allPaths.filter(p => p === "INDEX.md" || p === BLUEPRINT || p === ANSWERS || p === "loop.json"
+    || (hasBp && (p === FEATURE_EVENTS || p === HANDOFFS)) || (/\.md$/.test(p) && !QUOTED.has(classify(layout, p)?.kind)));
+  const content = new Map(blobs(repo, toRead.map(p => stagedFiles.get(p))).map((b, i) => [toRead[i], b.toString("utf8")]));
+  if (hasBp && content.has(FEATURE_EVENTS)) {
+    const ciPaths = [];
+    for (const line of content.get(FEATURE_EVENTS).split(/\r?\n/)) {
+      try { const ci = JSON.parse(line)?.evidence?.ci; if (ci && stagedFiles.has(ci) && !content.has(ci)) ciPaths.push(ci); } catch {}
+    }
+    if (ciPaths.length) blobs(repo, ciPaths.map(p => stagedFiles.get(p))).forEach((b, i) => content.set(ciPaths[i], b.toString("utf8")));
+  }
+  const read = p => content.get(p) ?? "";
+  const state = inspect(repo, { layoutText, config, files: allPaths.filter(p => p !== "INDEX.md"), screenOnly: [], blueprint: false, fast: true, read });
+  const actualIdx = content.has("INDEX.md") ? content.get("INDEX.md") : null;
+  if (actualIdx !== renderIndex(state) && actualIdx !== renderIndex(state, { legacyLogIds: true })) {
+    failures.push({ rule: "staged-index-drift", path: "INDEX.md", detail: `INDEX.md out of sync with staged records. Run: node ${join(here, "records-check.mjs")} --repo ${repo} --write && git add INDEX.md${hasBp ? " BLUEPRINT.md" : ""}` });
+  }
+  if (hasBp) {
+    const bp = inspectBlueprint(repo, { files: allPaths, read });
+    const alarms = ownerAlarms(bp).map(a => a.detail);
+    const actualBp = content.has(BLUEPRINT) ? content.get(BLUEPRINT) : null;
+    if (actualBp !== renderBlueprint(bp, alarms) && actualBp !== renderBlueprint(bp, alarms, { legacyCount: true })) {
+      failures.push({ rule: "staged-index-drift", path: BLUEPRINT, detail: `BLUEPRINT.md out of sync with staged records. Run: node ${join(here, "records-check.mjs")} --repo ${repo} --write && git add INDEX.md BLUEPRINT.md` });
+    }
+  }
+  return { ok: !failures.length, failures, stagedCount };
 }
 
 export function check(repo, options = {}) {
@@ -571,38 +612,42 @@ export function check(repo, options = {}) {
   checkGenerated("INDEX.md", renderIndex(state), "index-drift", () => renderIndex(state, { legacyLogIds: true }));
   if (state.blueprint && state.files.some(p => p === BLUEPRINT || p === FEATURE_EVENTS || FEATURE_FILE.test(p))) {
     const alarms = ownerAlarms(state.blueprint).map(alarm => alarm.detail);
-    checkGenerated(BLUEPRINT, renderBlueprint(state.blueprint, alarms), "blueprint-drift",
-      () => renderBlueprint(state.blueprint, alarms, { legacyCount: true }));
+    checkGenerated(BLUEPRINT, renderBlueprint(state.blueprint, alarms), "blueprint-drift", () => renderBlueprint(state.blueprint, alarms, { legacyCount: true }));
   }
   return state;
 
   function checkGenerated(path, expected, rule, legacy) {
     const file = join(state.repo, path);
-    if (options.write) {
-      writeFileSync(file, expected);
-      return;
-    }
+    if (options.write) { writeFileSync(file, expected); return; }
     const actual = existsSync(file) ? readFileSync(file, "utf8") : null;
     if (actual === expected) return;
-    if (actual !== null && actual === legacy()) {
-      state.screening.push({ rule: "generated-format", path, detail: "matches the previous generated format; regenerate with --write" });
-      return;
-    }
+    if (actual !== null && actual === legacy()) { state.screening.push({ rule: "generated-format", path, detail: "matches the previous generated format; regenerate with --write" }); return; }
     state.failures.push({ rule, path, detail: `${actual === null ? "missing" : "differs from the generated " + (path === BLUEPRINT ? "blueprint" : "index")}; fix: node ${join(here, "records-check.mjs")} --repo ${state.repo} --write` });
   }
 }
 
-function loadConfig(repo) {
-  const file = join(repo, "records.json");
-  return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
-}
+const loadConfig = repo => existsSync(join(repo, "records.json")) ? JSON.parse(readFileSync(join(repo, "records.json"), "utf8")) : {};
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) cli(() => {
   const args = parseArgs(process.argv.slice(2));
   need(args, "repo");
-  const repo = resolve(args.repo);
-  const layoutText = readFileSync(args.layout || DEFAULT_LAYOUT, "utf8");
-  const state = check(repo, { layoutText, config: loadConfig(repo), write: "write" in args });
+  const repo = resolve(args.repo), layoutText = readFileSync(args.layout || DEFAULT_LAYOUT, "utf8");
+  if ("staged" in args) {
+    const res = checkStaged(repo, { layoutText });
+    if ("json" in args) console.log(JSON.stringify(res, null, 2));
+    else for (const f of res.failures) console.error(`certain\t${f.rule}\t${f.path}: ${f.detail}`);
+    return res.ok ? 0 : 2;
+  }
+  if ("prune" in args) {
+    if ("apply" in args && "dry-run" in args) throw new UsageError("cannot pass both --apply and --dry-run");
+    const retainRounds = args["retain-rounds"] !== undefined ? Number(args["retain-rounds"]) : 5;
+    if (!Number.isInteger(retainRounds) || retainRounds < 0) throw new UsageError(`--retain-rounds must be a non-negative integer, got ${args["retain-rounds"]}`);
+    const res = pruneAndCompactRecords(repo, { retainRounds, apply: "apply" in args });
+    if ("json" in args) console.log(JSON.stringify(res, null, 2));
+    else console.log(`${res.apply ? "applied" : "dry-run"}: ${res.prunedFiles.length} pruned, ${res.compactedAudits.length} compacted, ${res.bytesSaved} bytes saved${res.tombstonePath ? ` (${res.tombstonePath})` : ""}`);
+    return 0;
+  }
+  const state = check(repo, { layoutText, config: loadConfig(repo), write: "write" in args, fast: "fast" in args });
   if ("json" in args) console.log(JSON.stringify({ failures: state.failures, screening: state.screening }, null, 2));
   else {
     const show = (items, max = 40) => {

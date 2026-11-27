@@ -1,41 +1,76 @@
 #!/usr/bin/env node
-// F-0003, D-0015, D-0058, D-0060, D-0064, D-0066, D-0067, design/mandatory-control-plane.md#5
+// F-0003, F-0015, P-0014, P-0015, D-0015, D-0016, D-0058, D-0060, D-0064, D-0066, D-0067, R-0055-judge-frame-hygiene
 import { createHash } from "node:crypto";
 import { normalOpportunities } from "./lib/normal-entry.mjs";
 import { ALARM_DETECTOR_REVISION, buildAlarmContext, readNormalEntry } from "./lib/normal-entry-source.mjs";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HEAVY_ROLES, load, normalize, preparedIn, Stop } from "./call.mjs";
+import { HEAVY_ROLES, load, preparedIn, Stop } from "./call.mjs";
 import { ANSWERS, batchesFrom } from "./decisions.mjs";
 import { ALARMS, currentStall, parseAlarms } from "./lib/alarms.mjs";
 import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
 import { collectArchFacts } from "./lib/arch-facts.mjs";
+import { blockerState as foldRulings, withStatus } from "./lib/blockers.mjs";
 import { FEATURE_EVENTS, inspectBlueprint } from "./lib/blueprint.mjs";
 import { advancingAction, ARCH_STEP, cadenceLines, cadenceOf, cadenceState, dueReason, JUDGE_FRAME_STEP, outerCadenceOf, outerLoopLines, outerLoopState } from "./lib/cadence.mjs";
-import { ciGreen, criticContradictedByTrajectory, criticConvergedAccepted, fullSha, judgeAccepted, receiptProblem } from "./lib/ci.mjs";
+import { ciGreen, fullSha, judgeAccepted, receiptProblem } from "./lib/ci.mjs";
 import { gatesOf } from "./lib/ci-receipt.mjs";
 import { command, env, evidencePrefix, gatherCommand, node, shell } from "./lib/commands.mjs";
 import { proseInTree } from "./lib/comments.mjs";
 import { firings, undiagnosedAlarms } from "./lib/diagnosis.mjs";
 import { computeDispatchPlan, renderDispatchLines } from "./lib/dispatch.mjs";
-import { blobs, git, gitOk, regularFiles, run } from "./lib/git-plumbing.mjs";
+import { blobs, git, gitOk, regularFiles } from "./lib/git-plumbing.mjs";
 import { HANDOFFS, hasPhaseFrame, idOf, parseHandoffs } from "./lib/handoff.mjs";
+import { hostLine } from "./lib/host.mjs";
+import { certifiedCriticOn, checkouts, integrationOf, recordedAfter } from "./lib/integration.mjs";
+import { phaseMetrics } from "./lib/owner-metrics.mjs";
 import { isSubstantiveOwnerWord, MARKS, WORDS } from "./lib/owner-words.mjs";
 import { isPreparedRunner } from "./lib/paseo.mjs";
-import { hostLine } from "./lib/host.mjs";
-import { phaseMetrics, waitingText } from "./lib/owner-metrics.mjs";
-import { admitAcrossPlans, isIdle, LEAD_STEPS, planContext, plansFrom, readyPlan, snapshot, validatePlan } from "./lib/plan.mjs";
-import { measurePlan } from "./lib/plan-measures.mjs";
+import { isIdle, LEAD_STEPS, reconcilePlans } from "./lib/plan.mjs";
+import {
+  citedPredicates,
+  cliClock,
+  createPredicates,
+  firstParentHistory,
+  measuresLines,
+  predicateContext as makePredicateContext,
+  predicateReplay as replayPredicates,
+  queryClock,
+  timeLines,
+} from "./lib/predicate-replay.mjs";
+import { evaluateCertifiedWaveCoverage } from "./lib/provenance.mjs";
+import { liveEvidenceStats } from "./lib/records-prune.mjs";
 import { hostLoad, REGISTRY, resolveOwnerStore } from "./lib/registry.mjs";
 import { ssotNextSummary } from "./lib/ssot.mjs";
-import { stallThreshold } from "./lib/thresholds.mjs";
+import {
+  MAX_FAST_PROSE_FILES,
+  MAX_FAST_PROSE_MS,
+  MAX_LIVE_EVIDENCE_BYTES,
+  MAX_LIVE_EVIDENCE_FILES,
+  MAX_STALE_WORKSPACES,
+} from "./lib/thresholds.mjs";
 import { tipCovers } from "./lib/tip.mjs";
-import { evaluateCertifiedWaveCoverage } from "./lib/provenance.mjs";
 import { hasWindowDiagnosis, parseWindows, WINDOWS, windowState } from "./lib/window.mjs";
+import { cleanWorkDir } from "./lib/work-hygiene.mjs";
 import { check, openWords, RUNGS } from "./records-check.mjs";
-import { alarms, parseRows, TRAJECTORY } from "./trajectory.mjs";
+import { parseRows, TRAJECTORY } from "./trajectory.mjs";
 import { reconcileReleases } from "./version-gate.mjs";
+
+export {
+  certifiedCriticOn,
+  checkouts,
+  citedPredicates,
+  cliClock,
+  createPredicates,
+  firstParentHistory,
+  integrationOf,
+  measuresLines,
+  queryClock,
+  reconcilePlans,
+  recordedAfter,
+  timeLines,
+};
 
 const pad = n => String(n).padStart(4, "0");
 const evidenceJson = path => path.startsWith("evidence/") && path.endsWith(".json");
@@ -70,7 +105,6 @@ function nextRound(state, prepared) {
 
 const knownRuling = row => (row.role === "judge" || row.role === "critic") && row.verdict !== "-";
 // design/round9-b.md#the-transition
-import { blockerState as foldRulings, withStatus } from "./lib/blockers.mjs";
 export function blockerState(rows) {
   const state = foldRulings(rows);
   const listed = status => withStatus(state, status).map(b => `${b.key} (R-${pad(b.round)})`);
@@ -85,116 +119,6 @@ function gateCommands(cfg, sha, round, managed) {
   const suiteCommand = node("suite-green.mjs", "--repo", cfg.product, "--sha", sha, "--out", out("suite"), ...suiteOptions);
   return { require, remote,
     suite: suiteCommand + " --command " + (suite ? shell(suite) : env("FULL_SUITE_COMMAND", "set the full suite command")) };
-}
-
-function recordedAfter(cfg, state, row) {
-  const index = state.rows.indexOf(row);
-  const lines = state.read(TRAJECTORY).split("\n");
-  let line = 0;
-  for (let seen = -1; line < lines.length; line++) if (lines[line] && ++seen === index) break;
-  const commit = git(cfg.records, "blame", "--porcelain", "-L", `${line + 1},${line + 1}`, state.revision, "--", TRAJECTORY).slice(0, 40);
-  const before = gitOk(cfg.records, "cat-file", "-e", `${commit}:${HANDOFFS}`)
-    ? git(cfg.records, "show", `${commit}:${HANDOFFS}`).split("\n").filter(Boolean).length : 0;
-  return new Set(state.handoffs.slice(before).map(h => h.id));
-}
-
-function checkouts(product) {
-  const found = new Map();
-  let path = null;
-  for (const line of git(product, "worktree", "list", "--porcelain").split("\n")) {
-    if (line.startsWith("worktree ")) path = line.slice("worktree ".length);
-    else if (line.startsWith("branch refs/heads/") && path) found.set(line.slice("branch refs/heads/".length), path);
-  }
-  return found;
-}
-
-export function integrationOf(cfg, state, handoffs, rows) {
-  const { product } = cfg;
-  const known = new Map();
-  const ancestor = (a, b) => {
-    if (a === b) return true;
-    const key = `${a} ${b}`;
-    if (!known.has(key)) known.set(key, gitOk(product, "merge-base", "--is-ancestor", a, b));
-    return known.get(key);
-  };
-  const named = [...new Set([...rows.map(r => r.commit), ...handoffs.map(h => h.product?.commit)].filter(sha => /^[0-9a-f]{40}$/.test(sha ?? "")))];
-  const found = new Set(named.length ? run("git", ["-C", product, "cat-file", "--batch-check=%(objectname) %(objecttype)"], { encoding: "utf8", input: named.join("\n") + "\n" })
-    .split("\n").filter(line => line.endsWith(" commit")).map(line => line.split(" ")[0]) : []);
-  const exists = sha => found.has(sha);
-  const branch = cfg.branch ?? null;
-  const branchHead = fullSha(product, branch ?? "HEAD");
-  const row = rows.findLast(r => (r.role === "judge" || (r.role === "critic" && r.verdict !== "-")) && r.commit !== "-") ?? null;
-  const problems = [];
-  let judged = row?.commit ?? null;
-  if (judged && !exists(judged)) {
-    problems.push(`the last judged commit ${judged} (round ${row.round}) is not a commit in ${product}`);
-    judged = null;
-  }
-  let after = null;
-  if (row) {
-    try { after = recordedAfter(cfg, state, row); }
-    catch (error) {
-      after = new Set();
-      problems.push(`the hand-offs recorded after the ruling of round ${row.round} cannot be read: ${error.message}`);
-    }
-  }
-  const recorded = handoffs.filter(h => HEAVY_ROLES.includes(h.role) && h.product && (!after || after.has(h.id)) && exists(h.product.commit));
-  const line = recorded.filter(h => !judged || ancestor(judged, h.product.commit));
-  const points = [...new Set([...(judged ? [judged] : []), ...line.map(h => h.product.commit)])];
-  const independent = new Set(points.length > 1 ? git(product, "merge-base", "--independent", ...points).split("\n").filter(Boolean) : points);
-  const heads = points.filter(sha => independent.has(sha));
-  const by = sha => sha === judged ? `the last judged commit, round ${row.round}` : line.findLast(h => h.product.commit === sha)?.id;
-  const refs = [...new Set([branch, ...cfg.protected].filter(Boolean))]
-    .filter(name => gitOk(product, "show-ref", "--verify", "--quiet", `refs/heads/${name}`))
-    .map(name => ({ name, sha: fullSha(product, `refs/heads/${name}`) }));
-  const tipsOf = base => refs.filter(ref => ref.sha !== base && ancestor(base, ref.sha) && tipCovers(product, base, ref.sha));
-  const judgedTips = judged ? tipsOf(judged) : [];
-  const result = { branch, branchHead, judged, row, problems, ancestor, heads: heads.map(sha => ({ sha, by: by(sha) })), judgedTips,
-    recordedTip: judged && row.tip ? row.tip : null, tips: [] };
-  if (!heads.length) return { ...result, sha: branchHead, source: `${branch ?? "HEAD"}: no judged commit or hand-off commit of the phase yet`, heads: [{ sha: branchHead, by: branch ?? "HEAD" }], relation: "at" };
-  if (heads.length > 1) {
-    const merge = branch && heads.every(head => ancestor(head, branchHead)) ? branchHead : null;
-    return { ...result, sha: null, merge, relation: "heads" };
-  }
-  const sha = heads[0];
-  const source = sha === judged ? `the last judged commit, round ${row.round}` : `${by(sha)}, recorded after ${row ? `the ruling of round ${row.round}` : "the phase began"}`;
-  const tips = sha === judged ? judgedTips : tipsOf(sha);
-  const relation = branchHead === sha ? "at" : tips.some(t => t.name === branch) ? "tip"
-    : ancestor(branchHead, sha) ? "lags" : ancestor(sha, branchHead) ? "ahead" : "diverged";
-  return { ...result, sha, source, tips, relation };
-}
-
-// D-0064, D-0067
-function certifiedCriticOn({ cfg, state, rows, actors, judges, critics, target, integration, covers }) {
-  if (!target) return null;
-  const files = new Set(state.files);
-  const SHA = /^[0-9a-f]{40}$/;
-  const PLAN_ID = /^PL-\d{4}$/;
-  let committedBaseline = null;
-  const rawLoop = state.read("loop.json");
-  if (rawLoop) {
-    try { committedBaseline = JSON.parse(rawLoop)?.provenanceBaseline ?? null; } catch { return null; }
-  }
-  const hasBaseline = SHA.test(cfg?.provenanceBaseline ?? committedBaseline ?? "");
-  for (let i = critics.length - 1; i >= 0; i--) {
-    const ch = critics[i];
-    if (hasBaseline && !(ch.dispatch?.plan && PLAN_ID.test(ch.dispatch.plan) && files.has(`plans/${ch.dispatch.plan}.md`))) continue;
-    const certSha = ch.product?.commit || ch.product?.base || null;
-    if (!certSha || !SHA.test(certSha) || !covers(certSha)) continue;
-    if (ch.product?.base && ch.product?.commit && ch.product.base !== ch.product.commit
-      && !integration.ancestor(ch.product.base, ch.product.commit)) continue;
-    if (!criticConvergedAccepted(ch, { has: path => files.has(path), read: state.read })) continue;
-    if (criticContradictedByTrajectory(rows, ch, [certSha, target])) continue;
-    const cov = evaluateCertifiedWaveCoverage({
-      repo: cfg.product, records: cfg.records, revision: state.revision, files, read: state.read,
-      cfg, phase: cfg.phase, targetCommit: certSha, judge: ch, judges, critics, actors, rows,
-      allHandoffs: state.handoffs, allRows: state.rows, isAncestor: integration.ancestor, requireActor: false,
-    });
-    if (!cov.ok) continue;
-    if (cov.actors.some(a => !ch.product?.base || !integration.ancestor(a.product.commit, ch.product.base))) continue;
-    return { handoff: ch, sha: certSha, coverage: cov };
-  }
-  return null;
 }
 
 function convergence({ words, state, rows, cfg, target, integration, ci, suite, frame, ruling, judges, critics, criticCert, actors, pending, openAlarms, checkRecords, prose, cadence, ssot, win }) {
@@ -232,24 +156,6 @@ function convergence({ words, state, rows, cfg, target, integration, ci, suite, 
       reasons.push(`judge/actor independence needs confirmation (${HANDOFFS})`);
   }
   return reasons;
-}
-
-// F-0012, R-0008-judge-frame-dispatch, design/dispatch.md#ready-state
-export function reconcilePlans(records, revision, phase, { host, base, live = true, now = Date.now() } = {}) {
-  let state, plans;
-  try { state = snapshot(records, revision); plans = plansFrom(state); }
-  catch (error) { return { state: null, problem: `the plans cannot be read: ${error.message}`, plans: [], idle: [], unchecked: [] }; }
-  const current = plans.filter(plan => plan.phase === phase && !plans.some(other => other.supersedes === plan.id)).toSorted((a, b) => a.id.localeCompare(b.id)).map(plan => {
-    const errors = validatePlan(plan, state);
-    if (errors.length) return { plan, errors };
-    try {
-      const context = live ? undefined : planContext(state, plan, { live: false });
-      return { plan, result: readyPlan(state, plan, { host, base, now, ...(context ? { context } : {}) }) };
-    } catch (error) { return { plan, problem: error.message }; }
-  });
-  admitAcrossPlans(current);
-  const rowsWith = test => current.flatMap(({ plan, result }) => result ? result.packages.filter(test).map(row => ({ ...row, plan: plan.id })) : []);
-  return { state, problem: null, plans: current, idle: rowsWith(isIdle), unchecked: rowsWith(row => row.unchecked) };
 }
 
 // F-0012, R-0008-judge-mechanisms, design/generative-engine.md#idle-packages-and-holds
@@ -297,212 +203,10 @@ function dispositionAction(metrics) {
       `Append to each the lines rung: <${RUNGS.join(" | ")}> and carried-by: <the existing mechanism or admitted feature that carries its general question, or none: why none can>. A screening predicate is named by its id (${Object.keys(PREDICATES).join(", ")}); owner-words.mjs metrics replays it and reports whether it would have fired, which is coverage, never raised first (A2).`] };
 }
 
-// F-0011, F-0012, R-0008-judge-mechanisms, design/generative-engine.md#the-measures-header
-const figure = value => value === null || value === undefined ? "unknown" : String(value);
-const percent = share => share === null || share === undefined ? "unknown" : `${Math.round(share * 1000) / 10}%`;
-
-// F-0012
-export function queryClock({ now, clockMode } = {}) {
-  const mode = clockMode ?? (now === undefined ? "live" : "simulation");
-  const at = now === undefined ? Date.now() : typeof now === "number" ? now : Date.parse(now);
-  if (!["live", "simulation"].includes(mode) || !Number.isFinite(at) || !Number.isFinite(new Date(at).getTime()))
-    throw new UsageError("query clock requires a valid time and live or simulation mode");
-  return { now: at, clockMode: mode };
-}
-
-// F-0012
-export function cliClock(args) {
-  if (!("now" in args)) return queryClock();
-  if (typeof args.now !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(args.now) || !Number.isFinite(Date.parse(args.now)))
-    throw new UsageError("--now must be a UTC ISO time with explicit Z");
-  const at = Date.parse(args.now);
-  if (new Date(at).toISOString().slice(0, 19) !== args.now.slice(0, 19)) throw new UsageError("--now must be a valid calendar time");
-  return queryClock({ now: at, clockMode: "simulation" });
-}
-
-// F-0012
-export function timeLines(time) {
-  if (!time) return [];
-  const seconds = n => n == null ? "unknown" : `${n} s`;
-  const detail = value => typeof value === "string" ? value : JSON.stringify(value);
-  const f = time.forecast ?? {}, c = time.checkpoint ?? {}, b = time.budget ?? {}, eta = f.releaseEta ?? {};
-  const checkpointDue = c.nextAt && Date.parse(c.nextAt) === Date.parse(time.queriedAt) ? " · due now" : "";
-  const remaining = time.remainingSeconds == null ? "unknown" : time.remainingSeconds < 0 ? `overdue by ${-time.remainingSeconds} s` : time.remainingSeconds === 0 ? "due now (0 s)" : `${time.remainingSeconds} s remaining`;
-  return [
-    `Time budget ${time.rootPlan} / ${time.plan} · queried ${time.queriedAt} · ${time.clockMode === "simulation" ? "read-only simulation" : "live clock"}`,
-    `  Elapsed: ${seconds(time.elapsedSeconds)} · deadline: ${time.deadline ?? "unspecified"} · budget: ${remaining}`,
-    `  Minimum delivery: ${b.status ?? "unknown"} · evidence: ${b.evidenceStatus ?? "unverified"} · delivered at: ${b.deliveredAt ?? "unknown (timing unverified)"} · current availability: ${b.currentAvailability ?? "unverified"}`,
-    `  Usable-release ETA (scope ${eta.evidenceStatus ?? "unverified"}): earliest ${eta.evidenceStatus === "verified" ? eta.earliestAt ?? "unknown" : "unknown"} · latest ${eta.evidenceStatus === "verified" ? eta.latestAt ?? "unknown" : "unknown"}`,
-    `  Conditional arithmetic diagnostic as of ${f.asOf ?? "unknown"}: earliest ${f.earliestAt ?? "unknown"} · latest ${f.latestAt ?? "unknown"} · ${f.stale === true ? "stale" : f.stale === false ? "not marked stale" : "freshness unknown"}`,
-    ...(f.conditionalOn ?? []).map(x => `  Conditional on: ${detail(x)}`),
-    ...(f.unknowns ?? []).map(x => `  Forecast uncertainty: ${detail(x)}`),
-    ...(f.staleReasons ?? []).map(x => `  Stale reason: ${detail(x)}`),
-    `  Next requested checkpoint: ${c.nextAt ?? "unknown"}${checkpointDue} (execution awaits an actual parent entry)`,
-    ...(c.resolved ?? []).map(x => `  Resolved checkpoint history: ${detail(x)}`),
-    ...(c.missed ?? []).map(x => `  Missed checkpoint history: ${detail(x)}`),
-    ...(time.promises ?? []).map(x => `  Promise history: ${detail(x)}`),
-    ...(time.history ?? []).map(x => `  Forecast history: ${detail(x)}`),
-    ...(time.findings ?? []).map(x => `  Time finding: ${detail(x)}`),
-    ...(time.actions ?? []).map(x => `  Suggested time action: ${detail(x)}`),
-  ];
-}
-
-export function measuresLines({ metrics, problem, reconciled, cadence, now, clockMode }) {
-  const clock = queryClock({ now, clockMode });
-  const owner = metrics
-    ? `owner directions ${figure(metrics.ownerDirections)} · raised first ${figure(metrics.raisedFirst)} · precision of batch answers ${percent(metrics.precision)} (${metrics.answersByOutcome["as-recommended"]} as-recommended of ${metrics.answeredWithOutcome} labelled) · owner waiting ${waitingText(metrics.ownerWaiting)}`
-    : `owner directions unknown · raised first unknown · precision of batch answers unknown · owner waiting unknown (not computed: ${problem})`;
-  const returns = cadence.state.returns.length ? "returns per area: listed below" : "returns per area: none (no judged adversarial round in the cadence window)";
-  const lines = [`Measures (F-0011 item 7, F-0012 item 5; quote them in reports; no target, alarm or gate rests on them): ${owner} · ${returns} (owner-words.mjs metrics, lib/cadence.mjs)`];
-  const measured = (reconciled?.plans ?? []).filter(p => p.result);
-  if (!measured.length) lines.push(`  no current plan of the phase: critical path unknown · idle dispatchable unknown (plan.mjs measure)`);
-  for (const { plan } of measured) {
-    let m;
-    try { m = measurePlan(reconciled.state, plan, clock); }
-    catch (error) { lines.push(`  ${plan.id} (${plan.scope}): critical path unknown · idle dispatchable unknown · owner waiting unknown (not measured: ${error.message})`); continue; }
-    const seconds = value => value === null || value === undefined ? "unknown" : `${value} s`;
-    const waiting = m.ownerWaiting.intervals.length ? `owner waiting ${seconds(m.ownerWaiting.seconds)} on ${m.ownerWaiting.intervals.map(i => i.batch).join(", ")}` : "owner waiting n/a (the plan names no owner batch)";
-    lines.push(`  ${plan.id} (${plan.scope}): critical path ${seconds(m.criticalPath.seconds)} · idle dispatchable ${seconds(m.idleDispatchable.seconds)} · ${waiting} (plan.mjs measure)`);
-    lines.push(...timeLines(m.time).map(line => `  ${line}`));
-  }
-  return lines;
-}
-
-// F-0011, R-0008-judge-mechanisms, design/generative-engine.md#raised-first-replay
-const unknownAt = why => ({ fires: null, evidence: [why] });
-const rowsAt = ({ snap, phase }) => parseRows(snap.read(TRAJECTORY)).filter(r => r.phase === phase);
-const trajectoryAlarm = type => ({ path: "alarm", source: `trajectory.mjs alarms (${type})`, reads: [TRAJECTORY], clock: false,
-  evaluate: ctx => {
-    const found = alarms(rowsAt(ctx)).filter(a => a.type === type);
-    return { fires: found.length > 0, evidence: found.length ? found.map(a => `${a.key}: ${a.message}`) : [`no ${type} alarm`] };
-  } });
-
-export const PREDICATES = Object.freeze({
-  "stall": { path: "alarm", source: "loop.mjs stallState (tick)", clock: true,
-    reads: ["blueprint/", FEATURE_EVENTS, HANDOFFS, TRAJECTORY, "owner/", "rounds/", "loop.json"],
-    evaluate: (ctx, at) => {
-      if (!ctx.cfg) return unknownAt("no usable loop.json in this records commit");
-      const result = stallState(ctx.cfg, ctx.state, stallThreshold(ctx.cfg.tick), at);
-      return { fires: result.stalled, evidence: [result.line] };
-    } },
-  "advancing-round-due": { path: "next", source: "lib/cadence.mjs cadenceState", clock: false, reads: [HANDOFFS, TRAJECTORY, "rounds/", "loop.json"],
-    evaluate: ctx => {
-      if (!ctx.cfg) return unknownAt("no usable loop.json in this records commit");
-      const setting = cadenceOf(ctx.cfg);
-      const handoffs = parseHandoffs(ctx.snap.read(HANDOFFS)).filter(h => h.phase === ctx.phase && ctx.snap.files.has(h.record));
-      const state = cadenceState({ handoffs, rows: rowsAt(ctx), adversarial: setting.adversarial, nextRound: 0 });
-      return { fires: state.due, evidence: cadenceLines({ ...setting, state }, `${TRAJECTORY}, ${HANDOFFS}`).slice(0, 1) };
-    } },
-  "idle-packages": { path: "next", source: "lib/plan.mjs isIdle over readyPlan (A3)", clock: false,
-    reads: ["plans/", HANDOFFS, "owner/", "rounds/", "decisions/", "purpose/", "blueprint/", "interventions/", "lessons/", "loop.json"],
-    needs: { event: "a committed launch or acknowledgement event for each started package, and the measured capacity at reconciliation", feature: "F-0012" },
-    evaluate: (ctx, at) => {
-      if (!ctx.cfg) return unknownAt("no usable loop.json in this records commit");
-      const reconciled = reconcilePlans(ctx.records, ctx.revision, ctx.phase, { host: { admits: true, over: [], calls: [] }, base: undefined, live: false, now: at });
-      if (reconciled.problem) return unknownAt(reconciled.problem);
-      return reconciled.idle.length
-        ? unknownAt(`ready by the plan with no recorded start or hold: ${reconciled.idle.map(p => `${p.id} (${p.plan})`).join(", ")}; whether each was started or capacity held it is not in the records`)
-        : { fires: false, evidence: ["every package of the current plans is done or held by its plan, an owner batch or a recorded hold"] };
-    } },
-  "open-words": { path: "next", source: "records-check.mjs openWords", clock: false, reads: [""],
-    evaluate: ctx => {
-      const open = openWords(ctx.records, ctx.revision);
-      return { fires: open.length > 0, evidence: open.length ? open.map(w => w.id) : ["no open owner word"] };
-    } },
-  "area-rounds": trajectoryAlarm("area-rounds"),
-  "blocker-recurring": trajectoryAlarm("blocker-recurring"),
-  "partly-closed": trajectoryAlarm("partly-closed"),
-  "ci-not-green": trajectoryAlarm("ci-not-green"),
-  "ci-absent": trajectoryAlarm("ci-absent"),
-});
-
-export function citedPredicates(text) {
-  return Object.keys(PREDICATES).filter(id => new RegExp(`(?<![\\w-])${id}(?![\\w-])`).test(text ?? ""));
-}
-
-function predicateContext(records, revision, phase) {
-  let snap, cfg, state;
-  return {
-    records, revision, phase,
-    get snap() { return snap ??= snapshot(records, revision); },
-    get cfg() {
-      if (cfg === undefined) {
-        cfg = null;
-        const text = this.snap.read("loop.json");
-        if (text) try { cfg = { ...normalize(JSON.parse(text), records), records, phase, configFile: join(records, "loop.json") }; } catch { cfg = null; }
-      }
-      return cfg;
-    },
-    get state() { return state ??= this.cfg ? recordsOf(this.cfg, revision) : null; },
-  };
-}
-
-function firstParentHistory(records, revision, { names = true } = {}) {
-  return git(records, "log", "--first-parent", "--reverse", "--format=%x00%H %ct", ...(names ? ["--name-only"] : []), revision).split("\0").filter(Boolean).map(block => {
-    const [head, ...paths] = block.split("\n").filter(Boolean);
-    const [sha, seconds] = head.split(" ");
-    return { sha, time: Number(seconds) * 1000, paths };
-  });
-}
-
-export function predicateReplay(records, { revision = "HEAD", phase, from = null, cited, falseAlarms = true }) {
-  const history = firstParentHistory(records, revision, { names: falseAlarms });
-  const contexts = new Map();
-  const contextAt = sha => { if (!contexts.has(sha)) contexts.set(sha, predicateContext(records, sha, phase)); return contexts.get(sha); };
-  const end = i => i + 1 < history.length ? history[i + 1].time - 1 : Date.now();
-  const results = [], predicates = {};
-  for (const id of [...new Set(cited.map(c => c.predicate))]) {
-    const predicate = PREDICATES[id], entries = cited.filter(c => c.predicate === id);
-    const touches = path => predicate.reads.some(r => r.endsWith("/") ? path.startsWith(r) : path === r);
-    const keys = [];
-    history.forEach((commit, i) => keys.push(i === 0 || !falseAlarms || commit.paths.some(touches) ? i : keys[i - 1]));
-    const cache = new Map();
-    const evaluate = (i, at) => {
-      const key = predicate.clock ? `${keys[i]}@${at}` : keys[i];
-      if (!cache.has(key)) {
-        let result;
-        try { result = predicate.evaluate(contextAt(history[keys[i]].sha), at); }
-        catch (error) { result = unknownAt(`cannot be evaluated: ${error.message}`); }
-        cache.set(key, result);
-      }
-      return cache.get(key);
-    };
-    const preWord = new Map(), summary = { path: predicate.path, source: predicate.source,
-      cited: [...new Set(entries.map(e => e.intervention))], fired: [], notFired: [], unknown: [], ...(predicate.needs ? { needs: predicate.needs } : {}) };
-    for (const entry of entries) {
-      const at = Date.parse(entry.time);
-      const i = Number.isFinite(at) ? history.findLastIndex(commit => commit.time < at) : -1;
-      if (i < 0) {
-        results.push({ ...entry, fires: null, snapshot: null, evidence: ["no records commit before the word"] });
-        summary.unknown.push(entry.word);
-        continue;
-      }
-      preWord.set(i, Math.min(preWord.get(i) ?? Infinity, at));
-      const result = evaluate(i, at);
-      results.push({ ...entry, fires: result.fires, snapshot: history[i].sha, evidence: result.evidence, ...(result.fires === null && predicate.needs ? { needs: predicate.needs } : {}) });
-      summary[result.fires === true ? "fired" : result.fires === false ? "notFired" : "unknown"].push(entry.word);
-    }
-    if (falseAlarms) {
-      const until = Math.max(...entries.map(e => Date.parse(e.time)).filter(Number.isFinite));
-      const start = from && Number.isFinite(Date.parse(from)) ? Date.parse(from) : -Infinity;
-      const episodes = [];
-      let current = null, snapshots = 0, unknownSnapshots = 0;
-      history.forEach((commit, i) => {
-        if (commit.time < start || commit.time >= until) return;
-        snapshots++;
-        const result = evaluate(i, preWord.get(i) ?? Math.min(end(i), until - 1));
-        if (result.fires !== true) { current = null; if (result.fires === null) unknownSnapshots++; return; }
-        if (!current) episodes.push(current = { from: commit.sha, to: commit.sha, snapshots: 0, corrected: false });
-        current.to = commit.sha;
-        current.snapshots++;
-        if (preWord.has(i)) current.corrected = true;
-      });
-      Object.assign(summary, { falseAlarms: episodes.filter(e => !e.corrected).length, episodes, snapshots, unknownSnapshots });
-    }
-    predicates[id] = summary;
-  }
-  return { results, predicates };
-}
+// F-0011, F-0012, F-0015, R-0008-judge-mechanisms, design/generative-engine.md#raised-first-replay
+export const PREDICATES = createPredicates({ stallState, reconcilePlans });
+export const predicateContext = (records, revision, phase, opts = {}) => makePredicateContext(records, revision, phase, { recordsOf, ...opts });
+export const predicateReplay = (records, opts = {}) => replayPredicates(records, { stallState, recordsOf, reconcilePlans, predicates: PREDICATES, ...opts });
 
 const SUBTRACTION = /^reviewer-subtraction(?:-[a-z]+)*$/;
 const SHOWN_PROSE = 10;
@@ -514,7 +218,7 @@ export function integrationTarget(cfg, state = recordsOf(cfg)) {
   return integration.sha ?? integration.merge ?? null;
 }
 
-export function nextLines(cfg, config, state, { store = null, load: measured = null, now, clockMode } = {}) {
+export function nextLines(cfg, config, state, { store = null, load: measured = null, now, clockMode, full: fullDiag = false } = {}) {
   const clock = queryClock({ now, clockMode });
   const { records, product, phase } = cfg;
   const managed = new Set(state.files);
@@ -554,7 +258,7 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
   const status = node("blueprint.mjs", "status", "--records", records, "--phase", phase);
   const owner = node("owner-words.mjs", "open", "--records", records);
   const trajectory = join(records, TRAJECTORY);
-  const stateCheck = check(records, { config: JSON.parse(state.read("records.json") || "{}") });
+  const stateCheck = check(records, { config: JSON.parse(state.read("records.json") || "{}"), fast: !fullDiag });
   const suite = target && state.files.filter(evidenceJson).find(path => {
     try { return !receiptProblem(JSON.parse(state.read(path)), product, target); } catch { return false; }
   });
@@ -606,9 +310,20 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
   let metrics = null, metricsProblem = null;
   try { metrics = phaseMetrics(records, phase, { revision: state.revision, falseAlarms: false }); } catch (error) { metricsProblem = error.message; }
   const subtraction = handoffs.findLast(h => SUBTRACTION.test(h.step)) ?? null;
-  const prose = { sha: target, subtraction, lines: null, problem: null };
+  const prose = { sha: target, subtraction, lines: null, deferred: false, problem: null };
   if (target) {
-    try { prose.lines = proseInTree(product, target, { records: cfg.records }); } catch (error) { prose.problem = error.message; }
+    try {
+      const res = proseInTree(product, target, {
+        records: cfg.records,
+        cache: true,
+        maxFiles: subtraction || fullDiag ? null : MAX_FAST_PROSE_FILES,
+        maxMs: subtraction || fullDiag ? null : MAX_FAST_PROSE_MS,
+        deferOnBudget: !(subtraction || fullDiag),
+      });
+      if (Array.isArray(res)) prose.lines = res;
+      else if (res?.deferred) { prose.deferred = true; prose.problem = res.reason; }
+      else prose.lines = res?.lines ?? null;
+    } catch (error) { prose.problem = error.message; }
   } else prose.problem = "no integration SHA until the diverged heads are merged";
 
   const relationText = { at: "is at it", tip: "is at its VERSION tip", lags: "lags it", ahead: "is ahead of it by commits no hand-off records", diverged: "diverged from it",
@@ -868,6 +583,27 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
       "An actor moves what they say into the records or design and leaves pointers; the judge confirms nothing is lost.");
   const ssot = Object.hasOwn(cfg, "ssot") && target ? ssotNextSummary(cfg, resolve(config), target) : null;
   if (ssot?.action) action(ssot.action.title, "loop.json (ssot), ssot-check.mjs", ...ssot.action.steps);
+  const hygieneOver = [];
+  try {
+    const ev = liveEvidenceStats({ repo: records, head: state.revision, files: state.files, read: state.read });
+    const work = cleanWorkDir(cfg.workDir, { maxRound: Math.max(0, round - 1), recordedIds: new Set(state.handoffs.map(h => h.id)), apply: false });
+    if (ev.fileCount > MAX_LIVE_EVIDENCE_FILES) hygieneOver.push(`${ev.fileCount} live evidence files (> ${MAX_LIVE_EVIDENCE_FILES})`);
+    if (ev.totalBytes > MAX_LIVE_EVIDENCE_BYTES) hygieneOver.push(`${Math.round(ev.totalBytes / 1048576)} MiB live evidence (> ${Math.round(MAX_LIVE_EVIDENCE_BYTES / 1048576)} MiB)`);
+    if (ev.oversizedAudits.length) hygieneOver.push(`${ev.oversizedAudits.length} oversized audit(s) (> 1 MiB)`);
+    if (work.candidates.length > MAX_STALE_WORKSPACES) hygieneOver.push(`${work.candidates.length} stale workspace(s) (> ${MAX_STALE_WORKSPACES})`);
+  } catch {}
+  if (hygieneOver.length)
+    action(`operational hygiene threshold exceeded (screening): ${hygieneOver.join("; ")}`, "F-0015, lib/records-prune.mjs, lib/work-hygiene.mjs",
+      node("self-loop.mjs", "clean", "--config", config, "--apply"));
+  let hookReason = !existsSync(join(records, ".githooks", "pre-commit")) ? "missing .githooks/pre-commit" : null;
+  if (!hookReason) {
+    let hp = "";
+    try { hp = git(records, "config", "--local", "--get", "core.hooksPath"); } catch {}
+    if (!hp) hookReason = "core.hooksPath is unset";
+  }
+  if (hookReason)
+    action(`records pre-commit hook inactive (${hookReason}, screening)`, "F-0015, lib/init.mjs",
+      node("self-loop.mjs", "hooks", "install", "--records", records));
 
   const reasons = convergence({ words, state, rows, cfg, target, integration, ci, suite, frame, ruling, judges, critics, criticCert, actors, pending, openAlarms, checkRecords: stateCheck, prose, cadence, ssot, win });
   if (stallError) lines.splice(header, 0, "", `- the alarm ledger cannot be read: ${stallError.message} [${ALARMS}]`, `  ${node("records-check.mjs", "--repo", records)}`);
@@ -929,7 +665,7 @@ if (invokedAsScript()) cli(() => {
   catch (error) { if (error instanceof Stop) throw new UsageError(error.message); throw error; }
   if (mode === "next") cadenceOf(cfg);
   const state = recordsOf(cfg);
-  if (mode === "next") return void console.log(nextLines(cfg, config, state, clock));
+  if (mode === "next") return void console.log(nextLines(cfg, config, state, { ...clock, full: "full" in args }));
   const result = stallState(cfg, state, Number(args.hours), clock.now);
   console.log(result.line);
   return result.stalled ? 2 : 0;

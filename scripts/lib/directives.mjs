@@ -1,4 +1,4 @@
-// D-0016, D-0023, D-0064, D-0067, R-0006-judge, design/driver.md#directives
+// D-0016, D-0023, D-0064, D-0067, D-0069, R-0006-judge, design/driver.md#directives
 
 const ID = String.raw`(?:(?:D|P|F|L|I|B|T|PR)-\d{4,}|R-\d{4,}(?:-[a-z]+)*|SL-\d{2,}|W-[0-9a-f]{10})`;
 const ANCHOR = String.raw`(?:design|docs)\/(?:[\w.-]+\/)*[\w.-]+\.md#[\p{L}\p{N}_.-]+`;

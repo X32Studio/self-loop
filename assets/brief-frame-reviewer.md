@@ -83,9 +83,6 @@ Questions only the owner can decide go to `out/decisions.json`:
 `{"questions": [{"question": "...", "options": ["...", "..."], "recommendation": "...", "context": "...", "costOfWaiting": "..."}]}`.
 Each needs at least two distinct options and a recommendation, or it is not sent (`decisions.mjs validate`); a REFRAME
 needs at least one.
-For a new requirement, intent comes before design (D-0031): put its owner questions in one intent batch,
+For a new requirement, intent comes before design (D-0031), and **Generation-Engine derivation comes before asking the owner (I-0005)**: derive everything that `purpose/P-NNNN.md`, existing records, code, and first principles can settle — if every engineering and architectural choice is derivable, omit `out/decisions.json` entirely and state the grounds in your report. Put ONLY genuine owner-only vision/policy trade-offs into one intent batch,
 `{"kind": "intent", "requirement": "P-NNNN", "questions": [{..., "whyAsked": "why the records, the code and first principles cannot settle it"}, {..., "dependsOn": 1, "ifOther": {"<another option of question 1>": "<the recommendation that then follows>"}}]}`,
-ordered by dependency (`dependsOn` is the one-based number of an earlier question). Ask only what the owner alone can
-settle; where the records already settle the intent, write the grounds in your report instead of a question. A
-requirement gets one intent batch and at most one follow-up in a phase. Escalate at most
-the top one or two; the rest become to-do items or candidate cases for the judge. If no reframe is needed, say so and why.
+ordered by dependency (`dependsOn` is the one-based number of an earlier question). A requirement gets one intent batch and at most one follow-up in a phase. Escalate at most the top one or two; the rest become to-do items or candidate cases for the judge. If no reframe is needed, say so and why.

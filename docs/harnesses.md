@@ -79,7 +79,7 @@ All four handlers emit pure JSON on `stdout` (diagnostics only on `stderr`), res
 Configure `reviewer`, `critic`, `actor`, or `judge` in `loop.json` with:
 
 ```json
-"actor": { "runner": "t3", "provider": "antigravity", "model": "gemini-2.5-flash", "effort": "high" }
+"actor": { "runner": "t3", "provider": "antigravity", "model": "gemini-2.5-pro", "effort": "high" }
 ```
 
 Run `--prepare`, start the T3 child with `t3-prompt.md` verbatim, and record using the child's `conversationId`:

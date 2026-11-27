@@ -1,4 +1,4 @@
-// F-0008, F-0009, D-0016, D-0062, D-0066, D-0068, design/paseo-and-judge-policy.md#1
+// F-0008, F-0009, F-0015, D-0016, D-0062, D-0066, D-0068, design/paseo-and-judge-policy.md#1
 
 export const PREPARED_RUNNERS = Object.freeze(["t3", "paseo"]);
 export const isPreparedRunner = runner => runner === "t3" || runner === "paseo";
@@ -86,4 +86,28 @@ export function isPaseoSystemEnvelope(text) {
     rest = rest.slice(closeIdx + CLOSE_TAG.length).trimStart();
   }
   return count > 0;
+}
+
+const CHAT_SUMMARY_OPEN_RE = /^<chat-history-summary(?:\s[^>]*)?>/i;
+const CHAT_SUMMARY_CLOSE_RE = /<\/chat-history-summary>/i;
+const CHAT_SUMMARY_NESTED_RE = /<chat-history-summary(?:\s|>)/i;
+
+export function stripChatHistorySummary(text) {
+  if (typeof text !== "string") return "";
+  const leading = text.trimStart();
+  const open = CHAT_SUMMARY_OPEN_RE.exec(leading);
+  if (!open) return text;
+  const afterOpen = leading.slice(open[0].length);
+  const close = CHAT_SUMMARY_CLOSE_RE.exec(afterOpen);
+  if (!close) return text;
+  if (CHAT_SUMMARY_NESTED_RE.test(afterOpen.slice(0, close.index))) return text;
+  return afterOpen.slice(close.index + close[0].length).trimStart();
+}
+
+export function isChatHistorySummaryEnvelope(text) {
+  if (typeof text !== "string") return false;
+  const stripped = stripChatHistorySummary(text);
+  if (stripped === text) return false;
+  const rest = stripped.trim();
+  return !rest || isPaseoSystemEnvelope(rest);
 }

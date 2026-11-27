@@ -1,4 +1,4 @@
-// P-0011, D-0058, design/two-loop-rhythm.md#6
+// P-0011, D-0058, D-0069, design/two-loop-rhythm.md#6
 import { posix } from "node:path";
 import { commentLines, isPointer, languageOf } from "./comments.mjs";
 
@@ -24,7 +24,7 @@ const IMPORT_NAMED_RE = /\b(?:import|export)\s+(?:type\s+)?(?:[A-Za-z_$][A-Za-z0
 const IMPORT_NS_RE = /\b(?:import|export)\s+\*(?:\s+as\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s+from\s+["']([^"']+)["']/g;
 const DYNAMIC_IMPORT_RE = /\bimport\s*\(\s*["'](\.\.?\/[^"']+)["']\s*\)/g;
 const RESOLVE_EXTS = [".js", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"];
-const DOC_POINTER_RE = /(?:^|[\s,;:()[\]])(?:self-loop[\s:]+)?(?:(?:D|P|F|L|I|B|T|PR)-\d{4,}|R-\d{4,}(?:-[a-z]+)*|SL-\d{2,}|W-[0-9a-f]{10}|(?:design|docs|purpose|decisions|interventions|lessons|plans)\/[\w./-]+\.md(?:#[\p{L}\p{N}_.-]+)?)(?=$|[\s,;:()[\]])/gu;
+const DOC_POINTER_RE = /(?:^|[\s,;:()[\]])(?:(?:ExampleApp|example-app|self-loop)[\s:]+)?(?:(?:D|P|F|L|I|B|T|PR)-\d{4,}|R-\d{4,}(?:-[a-z]+)*|SL-\d{2,}|W-[0-9a-f]{10}|(?:design|docs|purpose|decisions|interventions|lessons|plans)\/[\w./-]+\.md(?:#[\p{L}\p{N}_.-]+)?)(?=$|[\s,;:()[\]])/gu;
 const POINTER_SEP_RE = /^[\s,;:./|·*=#~+_()[\]<>!&-]*$/u;
 const LICENSE_RE = /^(?:SPDX-License-Identifier:|Copyright\b|Licensed under\b)/i;
 

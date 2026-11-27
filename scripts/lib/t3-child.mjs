@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import {
   antigravityAppDirs,
   antigravityFirstPrompt,
@@ -18,6 +18,9 @@ import { git, gitOk } from "./git-plumbing.mjs";
 import { HANDOFFS, recordOf, ROLES } from "./handoff.mjs";
 import { resolveAdapter, unwrapPaseoAgentMessage } from "./paseo.mjs";
 import { canonical } from "./path-canonical.mjs";
+import { reclaimWorkspacePayloads } from "./work-hygiene.mjs";
+
+const samePath = (a, b) => typeof a === "string" && typeof b === "string" && canonical(a) === canonical(b);
 
 const EXIT = { failure: 1, records: 7, usage: 64 };
 const TRAJECTORY = "metrics/trajectory.jsonl";
@@ -331,19 +334,28 @@ export function isStalePreparation(prep, currentMaxRound = null) {
   return false;
 }
 
-function maxRecordedRound(cfg) {
-  if (!cfg?.records || !existsSync(cfg.records)) return null;
+function readRecordsMeta(cfg, needMaxRound = true) {
+  const handoffRows = [];
   let max = 0;
-  for (const rel of [HANDOFFS, TRAJECTORY]) {
-    if (!gitOk(cfg.records, "cat-file", "-e", `HEAD:${rel}`)) continue;
+  if (!cfg?.records || !existsSync(cfg.records)) return { maxRound: null, handoffRows };
+  if (gitOk(cfg.records, "cat-file", "-e", `HEAD:${HANDOFFS}`)) {
     try {
-      for (const line of git(cfg.records, "show", `HEAD:${rel}`).split("\n").filter(Boolean)) {
+      for (const line of git(cfg.records, "show", `HEAD:${HANDOFFS}`).split("\n").filter(Boolean)) {
+        const row = JSON.parse(line);
+        if (typeof row?.id === "string") handoffRows.push({ id: row.id, phase: row.phase ?? null });
+        if (needMaxRound && (!cfg.phase || row.phase === cfg.phase) && Number.isSafeInteger(row.round) && row.round > max) max = row.round;
+      }
+    } catch {}
+  }
+  if (needMaxRound && gitOk(cfg.records, "cat-file", "-e", `HEAD:${TRAJECTORY}`)) {
+    try {
+      for (const line of git(cfg.records, "show", `HEAD:${TRAJECTORY}`).split("\n").filter(Boolean)) {
         const row = JSON.parse(line);
         if ((!cfg.phase || row.phase === cfg.phase) && Number.isSafeInteger(row.round) && row.round > max) max = row.round;
       }
     } catch {}
   }
-  return max > 0 ? max : null;
+  return { maxRound: max > 0 ? max : null, handoffRows };
 }
 
 export function readPreparation(cfg, ws) {
@@ -363,11 +375,11 @@ export function readPreparation(cfg, ws) {
     || !gitOk(cfg.records, "cat-file", "-e", `${ctx.view}^{commit}`)) {
     throw stop(EXIT.records, "the call has no matching preparation snapshot");
   }
-  if (ctx.ws !== ws) throw stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
+  if (!samePath(ctx.ws, ws)) throw stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
   if (ctx.role === "reviewer") {
     if (resolveAdapter(ctx.agent) === "codex") throw stop(EXIT.records, `the frame reviewer cannot run on ${ctx.agent?.runner ?? "t3"}:codex`);
     if (ARCH_STEP.test(ctx.step ?? "")) {
-      if (ctx.wt !== join(ws, "wt")) throw stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
+      if (!samePath(ctx.wt, join(ws, "wt"))) throw stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
       if (!existsSync(ctx.wt) || !hasReviewerWorkspace(ws)) throw stop(EXIT.failure, `the prepared workspace ${ws} is gone; prepare the call again`);
       if (commonDir(ctx.wt) !== commonDir(cfg.product)) throw stop(EXIT.records, "the prepared worktree belongs to a different product repository");
     } else {
@@ -375,7 +387,7 @@ export function readPreparation(cfg, ws) {
       if (!hasReviewerWorkspace(ws)) throw stop(EXIT.failure, `the prepared workspace ${ws} is gone; prepare the call again`);
     }
   } else {
-    if (ctx.wt !== join(ws, "wt")) throw stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
+    if (!samePath(ctx.wt, join(ws, "wt"))) throw stop(EXIT.records, "the prepared workspace or worktree does not match call.json");
     if (!existsSync(ctx.wt)) throw stop(EXIT.failure, `the worktree ${ctx.wt} is gone; prepare the call again`);
     if (commonDir(ctx.wt) !== commonDir(cfg.product)) throw stop(EXIT.records, "the prepared worktree belongs to a different product repository");
   }
@@ -385,25 +397,31 @@ export function readPreparation(cfg, ws) {
 
 export function preparedIn(cfg, { currentMaxRound = null, includeStale = false } = {}) {
   if (!existsSync(cfg.workDir)) return [];
-  const maxRound = currentMaxRound ?? maxRecordedRound(cfg);
+  const meta = readRecordsMeta(cfg, currentMaxRound === null);
+  const maxRound = currentMaxRound ?? meta.maxRound;
   const found = [];
   for (const entry of readdirSync(cfg.workDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const ws = join(cfg.workDir, entry.name);
     const file = join(ws, "call.json");
     if (!existsSync(file)) continue;
-    const ctx = JSON.parse(readFileSync(file, "utf8"));
-    if (![1, 2].includes(ctx.version) || ctx.ws !== ws || !ctx.nonce || !ROLES.includes(ctx.role) || !Number.isInteger(ctx.round)
-        || !/^[a-z]+(-[a-z]+)*$/.test(ctx.step) || ctx.record !== recordOf(ctx.round, ctx.step))
+    let ctx;
+    try { ctx = JSON.parse(readFileSync(file, "utf8")); }
+    catch { throw new Error(`${file} is not a supported prepared call`); }
+    if (!ctx || typeof ctx !== "object" || ![1, 2].includes(ctx.version) || !ctx.nonce || !ROLES.includes(ctx.role)
+        || !Number.isInteger(ctx.round) || !/^[a-z]+(-[a-z]+)*$/.test(ctx.step) || ctx.record !== recordOf(ctx.round, ctx.step))
       throw new Error(`${file} is not a supported prepared call`);
     const phase = preparedPhase(ctx, ws);
     const phaseMax = !cfg.phase || !phase || phase === cfg.phase ? maxRound : null;
-    if (!includeStale && isStalePreparation(ctx, phaseMax)) continue;
+    const isRecorded = Boolean(ctx.id && meta.handoffRows.some(r => r.id === ctx.id && (!phase || !r.phase || r.phase === phase)));
+    if (!includeStale && (ctx.recorded === true || ctx.cancelled === true || isRecorded || isStalePreparation(ctx, phaseMax))) continue;
+    const migrated = typeof ctx.ws === "string" && isAbsolute(ctx.ws) && basename(ctx.ws) === basename(ws);
+    if (!samePath(ctx.ws, ws) && !migrated) throw new Error(`${file} is not a supported prepared call`);
     const liveWorkspace = ctx.role === "reviewer"
       ? (ARCH_STEP.test(ctx.step)
-        ? ctx.wt === join(ws, "wt") && existsSync(ctx.wt) && hasReviewerWorkspace(ws)
+        ? samePath(ctx.wt, join(ws, "wt")) && existsSync(join(ws, "wt")) && hasReviewerWorkspace(ws)
         : ctx.wt === null && hasReviewerWorkspace(ws))
-      : ctx.wt === join(ws, "wt") && existsSync(ctx.wt);
+      : samePath(ctx.wt, join(ws, "wt")) && existsSync(join(ws, "wt"));
     found.push({ ...ctx, phase, ws, liveWorkspace });
   }
   return found.sort((a, b) => a.round - b.round || a.step.localeCompare(b.step) || a.ws.localeCompare(b.ws));
@@ -415,7 +433,7 @@ export function cancelPreparedCall({ ws, product, reason, now = () => new Date()
   if (!existsSync(manifest)) throw stop(EXIT.usage, `${wsDir} holds no call.json: it was not prepared with --prepare`);
   if (typeof reason !== "string" || !reason.trim()) throw stop(EXIT.usage, "--reason must be a non-empty string");
   const ctx = JSON.parse(readFileSync(manifest, "utf8"));
-  if (ctx.ws !== wsDir || !ctx.id || !ctx.nonce) throw stop(EXIT.records, `${manifest} does not match workspace ${wsDir}`);
+  if (!samePath(ctx.ws, wsDir) || !ctx.id || !ctx.nonce) throw stop(EXIT.records, `${manifest} does not match workspace ${wsDir}`);
   if (ctx.wt && existsSync(ctx.wt)) {
     spawnSync("git", ["-C", product, "worktree", "remove", "--force", ctx.wt], { stdio: "ignore" });
     if (existsSync(ctx.wt)) {
@@ -425,5 +443,6 @@ export function cancelPreparedCall({ ws, product, reason, now = () => new Date()
   }
   const updated = { ...ctx, cancelled: true, cancelledAt: now().toISOString(), cancelReason: reason.trim() };
   writeFileSync(manifest, `${JSON.stringify(updated, null, 1)}\n`);
+  reclaimWorkspacePayloads(wsDir);
   return { id: ctx.id, ws: wsDir, cancelled: true, cancelReason: updated.cancelReason };
 }

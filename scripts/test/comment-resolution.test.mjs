@@ -30,11 +30,11 @@ test("flow: ordinary prose and recognized directives reach hand-off; loss: false
   assert.deepEqual(proseLines("a.mjs", "// @ts-check\nexport {};\n"), []);
 });
 
-import { mkdtempSync, realpathSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
-import { commentResolutions, proseInTree } from "../lib/comments.mjs";
+import { commentResolutions, ProseBudgetExceededError, proseCacheDir, proseInTree } from "../lib/comments.mjs";
 
 test("flow: audited judge resolves a frozen source at hand-off and phase-close; loss: actor bypass or stale approval", t => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "comment-resolution-")));
@@ -204,4 +204,111 @@ test("publication binds resolution and audit bytes; a fresh judge can resolve pe
   assert.deepEqual(proseLines("a.sql", source, { resolutions: commentResolutions(records) }), []);
   put(third.file, "[]"); put(third.audit, "{}"); commit();
   assert.deepEqual(proseLines("a.sql", source, { resolutions: commentResolutions(records) }), []);
+});
+
+// F-0015, P-0014, P-0015, R-0055-judge-frame-hygiene
+test("F-0015: commentResolutions runs zero ls-tree calls and short-circuits in 1 show when empty", t => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "comment-fast-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const records = join(root, "records"), binDir = join(root, "bin"), logFile = join(root, "git.log");
+  mkdirSync(records); mkdirSync(binDir);
+  const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  const git = (...args) => execFileSync(realGit, ["-C", records, ...args], { encoding: "utf8" }).trim();
+  git("init", "-q"); git("config", "user.name", "Test"); git("config", "user.email", "test@example.test");
+  const put = (p, d) => { mkdirSync(dirname(join(records, p)), { recursive: true }); writeFileSync(join(records, p), d); };
+  const commit = () => { git("add", "."); git("commit", "-qm", "fixture"); };
+  const spy = join(binDir, "git");
+  writeFileSync(spy, `#!/bin/sh\necho "$@" >> "${logFile}"\nexec "${realGit}" "$@"\n`);
+  chmodSync(spy, 0o755);
+  const prevPath = process.env.PATH;
+  t.after(() => { process.env.PATH = prevPath; });
+  const runSpied = fn => {
+    writeFileSync(logFile, "");
+    process.env.PATH = `${binDir}:${prevPath}`;
+    try { return fn(); }
+    finally { process.env.PATH = prevPath; }
+  };
+  const hNoRes = {
+    id: "R-0001-judge", role: "judge", step: "judge", round: 1, phase: "v1", attempt: 1,
+    view: "a".repeat(40), agent: { runner: "t3", session: "j-1" }, product: null,
+    audit: { violations: 0 }, record: "rounds/0001-judge.md", files: ["rounds/0001-judge.md"],
+  };
+  put(hNoRes.record, "# judge\n");
+  put("metrics/handoffs.jsonl", JSON.stringify(hNoRes) + "\n");
+  commit();
+  assert.deepEqual(runSpied(() => commentResolutions(records)), []);
+  const emptyCalls = readFileSync(logFile, "utf8").trim().split("\n").filter(Boolean);
+  assert.equal(emptyCalls.length, 1, `expected single HEAD show call, got: ${emptyCalls.join(" | ")}`);
+  assert.equal(emptyCalls.some(c => /\bls-tree\b/.test(c)), false);
+
+  const src = "// @custom-directive 1\nexport {};\n", [cand] = proseLines("a.mjs", src);
+  const row = { ...cand, verdict: "directive", evidence: "tool consumer" };
+  const prefix = "sealed/judge/0002/judge-1", resPath = `${prefix}/out/comment-resolutions.json`, auditPath = `${prefix}-audit.json`;
+  const hWithRes = {
+    id: "R-0002-judge", role: "judge", step: "judge", round: 2, phase: "v1", attempt: 1,
+    view: "b".repeat(40), agent: { runner: "t3", session: "j-2" }, product: null,
+    audit: { violations: 0 }, record: "rounds/0002-judge.md", files: ["rounds/0002-judge.md", resPath, auditPath],
+  };
+  put(hWithRes.record, "# judge 2\n");
+  put(resPath, JSON.stringify([row]));
+  put(auditPath, JSON.stringify({ id: hWithRes.id, role: "judge", attempt: 1, exit: 0, agent: hWithRes.agent }));
+  put("metrics/handoffs.jsonl", [hNoRes, hWithRes].map(x => JSON.stringify(x)).join("\n") + "\n");
+  commit();
+  const resolved = runSpied(() => commentResolutions(records));
+  assert.equal(resolved.length, 1);
+  const activeCalls = readFileSync(logFile, "utf8").trim().split("\n").filter(Boolean);
+  assert.equal(activeCalls.some(c => /\bls-tree\b/.test(c)), false, `unexpected ls-tree: ${activeCalls.join(" | ")}`);
+  assert.ok(activeCalls.some(c => /--no-replace-objects cat-file --batch/.test(c)));
+});
+
+// F-0015, P-0014, P-0015
+test("F-0015: proseInTree supports tree-keyed caching (pruned to 16, skips pending) and maxFiles/maxMs deferral", t => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "prose-cache-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const product = join(root, "product");
+  mkdirSync(product);
+  const git = (...args) => execFileSync("git", ["-C", product, ...args], { encoding: "utf8" }).trim();
+  git("init", "-q"); git("config", "user.name", "Test"); git("config", "user.email", "test@example.test");
+  const commitFiles = files => {
+    for (const [rel, body] of Object.entries(files)) {
+      mkdirSync(dirname(join(product, rel)), { recursive: true });
+      writeFileSync(join(product, rel), body);
+    }
+    git("add", "-A"); git("commit", "-qm", "c");
+    return git("rev-parse", "HEAD");
+  };
+  const sha = commitFiles({ "src/a.mjs": "export const a = 1;\n", "src/b.mjs": "export const b = 2;\n" });
+  assert.deepEqual(proseInTree(product, sha), []);
+  assert.throws(() => proseInTree(product, sha, { maxFiles: 1 }), err => err instanceof ProseBudgetExceededError && err.code === "PROSE_BUDGET_EXCEEDED" && err.deferred === true);
+  assert.throws(() => proseInTree(product, sha, { maxMs: 0 }), err => err instanceof ProseBudgetExceededError && err.code === "PROSE_BUDGET_EXCEEDED");
+  const defFiles = proseInTree(product, sha, { maxFiles: 1, deferOnBudget: true });
+  assert.equal(defFiles.deferred, true);
+  assert.match(defFiles.reason, /exceed budget/);
+  const defMs = proseInTree(product, sha, { maxMs: 0, deferOnBudget: true });
+  assert.equal(defMs.deferred, true);
+
+  assert.equal(proseCacheDir(root), null);
+  const cacheDir = proseCacheDir(product);
+  assert.ok(cacheDir);
+  t.after(() => rmSync(dirname(cacheDir), { recursive: true, force: true }));
+  const commonDir = realpathSync(git("rev-parse", "--path-format=absolute", "--git-common-dir"));
+  assert.equal(cacheDir.startsWith(commonDir), false);
+
+  const first = proseInTree(product, sha, { cache: true, deferOnBudget: true });
+  assert.deepEqual(first, { lines: [], deferred: false, reason: null, cached: false });
+  assert.equal(existsSync(join(commonDir, "self-loop-suite")), false);
+  const hit = proseInTree(product, sha, { cache: true, maxFiles: 0, maxMs: 0, deferOnBudget: true });
+  assert.deepEqual(hit, { lines: [], deferred: false, reason: null, cached: true });
+
+  const beforePending = readdirSync(cacheDir).length;
+  const pendingSha = commitFiles({ "src/p.mjs": "// Unresolved prose line\nexport const p = 1;\n" });
+  assert.throws(() => proseInTree(product, pendingSha, { cache: true }), /pending independent/);
+  assert.equal(readdirSync(cacheDir).length, beforePending);
+
+  for (let i = 0; i < 18; i++) {
+    const s = commitFiles({ "src/p.mjs": `export const p = ${i};\n` });
+    assert.deepEqual(proseInTree(product, s, { cache: true }), []);
+  }
+  assert.ok(readdirSync(cacheDir).filter(n => n.startsWith("prose-") && n.endsWith(".json")).length <= 16);
+  assert.equal(existsSync(join(commonDir, "self-loop-suite")), false);
 });

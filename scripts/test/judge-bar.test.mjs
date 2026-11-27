@@ -86,9 +86,9 @@ test("records: the round's opened keys are held only when the view holds the bar
 
 test("records: the adopting decision is the records' own (records.json blockerBar), so another product's D-0018 holds nothing", () => {
   const bad = ["**OPEN — store:R35-1.**", "The store loses a record."];
-  const exampleApp = records({ bars: ["decisions/D-0018.md"], report: bad, rows: [{ round: 35, opened: "store:R35-1" }], name: "rounds/0035-judge.md" });
-  assert.equal(findings(exampleApp).failures.length, 1, "by default the D-0018 file adopts the bar");
-  assert.deepEqual(findings(exampleApp, { config: { blockerBar: "decisions/D-0052.md" } }), { failures: [], screening: [] });
+  const appRecs = records({ bars: ["decisions/D-0018.md"], report: bad, rows: [{ round: 35, opened: "store:R35-1" }], name: "rounds/0035-judge.md" });
+  assert.equal(findings(appRecs).failures.length, 1, "by default the D-0018 file adopts the bar");
+  assert.deepEqual(findings(appRecs, { config: { blockerBar: "decisions/D-0052.md" } }), { failures: [], screening: [] });
   const adopted = records({ bars: ["decisions/D-0052.md"], report: bad, rows: [{ round: 35, opened: "store:R35-1" }], name: "rounds/0035-judge.md" });
   assert.match(findings(adopted, { config: { blockerBar: "decisions/D-0052.md" } }).failures[0], /store:R35-1.*decisions\/D-0052\.md is in its view/);
   for (const blockerBar of [7, "", "/abs/D-0052.md", "decisions/D-0052"])

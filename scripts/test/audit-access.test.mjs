@@ -4,7 +4,16 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeF
 import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { auditAccess } from "../audit-access.mjs";
+import {
+  auditAccess,
+  commandHashOf,
+  MAX_AUDIT_JSON_BYTES,
+  MAX_COMMAND_PREVIEW_CHARS,
+  MAX_ORDINARY_FLAGS,
+  MAX_PATHS_PER_COMMAND,
+  serializeBoundedAudit,
+  truncateCommandPreview,
+} from "../audit-access.mjs";
 import { fixtures, redOn, temp } from "./helpers.mjs";
 
 const FROZEN = JSON.parse(readFileSync(join(fixtures, "backtest-tool-events.json"), "utf8"));
@@ -307,4 +316,98 @@ test("Antigravity view_file_outline and view_code_item admit in-scope structured
     { name: "opaque_custom_tool", args: { Path: briefFile } },
   ]), { cwd: ws });
   assert.ok(opaque.violations.some(v => v.tool === "opaque_custom_tool" && v.path === "(tool not allowed)"));
+});
+
+test("F-0015 A1/A2: 34 KB x 1,032-path command stays bounded, preserves Tier-0 forbidden/duplicate/insufficient flags, and compacts <= 1 MiB", () => {
+  assert.equal(truncateCommandPreview("echo hi"), "echo hi");
+  const longText = "x".repeat(300);
+  assert.equal(truncateCommandPreview(longText), `${"x".repeat(MAX_COMMAND_PREVIEW_CHARS)}… [+60 chars]`);
+  assert.match(commandHashOf(longText), /^[0-9a-f]{16}$/);
+
+  const ws = temp("audit-bound-ws-");
+  const wt = join(ws, "wt");
+  const forbidden = temp("audit-bound-sealed-");
+  mkdirSync(wt, { recursive: true });
+  const sealedTarget = join(forbidden, "secret-case.mjs");
+
+  const paths = Array.from({ length: 1032 }, (_, idx) => `/outside/workspace/package-${idx}/src/file-${idx}.ts`);
+  const hugeCmd = `node -e "${paths.join(" ")} ${sealedTarget}"`;
+  assert.ok(Buffer.byteLength(hugeCmd, "utf8") > 34_000);
+
+  const res = auditAccess([ws, wt], [
+    { id: "actor", event: tool("Bash", { command: hugeCmd }) },
+  ], { tools: null, forbidden: [forbidden], cwd: wt });
+
+  const ordinary = res.flags.filter(f => !f.forbidden);
+  const tier0 = res.flags.filter(f => f.forbidden === true);
+  assert.equal(ordinary.length, MAX_PATHS_PER_COMMAND);
+  assert.equal(tier0.length, 1);
+  assert.equal(tier0[0].path, sealedTarget);
+  assert.equal(ordinary.at(-1).extraPathCount, 1032 - MAX_PATHS_PER_COMMAND);
+  assert.equal(res.omittedFlags, 1032 - MAX_PATHS_PER_COMMAND);
+  assert.equal(Object.hasOwn(res.flags, "overflowCount"), false);
+  assert.equal(ordinary[0].command, truncateCommandPreview(hugeCmd));
+  assert.equal(ordinary[0].commandHash, commandHashOf(hugeCmd));
+  assert.equal(ordinary[0].commandBytes, Buffer.byteLength(hugeCmd, "utf8"));
+
+  const serialized = serializeBoundedAudit({ id: "R-0062-actor", role: "actor", attempt: 1, exit: 0, nonce: "abc123", agent: { runner: "paseo" }, ...res });
+  assert.ok(Buffer.byteLength(serialized, "utf8") < 32_768);
+  const parsed = JSON.parse(serialized);
+  assert.equal(parsed.flags[0].forbidden, true);
+  assert.equal(parsed.nonce, "abc123");
+  assert.equal(parsed.omittedFlags, 1032 - MAX_PATHS_PER_COMMAND);
+
+  const floodEvents = [];
+  for (let c = 0; c < 20; c++) {
+    const chunk = Array.from({ length: 16 }, (_, k) => `/flood/c${c}/f${k}.txt`).join(" ");
+    floodEvents.push({ id: "actor", event: tool("Bash", { command: `echo ${chunk}` }) });
+  }
+  floodEvents.push({ id: "actor", event: tool("Bash", { command: "node --test" }) });
+  floodEvents.push({ id: "actor", event: tool("Bash", { command: `cat ${sealedTarget}` }) });
+  floodEvents.push({ id: "actor", event: { type: "unparsed_tool_call" } });
+
+  const flooded = auditAccess([ws, wt], floodEvents, { tools: null, forbidden: [forbidden], cwd: wt, stagedSuiteCommand: "node --test" });
+  assert.equal(flooded.flags.filter(f => !f.forbidden && f.path !== "(duplicate suite run)" && f.path !== "(insufficient evidence)").length, MAX_ORDINARY_FLAGS);
+  assert.equal(flooded.omittedFlags, 320 - MAX_ORDINARY_FLAGS);
+  assert.ok(flooded.flags.some(f => f.forbidden === true && f.path === sealedTarget));
+  const dupFlag = flooded.flags.find(f => f.path === "(duplicate suite run)");
+  assert.ok(dupFlag);
+  assert.equal(flooded.duplicateSuiteRuns[0], dupFlag);
+  assert.ok(flooded.flags.some(f => f.path === "(insufficient evidence)"));
+
+  const shortRes = auditAccess([ws, wt], [
+    { id: "actor", event: tool("Bash", { command: "cat /outside/one.txt" }) },
+  ], { tools: null, forbidden: [forbidden], cwd: wt });
+  assert.deepEqual(shortRes.flags, [{ id: "actor", command: "cat /outside/one.txt", path: "/outside/one.txt" }]);
+  assert.equal("omittedFlags" in shortRes, false);
+
+  const giantAudit = {
+    id: "R-0062-actor", role: "actor", attempt: 1, exit: 0, nonce: "n-1",
+    agent: { runner: "paseo", model: "gemini-2.5-flash" },
+    unrecognized: 0, unparsedCalls: 0, toolEvents: 5, omittedFlags: 900, excludedOutCount: 120,
+    violations: [], denied: [], duplicateSuiteRuns: [],
+    excludedOutPaths: Array.from({ length: 100 }, (_, i) => `out/cache/file-${i}.bin`),
+    flags: [
+      ...Array.from({ length: 120 }, (_, i) => ({ id: "actor", command: "a".repeat(20_000), path: `/outside/p-${i}.txt` })),
+      { id: "actor", command: `cat ${sealedTarget}`, path: sealedTarget, forbidden: true },
+    ],
+  };
+  const compact1m = serializeBoundedAudit(giantAudit, MAX_AUDIT_JSON_BYTES);
+  assert.ok(compact1m.endsWith("\n"));
+  assert.ok(Buffer.byteLength(compact1m, "utf8") <= MAX_AUDIT_JSON_BYTES);
+  const parsed1m = JSON.parse(compact1m);
+  assert.equal(parsed1m.id, "R-0062-actor");
+  assert.equal(parsed1m.nonce, "n-1");
+  assert.equal(parsed1m.excludedOutCount, 120);
+  assert.equal(parsed1m.truncated, true);
+  assert.deepEqual(parsed1m.truncatedCounts, { violations: 0, denied: 0, flags: 121, duplicateSuiteRuns: 0 });
+  assert.equal(parsed1m.flags[0].forbidden, true);
+  assert.equal(parsed1m.flags[0].path, sealedTarget);
+
+  const tight = serializeBoundedAudit(giantAudit, 2048);
+  assert.ok(Buffer.byteLength(tight, "utf8") <= 2048);
+  const parsedTight = JSON.parse(tight);
+  assert.equal(parsedTight.id, "R-0062-actor");
+  assert.equal(parsedTight.truncated, true);
+  assert.equal(parsedTight.flags[0].forbidden, true);
 });

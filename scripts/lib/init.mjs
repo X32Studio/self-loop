@@ -1,7 +1,8 @@
-// F-0003, F-0009, D-0010, D-0052, D-0065, D-0066, D-0067, D-0068, R-0033-judge-hooks
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+// F-0003, F-0009, F-0015, D-0010, D-0052, D-0065, D-0066, D-0067, D-0068, D-0069, R-0033-judge-hooks, R-0055-judge-frame-alphax
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { check } from "../records-check.mjs";
 import { UsageError } from "./args.mjs";
 import { ensureExcludeEntry, ensureGitignoreEntry, gitIgnoreTarget, gitTopLevel, isGitIgnored, isPathTracked } from "./git-exclude.mjs";
@@ -13,6 +14,35 @@ import { validateJudgeIndependence } from "./vendor.mjs";
 
 export const RECORDS_EXCLUDE_MARKER = "# self-loop managed: in-repo records";
 export const DEFAULT_WORKING_BRANCH = "loop/v1";
+
+const SKILL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+const RECORDS_PRE_COMMIT_HOOK = `#!/bin/sh
+set -eu
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+CFG_HOME="$(git config --get self-loop.home 2>/dev/null || true)"
+for c in "\${SELF_LOOP_HOME:-}/scripts/records-check.mjs" "\${CFG_HOME:-}/scripts/records-check.mjs" "$REPO_ROOT/../scripts/records-check.mjs" "$REPO_ROOT/../../scripts/records-check.mjs" "\${HOME:-}/.agents/skills/self-loop/scripts/records-check.mjs"; do
+  [ -f "$c" ] && exec node "$c" --repo "$REPO_ROOT" --staged
+done
+echo "self-loop pre-commit: cannot locate scripts/records-check.mjs (set SELF_LOOP_HOME)" >&2
+exit 2
+`;
+
+export function installRecordsPreCommitHook(recordsDir) {
+  const dir = resolve(recordsDir), hookDir = join(dir, ".githooks"), hookPath = join(hookDir, "pre-commit");
+  let changed = false;
+  mkdirSync(hookDir, { recursive: true });
+  const existing = existsSync(hookPath) ? readFileSync(hookPath, "utf8") : null;
+  if (existing !== RECORDS_PRE_COMMIT_HOOK) { writeFileSync(hookPath, RECORDS_PRE_COMMIT_HOOK, { mode: 0o755 }); chmodSync(hookPath, 0o755); changed = true; }
+  else if ((statSync(hookPath).mode & 0o111) !== 0o111) { chmodSync(hookPath, 0o755); changed = true; }
+  let cur = "";
+  try { cur = git(dir, "config", "--local", "--get", "core.hooksPath"); } catch {}
+  if (cur !== ".githooks") { git(dir, "config", "core.hooksPath", ".githooks"); changed = true; }
+  let curHome = "";
+  try { curHome = git(dir, "config", "--local", "--get", "self-loop.home"); } catch {}
+  if (curHome !== SKILL_ROOT) { git(dir, "config", "self-loop.home", SKILL_ROOT); changed = true; }
+  return { hookPath, changed };
+}
 
 const ANTIGRAVITY_MODEL_ROLES = Object.freeze({
   critic: Object.freeze({ model: "gemini-2.5-pro", effort: "xhigh" }),
@@ -396,8 +426,9 @@ export function initLoop({
     writeFileSync(join(recordsDir, "records.json"), `${JSON.stringify(recordsCfg, null, 2)}\n`);
     writeFileSync(join(recordsDir, LOOP), `${JSON.stringify(loopCfg, null, 2)}\n`);
     writeFileSync(join(recordsDir, ".gitignore"), recordsIgnore);
+    installRecordsPreCommitHook(recordsDir);
 
-    const initialFiles = ["README.md", "records.json", LOOP, ".gitignore"];
+    const initialFiles = ["README.md", "records.json", LOOP, ".gitignore", ".githooks/pre-commit"];
     git(recordsDir, "add", "--", ...initialFiles);
     const checked = check(recordsDir, { config: recordsCfg, write: true });
     if (checked.failures.length) {

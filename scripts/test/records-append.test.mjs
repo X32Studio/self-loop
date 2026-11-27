@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { recordCall } from "../call.mjs";
+import { commitRecords } from "../lib/records-commit.mjs";
 import { appendWords, committedWords, MARKS, WORDS } from "../lib/owner-words.mjs";
 import { createHash } from "node:crypto";
 import { wordId } from "../lib/owner-words.mjs";
@@ -21,7 +22,6 @@ const ownerCli = (records, args, input) => spawnSync(process.execPath, [
 ], { encoding: "utf8", input, env: { ...process.env, T3CODE_THREAD_ID: "" } });
 const markArgs = word => ["mark", "--id", word.id, "--as", "routine", "--note", "fixture"];
 
-// Interpose a single real Git operation and write a receipt that proves the second writer actually ran.
 function interpose(t, predicate, action, { after = false } = {}) {
   const original = process.env.PATH;
   const real = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
@@ -167,4 +167,35 @@ test("B02: an unrelated ref move at publication is retried before releasing the 
   assert.equal(git(s.records, "log", "-2", "--format=%s").split("\n")[1], "concurrent records commit");
   assert.equal(git(s.product, "show", "loop/s5:src/a.js"), "export const a = 2;");
   assert.equal(existsSync(p.wt), false);
+});
+
+test("F-0015: commitRecords supports bulk -z remove(path) without ARG_MAX or restore errors and rejects invalid path chars", () => {
+  const seed = { "README.md": "# records\n", "evidence/0001/keep.txt": "keep\n" };
+  const toRemove = [];
+  for (let i = 0; i < 600; i++) {
+    const rel = `evidence/0001/bulk-${String(i).padStart(4, "0")}/artifact.txt`;
+    seed[rel] = `payload-${i}\n`;
+    toRemove.push(rel);
+  }
+  const records = repo(seed);
+
+  for (const bad of ['"evidence', "evidence/a\nb.txt", "evidence/a\x00b.txt", " leading.md", "trailing.md ", "/abs.md", "../escape.md"]) {
+    assert.throws(() => commitRecords(records, ctx => {
+      ctx.add(bad, "x\n");
+      return { message: "bad", value: null };
+    }), /invalid records path/);
+  }
+
+  const res = commitRecords(records, ctx => {
+    for (const p of toRemove) ctx.remove(p);
+    ctx.add("prune/PR-0001.md", "# PR-0001 Bulk test\n");
+    return { message: "prune bulk", value: toRemove.length };
+  });
+  assert.equal(res.value, 600);
+  assert.equal(git(records, "status", "--porcelain"), "");
+  assert.equal(existsSync(join(records, "prune/PR-0001.md")), true);
+  assert.equal(existsSync(join(records, "evidence/0001/keep.txt")), true);
+  assert.equal(existsSync(join(records, toRemove[0])), false);
+  assert.equal(existsSync(join(records, toRemove[599])), false);
+  assert.equal(existsSync(join(records, "evidence/0001/bulk-0000")), false);
 });

@@ -27,12 +27,14 @@ import {
   canonicalProvider,
   isAdapter,
   isAntigravityProvider,
+  isChatHistorySummaryEnvelope,
   isPaseoFramed,
   isPaseoSystemEnvelope,
   isPreparedRunner,
   PASEO_MCP_TOOL_PREFIX,
   PREPARED_RUNNERS,
   resolveAdapter,
+  stripChatHistorySummary,
   unescapePaseoXml,
   unwrapPaseoAgentMessage,
 } from "../lib/paseo.mjs";
@@ -495,4 +497,35 @@ test("D-0068: ADAPTERS, resolveAdapter, and generic transcript recording support
     { type: "error", message: "boom" },
   ].map(r => JSON.stringify(r)).join("\n") + "\n");
   assert.equal(transcriptEvents("R-0053-actor", { runner: "opencode", file: failedFile }).status, "failed");
+});
+
+test("F-0015: stripChatHistorySummary strips index-0 summary blocks, rejects envelopes, and preserves human prose", () => {
+  const pure = "<chat-history-summary>\nPrevious turns summary.\n</chat-history-summary>";
+  const withAttr = '  <chat-history-summary version="1">\nSummary.\n</chat-history-summary>\n\n';
+  const withPaseo = `${pure}\n<paseo-system version="1" kind="agent-notification">\nDone.\n</paseo-system>`;
+  const withHuman = `${pure}\n\nPlease tighten the batch mark contract.`;
+  for (const env of [pure, withAttr, withPaseo]) {
+    assert.equal(isChatHistorySummaryEnvelope(env), true, env);
+    assert.equal(ownerPrompt(env), null, env);
+    assert.equal(captureOwnerText(env), null, env);
+    assert.equal(isSubstantiveOwnerWord(env), false, env);
+  }
+  assert.equal(stripChatHistorySummary(withHuman), "Please tighten the batch mark contract.");
+  assert.deepEqual(ownerPrompt(withHuman), { text: "Please tighten the batch mark contract." });
+  assert.equal(captureOwnerText(withHuman), "Please tighten the batch mark contract.");
+  assert.equal(isSubstantiveOwnerWord(withHuman), true);
+  assert.equal(isChatHistorySummaryEnvelope(withHuman), false);
+
+  for (const keep of [
+    "Filter <chat-history-summary>blocks</chat-history-summary> when empty.",
+    "<chat-history-summary>unclosed summary text",
+    "<chat-history-summary>outer <chat-history-summary>inner</chat-history-summary> tail</chat-history-summary>",
+    "<chat-history-summary-extra>keep</chat-history-summary-extra>",
+  ]) {
+    assert.equal(stripChatHistorySummary(keep), keep, keep);
+    assert.equal(isChatHistorySummaryEnvelope(keep), false, keep);
+    assert.deepEqual(ownerPrompt(keep), { text: keep }, keep);
+    assert.equal(isSubstantiveOwnerWord(keep), true, keep);
+  }
+  assert.equal(stripChatHistorySummary(null), "");
 });

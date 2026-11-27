@@ -129,3 +129,5 @@ Keep live installations strictly separated from development clones:
    ```
 4. **Upgrading across hosts**: Fetch tags on each host, move its detached release worktree to the new plain tag (`git -C /path/to/self-loop-release checkout --detach v0.6.1`), and re-run `hooks check` (and `heartbeat install` if paths changed).
 5. **Rolling back cleanly**: Move the affected host's detached release worktree back to the previous plain tag (`git -C /path/to/self-loop-release checkout --detach v0.6.0`) and re-verify hooks. **Never delete or force-move published remote `v*` tags, and never rewind your records repository's append-only ledgers (`owner/words.jsonl`, `metrics/trajectory.jsonl`, `metrics/handoffs.jsonl`).**
+
+> **Note on candidate supervised incremental release:** [`design/scoped-release.md`](../design/scoped-release.md) and [`scripts/scoped-release.mjs`](../scripts/scoped-release.mjs) define an experimental candidate contract for single-authority scoped incremental releases alongside—never replacing—the standard whole-phase `CONVERGED` release workflow described above.

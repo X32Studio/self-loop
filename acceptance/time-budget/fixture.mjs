@@ -28,7 +28,7 @@ export function fixture(t, { deadline = 24, packages, timed = true } = {}) {
   put('metrics/windows.jsonl',JSON.stringify({type:'open',id:'W-0001',phase:'tb',startRound:1,horizon:12,goal:'time-budget fixture',invariants:['acceptance passes'],openedAt:h(0),openedBy:'lead'})+'\n');
   put('records.json',json({extraKinds:[{kind:'Plan',path:'plans/PL-NNNN.md',changes:'immutable',citedAs:'PL-NNNN'},{kind:'Forecast observation',path:'forecasts/FO-<digest>.json',changes:'immutable',settlesOwnerWords:false},{kind:'Continuation delivery',path:'metrics/continuations.jsonl',changes:'append-only',settlesOwnerWords:false},{kind:'Delegation',path:'delegations/T-NNNN.md',changes:'append-only'}]}));
   put('loop.json',json({product:records,records,workDir:work,phase:'tb',briefs:{},agents:{actor:{runner:'t3',provider:'codex',model:'fixture',effort:'high'}},branch:'main',setup:[]}));
-  writeFileSync(join(store,'products.json'),json({roots:[],products:[{name:'tb',records}]}));
+  writeFileSync(join(store,'products.json'),json({roots:[],maxLoadRatio:1e9,minAvailableMemoryGB:0,products:[{name:'tb',records}]}));
   commit('Authority');
   const ref = (path, revision = git('rev-parse','HEAD')) => ({repository:records,commit:revision,path,sha256:digest(execFileSync('git',['-C',records,'show',`${revision}:${path}`],{env}))});
   const authority = ref('decisions/D-0001.md'), criteria = ref('purpose/P-0001.md');

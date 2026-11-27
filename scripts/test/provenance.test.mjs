@@ -18,7 +18,7 @@ import { git, repo, scripts, skill, temp } from "./helpers.mjs";
 
 const CLAUDE = { runner: "t3:claude", model: "claude-opus-4-6", observedModel: "claude-opus-4-6", observedModels: ["claude-opus-4-6"] };
 const CODEX = { runner: "t3:codex", model: "gpt-5.4", observedModel: "gpt-5.4", observedModels: ["gpt-5.4"] };
-const CLAUDE_ALT = { runner: "t3:claude", model: "claude-haiku-5-5", observedModel: "claude-haiku-5-5", observedModels: ["claude-haiku-5-5"] };
+const CLAUDE_ALT = { runner: "t3:claude", model: "claude-haiku-4-5", observedModel: "claude-haiku-4-5", observedModels: ["claude-haiku-4-5"] };
 const pad = n => String(n).padStart(4, "0");
 
 function writeFile(root, rel, content) {
@@ -301,7 +301,7 @@ test(".githooks/pre-push preserves stdin for both provenance and D-0004 version-
 
 test("evaluateCertifiedWaveCoverage authenticates historical loop.json, fails closed on corruption/mid-round transitions, and walks lead-only tips", () => {
   const ag = m => ({ runner: "t3:antigravity", model: m, observedModel: m, observedModels: [m] });
-  const liteModel = ag("gemini-2.5-flash-lite-high"), flash = ag("gemini-2.5-flash-high");
+  const pro = ag("gemini-2.5-pro"), flash = ag("gemini-2.5-flash");
   const codexNoObs = { runner: "codex", model: "gpt-5.4", observedModel: null };
 
   const makeHistory = ({ corruptWave1 = null, midRoundSwitch = false } = {}) => {
@@ -320,7 +320,7 @@ test("evaluateCertifiedWaveCoverage authenticates historical loop.json, fails cl
       const prev = readFileSync(join(records, "metrics/trajectory.jsonl"), "utf8");
       commitFile(records, "metrics/trajectory.jsonl", prev + JSON.stringify({ round, phase: "v1", role: "judge", area: "policy", verdict: "CONVERGED", commit, suite: "1/0", ci: "success", time: "2026-11-26T00:00:00Z" }) + "\n", `row ${round}`);
     };
-    recordHandoff({ round: 1, role: "actor", step: "actor-a", base: baseline, commit: w1, plan: "PL-0001", agent: liteModel });
+    recordHandoff({ round: 1, role: "actor", step: "actor-a", base: baseline, commit: w1, plan: "PL-0001", agent: pro });
     const viewBefore = git(records, "rev-parse", "HEAD");
     if (corruptWave1 === "json") commitFile(records, "loop.json", "{corrupt", "corrupt loop");
     else if (corruptWave1 === "invalid-policy") writeLoop("bogus");
@@ -336,7 +336,7 @@ test("evaluateCertifiedWaveCoverage authenticates historical loop.json, fails cl
     appendRow(1, w1);
     if (!midRoundSwitch) writeLoop("model");
     recordHandoff({ round: 2, role: "actor", step: "actor-b", base: w1, commit: w2, plan: "PL-0002", agent: flash });
-    recordHandoff({ round: 2, role: "judge", step: "judge-b", base: w2, commit: w2, plan: "PL-0002", agent: liteModel });
+    recordHandoff({ round: 2, role: "judge", step: "judge-b", base: w2, commit: w2, plan: "PL-0002", agent: pro });
     appendRow(2, w2);
     const allHandoffs = readFileSync(join(records, "metrics/handoffs.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l));
     const judge2 = allHandoffs.find(h => h.id === "R-0002-judge-b");
@@ -366,7 +366,7 @@ test("evaluateCertifiedWaveCoverage authenticates historical loop.json, fails cl
 
 test("effectiveJudgedCommit preserves attested leadPaths targets, strips unattested lead suffixes, ignores read-only tip handoffs, and refuses unjudged doc waves", () => {
   const ag = m => ({ runner: "t3:antigravity", model: m, observedModel: m, observedModels: [m] });
-  const flash = ag("gemini-2.5-flash-high"), liteModel = ag("gemini-2.5-flash-lite-high");
+  const flash = ag("gemini-2.5-flash"), pro = ag("gemini-2.5-pro");
   const { product, records, baseline, recordHandoff } = makeFixture();
   const baseLoop = JSON.parse(readFileSync(join(records, "loop.json"), "utf8"));
   commitFile(records, "loop.json", JSON.stringify({ ...baseLoop, judgeIndependence: "model" }, null, 2) + "\n", "enable model policy");
@@ -380,7 +380,7 @@ test("effectiveJudgedCommit preserves attested leadPaths targets, strips unattes
   const doc1 = commitFile(product, "docs/guide.md", "# Guide v1\n", "Actor doc wave 1");
   recordHandoff({ round: 1, role: "actor", step: "actor-doc-a", base: baseline, commit: doc1, plan: "PL-0001", agent: flash });
   recordHandoff({ round: 1, role: "critic", step: "critic-doc-a", base: doc1, commit: doc1, plan: "PL-0001", agent: CODEX });
-  recordHandoff({ round: 1, role: "judge", step: "judge-doc-a", base: doc1, commit: doc1, plan: "PL-0001", agent: liteModel });
+  recordHandoff({ round: 1, role: "judge", step: "judge-doc-a", base: doc1, commit: doc1, plan: "PL-0001", agent: pro });
   const tip1 = commitFile(product, "VERSION", "0.0.2\n", "Lead VERSION bump 1");
   appendRow(1, doc1, tip1);
   const j1 = handoffById("R-0001-judge-doc-a");
@@ -415,7 +415,7 @@ test("effectiveJudgedCommit preserves attested leadPaths targets, strips unattes
   assert.equal(verifyWaveGate({ repo: product, records, sha: criticDoc, branch: "main" }).ok, false);
 
   const doc2 = commitFile(product, "docs/guide.md", "# Guide v2\n", "Actor doc wave 2");
-  recordHandoff({ round: 2, role: "actor", step: "actor-doc-b", base: criticDoc, commit: doc2, plan: "PL-0002", agent: liteModel });
+  recordHandoff({ round: 2, role: "actor", step: "actor-doc-b", base: criticDoc, commit: doc2, plan: "PL-0002", agent: pro });
   const tip2 = commitFile(product, "VERSION", "0.0.3\n", "Lead VERSION bump 2");
   const covDoc2Unjudged = evaluateCertifiedWaveCoverage({ repo: product, records, targetCommit: tip2, evaluateJudge: false });
   assert.equal(covDoc2Unjudged.judgedCommit, doc2);
@@ -468,7 +468,7 @@ test("provenance.mjs and window.mjs form a strict acyclic DAG via window-state.m
 test("D-0064 T10: verifyProvenance and verifyWaveGate accept independent no-dispute critic without judge, retire critic-certified prior waves, and fail closed on violations", () => {
   const ag = (m, session = null) => ({ runner: "t3:antigravity", model: m, observedModel: m, observedModels: [m], ...(session ? { session } : {}) });
   const flash = ag("gemini-2.5-flash", "sess-flash");
-  const proModel = ag("gemini-2.5-pro", "sess-pro");
+  const pro = ag("gemini-2.5-pro", "sess-pro");
 
   const setup = ({ policy = "model" } = {}) => {
     const fx = makeFixture();
@@ -500,7 +500,7 @@ test("D-0064 T10: verifyProvenance and verifyWaveGate accept independent no-disp
   const ok = setup({ policy: "model" });
   const w1 = commitFile(ok.product, "scripts/w1.mjs", "export const w1 = 1;\n");
   ok.recordHandoff({ round: 1, role: "actor", step: "actor-a", base: ok.baseline, commit: w1, plan: "PL-0001", agent: flash });
-  ok.recordCritic({ round: 1, step: "critic-a", base: w1, commit: w1, plan: "PL-0001", agent: proModel, report: "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: -\nOPENED: -" });
+  ok.recordCritic({ round: 1, step: "critic-a", base: w1, commit: w1, plan: "PL-0001", agent: pro, report: "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: -\nOPENED: -" });
   assert.equal(verifyProvenance({ repo: ok.product, records: ok.records, sha: w1, branch: "main" }).ok, true);
   assert.equal(verifyWaveGate({ repo: ok.product, records: ok.records, sha: w1, branch: "loop/v1" }).ok, true);
 
@@ -508,7 +508,7 @@ test("D-0064 T10: verifyProvenance and verifyWaveGate accept independent no-disp
   assert.equal(verifyProvenance({ repo: ok.product, records: ok.records, sha: tip1, branch: "main" }).ok, true);
 
   const w2 = commitFile(ok.product, "scripts/w2.mjs", "export const w2 = 2;\n");
-  ok.recordHandoff({ round: 2, role: "actor", step: "actor-b", base: tip1, commit: w2, plan: "PL-0002", agent: proModel });
+  ok.recordHandoff({ round: 2, role: "actor", step: "actor-b", base: tip1, commit: w2, plan: "PL-0002", agent: pro });
   const w2Test = commitFile(ok.product, "acceptance/w2.test.mjs", "import test from 'node:test';\ntest('w2', () => {});\n");
   ok.recordCritic({ round: 2, step: "critic-b", base: w2, commit: w2Test, plan: "PL-0002", agent: flash, report: "VERDICT: CONVERGED\nACCEPTANCE: pass\nDISPUTES: none", sealed: false });
   const cov2 = evaluateCertifiedWaveCoverage({ repo: ok.product, records: ok.records, targetCommit: w2Test, evaluateJudge: false });
@@ -523,14 +523,14 @@ test("D-0064 T10: verifyProvenance and verifyWaveGate accept independent no-disp
 
   for (const [label, policy, criticAgent, report, traj] of [
     ["same-model", "model", ag("gemini-2.5-flash", "sess-other"), "VERDICT: PASS\nACCEPTANCE: pass", null],
-    ["same-vendor", "vendor", proModel, "VERDICT: PASS\nACCEPTANCE: pass", null],
+    ["same-vendor", "vendor", pro, "VERDICT: PASS\nACCEPTANCE: pass", null],
     ["shared-session", "model", ag("gemini-2.5-pro", "sess-flash"), "VERDICT: PASS\nACCEPTANCE: pass", null],
-    ["disputed", "model", proModel, "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: actor challenges case", null],
-    ["opened", "model", proModel, "VERDICT: PASS\nACCEPTANCE: pass\nOPENED: gate:R1-1", null],
-    ["continue", "model", proModel, "VERDICT: CONTINUE\nACCEPTANCE: pass", null],
-    ["fail-acceptance", "model", proModel, "VERDICT: PASS\nACCEPTANCE: fail", null],
-    ["narrative-only", "model", proModel, "No issues found.", null],
-    ["trajectory-contradicted", "model", proModel, "VERDICT: PASS\nACCEPTANCE: pass", "CONTINUE"],
+    ["disputed", "model", pro, "VERDICT: PASS\nACCEPTANCE: pass\nDISPUTES: actor challenges case", null],
+    ["opened", "model", pro, "VERDICT: PASS\nACCEPTANCE: pass\nOPENED: gate:R1-1", null],
+    ["continue", "model", pro, "VERDICT: CONTINUE\nACCEPTANCE: pass", null],
+    ["fail-acceptance", "model", pro, "VERDICT: PASS\nACCEPTANCE: fail", null],
+    ["narrative-only", "model", pro, "No issues found.", null],
+    ["trajectory-contradicted", "model", pro, "VERDICT: PASS\nACCEPTANCE: pass", "CONTINUE"],
   ]) {
     const fx = setup({ policy });
     const a1 = commitFile(fx.product, "scripts/x.mjs", "export const x = 1;\n");

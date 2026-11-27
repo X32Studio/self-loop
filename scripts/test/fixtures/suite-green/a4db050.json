@@ -1,5 +1,5 @@
 {
- "repository": "/work/self-loop",
+ "repository": "/Users/alice/.agents/skills/self-loop",
  "sha": "a4db05069494875d02fb99c0a68e605ec1b2863f",
  "command": "node --test scripts/test",
  "install": null,
@@ -17,7 +17,7 @@
  "green": true,
  "reasons": [],
  "log": {
-  "sha256": "ed651af284fccec4f59da3d6389bd8c47aa46a80e425210d4225ee1d745ce0ba",
-  "bytes": 7505
+  "sha256": "4373bea718035da3687570caa31b6a916ad3511c567d0f28169e09b44a960110",
+  "bytes": 7509
  }
 }

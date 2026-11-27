@@ -163,7 +163,7 @@ function setupWorld(t, opts = {}) {
   git(product, env, "checkout", "-q", "loop/v1");
 
   const t3Codex = { runner: "t3", provider: "codex", model: "gpt-5.4" };
-  const t3Claude = { runner: "t3", provider: "claude", model: "claude-haiku-5-5" };
+  const t3Claude = { runner: "t3", provider: "claude", model: "claude-haiku-4-5" };
   const t3Reviewer = { runner: "t3", provider: "claude", model: "claude-sonnet-4-6" };
   const agents = opts.agents ?? { critic: t3Codex, actor: t3Codex, judge: t3Claude, reviewer: t3Reviewer };
 
@@ -239,7 +239,7 @@ function writeCodexTranscript(codexHome, ws, sid, prompt, cwd, commands = []) {
   return file;
 }
 
-function writeClaudeTranscript(claudeDir, ws, sid, prompt, cwd, model = "claude-haiku-5-5") {
+function writeClaudeTranscript(claudeDir, ws, sid, prompt, cwd, model = "claude-haiku-4-5") {
   const { preparedAt } = JSON.parse(readFileSync(join(ws, "call.json"), "utf8"));
   const ts = new Date(preparedAt + 1000).toISOString();
   const dir = join(claudeDir, "projects", "mcp-project");
@@ -784,7 +784,7 @@ test("MCP-07 (D-0060): delta-scoped T3 blocks only hotspot packages when arch re
     agents: {
       critic: { runner: "t3", provider: "codex", model: "gpt-5.4" },
       actor: { runner: "t3", provider: "codex", model: "gpt-5.4" },
-      judge: { runner: "t3", provider: "claude", model: "claude-haiku-5-5" },
+      judge: { runner: "t3", provider: "claude", model: "claude-haiku-4-5" },
       reviewer: { runner: "t3", provider: "claude", model: "claude-sonnet-4-6" },
     },
     productFiles: {

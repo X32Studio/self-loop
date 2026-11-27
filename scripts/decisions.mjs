@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// D-0015, D-0031, design/replaced-batches.md#the-record, design/generative-engine-c.md#the-batch
+// D-0015, D-0031, F-0015, I-0005, design/replaced-batches.md#the-record, design/generative-engine-c.md#the-batch
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
+import { HANDOFFS } from "./lib/handoff.mjs";
 
 const text = v => typeof v === "string" && v.trim().length > 0;
 const norm = s => s.toLowerCase().replace(/\s+/g, " ").trim();
@@ -13,6 +14,7 @@ export const ANSWERS = "owner/answers.jsonl";
 export const INTENT = "intent";
 export const INTENT_BATCHES_PER_REQUIREMENT = 2;
 export const OUTCOMES = ["as-recommended", "amended", "other"];
+export const ROLE_SENDER_RE = /^R-\d{4}-(?:reviewer|judge)(?:-[a-z0-9-]+)*$/;
 const REQUIREMENT = /^P-\d{4}$/;
 const USAGE = "decisions.mjs validate <decisions.json> | send --records R --file F --phase P --from R-NNNN-role"
   + ` | answer --records R --batch B-NNNN --words "<the owner's words>" [--outcome ${OUTCOMES.join("|")}]`
@@ -181,10 +183,24 @@ export const batchState = b => (b.answers.length ? "answered" : b.replacedBy ? `
 export const intentBatches = (all, phase, requirement) =>
   all.filter(b => b.phase === line(phase) && b.kind === INTENT && b.requirement === requirement).map(b => b.id);
 
+function senderHandoffMissing(records, sender) {
+  const file = join(records, HANDOFFS);
+  if (!existsSync(file)) return false;
+  for (const row of readFileSync(file, "utf8").split("\n")) {
+    if (!row.trim()) continue;
+    try { if (JSON.parse(row)?.id === sender) return false; } catch {}
+  }
+  return true;
+}
+
 export function send(records, raw, { phase, from }) {
   const checked = raw?.invalid ? { questions: [], errors: [raw.invalid] } : validate(raw);
   if (checked.errors.length) return { errors: checked.errors };
   const { questions, kind, requirement } = checked;
+  const sender = typeof from === "string" ? line(from) : "";
+  const roleSender = ROLE_SENDER_RE.test(sender);
+  if (kind === INTENT && !roleSender)
+    return { errors: [], refused: `intent batch requires --from matching R-NNNN-(reviewer|judge)* (got ${JSON.stringify(sender)}); consult the Generation Engine before escalating to the owner` };
   const all = batches(records);
   const earlier = kind === INTENT ? intentBatches(all, phase, requirement) : [];
   if (earlier.length >= INTENT_BATCHES_PER_REQUIREMENT)
@@ -192,10 +208,15 @@ export function send(records, raw, { phase, from }) {
   const id = `B-${String(Math.max(0, ...all.map(b => Number(b.id.slice(2)))) + 1).padStart(4, "0")}`;
   const asked = new Set(all.filter(b => b.phase === line(phase)).flatMap(b => b.questions.map(norm)));
   const repeats = questions.filter(q => asked.has(norm(q.question))).map(q => q.question);
+  const senderScreening = !roleSender
+    ? [`--from ${JSON.stringify(sender)} does not match a reviewer/judge hand-off (R-NNNN-(reviewer|judge)*); consult the Generation Engine before escalating to the owner`]
+    : senderHandoffMissing(records, sender)
+      ? [`--from ${sender} has no recorded hand-off in ${HANDOFFS}`]
+      : [];
   mkdirSync(join(records, "owner"), { recursive: true });
   writeFileSync(join(records, "owner", `${id}.md`), render(id, { phase, from, questions, kind, requirement, ordinal: earlier.length + 1 }));
   const intent = kind === INTENT ? { requirement, earlier, recorded: existsSync(join(records, "purpose", `${requirement}.md`)) } : null;
-  return { errors: [], id, file: `owner/${id}.md`, repeats, intent };
+  return { errors: [], id, file: `owner/${id}.md`, repeats, intent, senderScreening };
 }
 
 export function answer(records, id, words, now = new Date(), { outcome } = {}) {
@@ -251,6 +272,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) cli(() => {
       console.error(`refused: ${r.refused}; nothing written`);
       return 2;
     }
+    for (const s of r.senderScreening ?? []) console.error(`screening: ${s}`);
     for (const q of r.repeats) console.log(`screening: already asked in phase ${args.phase}: ${q}`);
     if (r.intent?.earlier.length) console.log(`screening: follow-up intent batch for ${r.intent.requirement} after ${r.intent.earlier.join(", ")}; no further intent batch for it in phase ${args.phase}`);
     if (r.intent && !r.intent.recorded) console.log(`screening: ${r.intent.requirement} has no record purpose/${r.intent.requirement}.md in the records`);

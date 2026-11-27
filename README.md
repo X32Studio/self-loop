@@ -1,95 +1,64 @@
 <div align="center">
 
-<img src="assets/social-preview.jpg" alt="self-loop — Autonomous Delivery Protocol by X32 Studio" width="100%" />
+<img src="assets/social-preview.jpg" alt="self-loop — Deterministic Delivery Control Plane for Coding-Agent Swarms" width="100%" />
 
 # self-loop
 
-### Turn a chaotic agent mob into a trustworthy delivery organization — so you can drink coffee at a street-side café while they ship.
+### The deterministic delivery control plane for coding-agent swarms.
+
+**AI coding doesn't fail on intelligence — it fails on verification, organization, and long-horizon entropy.**
+`self-loop` turns any coding agent (Claude Code, Codex, Antigravity, Paseo, T3) into a parallel, self-verifying delivery organization backed by zero-dependency Git & CLI truth gates — spending human attention only on decisions only a human can make.
 
 <p>
-  <a href="README.zh-CN.md">中文</a> · <b>English</b> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/METHODOLOGY.md">Methodology</a> · <a href="SKILL.md">Skill Spec</a>
+  <b>English</b> · <a href="README.zh-CN.md">中文</a> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/architecture.md">Architecture</a> · <a href="docs/METHODOLOGY.md">Methodology</a> · <a href="SKILL.md">Skill Spec</a>
 </p>
 
-<sub>By <a href="https://x32studio.com">X32 Studio</a> · MIT Licensed · v0.9.6</sub>
+<sub>By <a href="https://x32studio.com">X32 Studio</a> · MIT Licensed · Zero Dependencies (Node.js &gt;= 22 + Git) · v0.9.8</sub>
 
 </div>
 
 ---
 
-> **In the AI era, compute is cheap and agent instances are infinite. Human attention is your scarcest resource — and your real bottleneck.**
->
-> How well you govern your agent swarm and organize it into a trustworthy delivery organization now defines your leverage.
-> - **Without `self-loop`:** an ungoverned swarm is just a chaotic mob — self-grading its own homework, patching broken premises, and dragging you back into the terminal until you burn out.
-> - **With `self-loop`:** your agents run as a disciplined, cross-checked organization that frames, critiques, builds, independently verifies, and ships — while you sit at a street-side café drinking coffee, stepping in only when a real strategic decision is batched for you.
+## The Problem: Why Long-Horizon Agent Loops Collapse
 
-Most "autonomous coding loops" in 2026 are `while true` wrappers: let an agent edit code, run unit tests, feed failures back into the prompt, and repeat until green.
+Running a coding agent for 3 turns is easy. Running a swarm of agents for **50–80 rounds** on a real codebase fails in five predictable ways:
 
-On toy tasks, that works. On real software, an ungoverned agent mob fails in four predictable ways:
+1. **Self-grading & silent shortcuts** — an agent that reviews its own diff optimizes for turning tests green, not satisfying the requirement.
+2. **Patching on a broken premise** — when two attempts fail in the same module, naive retry loops stack patch #3, #4, and #5 instead of questioning the assumption.
+3. **Serial bottlenecks & weaponized ceremony** — orthogonal tracks sit idle waiting on Track 1, or heavy multi-agent workflows waste tokens running redundant review layers on trivial, undisputed changes.
+4. **Attention burn** — agents constantly interrupt the human owner for facts that code, Git history, or first-principles reasoning can already answer.
+5. **Round-80 operational entropy** — by round 50+, unmanaged loops choke on their own exhaust: multi-megabyte audit logs, thousands of stale evidence artifacts, drifting indexes, stray untracked drafts, and minute-long startup stalls.
 
-1. **Test-gaming & silent compromises** — an agent that grades its own homework optimizes for passing checks, not solving the requirement.
-2. **Patching on a broken premise** — when two fixes fail in the same area, a retry loop adds patch #3, #4, and #5 while the underlying assumption is false.
-3. **Context & document rot** — architecture notes, rationale, and "Round N" logs blur together until nobody knows what the system actually guarantees.
-4. **Prose rules decay under load** — instructions written only in prompts get skipped after a few turns, dragging you back into full-time babysitting.
-
-**`self-loop` turns chaotic coding-agent swarms (Claude Code, Codex, Antigravity, and T3 Code harnesses) into a trustworthy delivery organization.** It pairs a first-principles **Frame Reviewer** with a **cross-vendor Critic / Actor / Judge** hardening loop, trajectory-driven premise tests, SSOT authority verification, and Git-backed mechanical gates.
+**`self-loop` treats human attention per verified task as the primary engineering metric.** Instead of another black-box prompt wrapper, it is a **zero-dependency control plane** that isolates roles, enforces factual claims in code, and lets any model/harness do the thinking.
 
 ---
 
-## What's New in v0.9.6
+## Core Thesis: Four Pillars of `self-loop`
 
-- **Configurable Models & Harnesses — Zero Hardcoded Lock-Ins (`paseo.mjs`, `vendor.mjs`, `init.mjs`, `hooks.mjs`)** — First-class `runner: "paseo"` alongside `t3`, `claude`, and `codex`; open non-empty `provider` with explicit `adapter` (`antigravity | claude | codex | generic`), router-prefix model normalization (e.g. `openrouter/gemini-2.5-pro`), expanded vendor families + custom `modelVendors` / `agent.vendor`, `judgeIndependence: "vendor" | "model" | "session"`, `ANTIGRAVITY_HOME` hook support, and fully parameterized `self-loop.mjs init --harness ... --provider ... --actor-model ... --independence ...`.
-- **Throughput Gates & Zero-Waste Convergence (`lead-patch.mjs`, `lexers*.mjs`, `directives.mjs`, `arch-facts.mjs`, `ci.mjs`, `window.mjs`, `blueprint.mjs`)** — Bounded Lead micro-patches (`self-loop.mjs patch`: `<= 20` lines, `<= 3` files, `<= 2` consecutive, zero added prose, mandatory `--verify`), `< 0.1s` `VERSION`/docs-only `pre-commit` fast-pass + `codeTree` suite receipt reuse, honest `churn-hotspot` (shrinking refactors never hard-block), deterministic 15-language zero-comment lexers eliminating `judge-comments` LLM micro-audits, and **no-dispute independent Critic convergence** (clean `VERDICT: PASS / ACCEPTANCE: pass / DISPUTES: - / OPENED: -` with `0` audit violations converges directly without a redundant Judge).
-- **Aerospace Dual-Five Zeroing (`SKILL.md`, `assets/brief-*.md`, `RECORDS.md`)** — Encodes root-cause Technical Zeroing + mandatory whole-repo horizontal grep sweeps across every Actor and Critic handoff, plus Management Zeroing back into briefs and deterministic gates.
-- **Lean, Action-First `SKILL.md` (`160` lines) + Reference Split (`assets/reference-cli-and-gates.md`)** — Restructured into Intention & Concrete Failure Modes → Step 0–5 Operating Flow (with a mandatory **Pre-Idle Anti-Serial Check** so orthogonal file-disjoint tracks launch in parallel instead of idling behind Track 1) → explicit `Not for / Must Not` guardrails.
+### 1. Attention-Budget Engineering (Generation-Engine-First)
+Human attention is the scarcest resource in AI engineering. Before escalating a single question to the owner, `self-loop` distills verbatim owner intent into `purpose/P-NNNN.md` and runs a **Frame Reviewer + independent derivation review** against the codebase and Git history. Only genuine owner-only strategic trade-offs reach the human — batched with concrete options and a recommendation (`decisions.mjs`).
 
-<details>
-<summary>Earlier highlights in v0.9.0 – v0.9.2</summary>
+### 2. Parallel-First Delivery Without Weaponized Ceremony
+- **Parallel Actor Waves (`plan.mjs`, `dispatch.mjs`)**: Decoupled features split automatically into file-disjoint parallel Actor packages reconciled across all active plans (`admitAcrossPlans`), with conflict-free wave integration.
+- **Dual-Five Zeroing (`SKILL.md`)**: Every fix pinpoints root cause, reproduces deterministically, verifies cleanly, and performs a mandatory **whole-repo horizontal grep sweep** so sibling consumers and state machines sharing the same bug are fixed in the same wave — then feeds management lessons back into briefs and gates.
+- **Zero-Waste Convergence**: When an independent Critic passes with zero open defects, zero disputes, and zero audit violations, the wave **converges directly without a redundant Judge**. The cross-vendor/cross-model **Judge** is reserved for real disputes, held-out `sealed/` verification, and derivation rulings.
+- **Once-Per-`codeTree` Suite Reuse (`suite-green.mjs`)**: Full test suites run once per exact `(codeTree, runtime)` and are reused across `VERSION`-only release tips and read-only sign-offs.
 
-### v0.9.0 – v0.9.2
-- **Mandatory Control Plane & Universal Commit-Graph Provenance (`provenance.mjs`, `gated-push.mjs`, `.githooks/pre-push`)** — Every commit above `provenanceBaseline` must come from a `PL-NNNN`-attested handoff or clean wave merge (`--no-replace-objects`). Both `call.mjs --base` and working-branch pushes (`loop/<phase>`) enforce full `PL + critic + actor + independent judge/critic` provenance (exempting open `W-NNNN` refactoring windows); pre-judge remote CI pushes land on `ci/<handoff-id>`.
-- **Nonce-Bound Lead Delegation, Antigravity Multi-Product Hooks & Write Confinement (`lead-guard.mjs`, `antigravity.mjs`, `git-push-command.mjs`)** — `PreToolUse` denies raw delegation tools without a live unrecorded 16-hex `call.json` nonce, decodes `argumentsJson` structured file-tool targets, enforces confined child read/write scopes, supports multi-product `--owner-store` hooks, and blocks hook-bypass `git push` flags.
-- **Once-Per-Tree Host Suite Verification (`suite-green.mjs`, `audit-access.mjs`)** — Runs `gates.suite` **once** per `(repo, HEAD^{tree}, command, install, runtime)` via an atomic `linkSync` monotonic generation chain, stages read-only `0444` `suite-receipt.json` into code Judges and read-only final Critics, purges unattested tree caches on `call.mjs record`, and auto-resolves receipts in `gated-push.mjs`.
-- **Zero-Turn Owner Words, Delta-Scoped `T3`, & Ergonomics (`plan.mjs`, `cadence.mjs`, `t3-child.mjs`, `dispatch.mjs`)** — Substantive open owner words block immediately (0-turn grace); `ci-absent` extinguishes once a same-phase descendant passes CI; `T3` compares deltas against the last `reviewer-architecture` baseline; `call.mjs record --ws <ws>` auto-discovers sessions by nonce and auto-prunes finished worktrees.
+### 3. Code Gates Over Prompt Obedience (The 5-Rung Enforcement Ladder)
+Prompts decay under context load. Every rule in `self-loop` lives on the highest mechanical rung it can earn — and **scripts never substitute for engineering judgment** (see [Lesson `L-0002`](#empirical-lessons-from-production-loops)):
 
-### v0.8.0
-The workflow connects three engines in sequence. The **Generation Engine** defines the plan and package contracts. The **Dispatch & Integration Engine** combines the `arch-facts` import graph with symbolic file globs to identify independent work, schedule parallel Actor waves, and integrate their commits. The **Adversarial Engine** runs one unified Critic or multiple parallel Critics and joins their evidence for an independent Judge (or converges directly on a clean no-dispute Critic pass).
+1. **Prevention by construction** — Roles execute in detached Git worktrees with allow-listed read-only record views exported from a single commit. Non-judges physically cannot see `sealed/` held-out cases or private judge rulings.
+2. **Hard gates** — Deterministic scripts refuse invalid transitions (exit `2`, `6`, `7`) using `git --no-replace-objects`: exact-tree `suite-green`, live destination `ci-green` (GitHub Actions or AWS CodeBuild), commit-graph provenance (`gated-push`), SemVer `VERSION`/tag atomicity (`version-gate`), deterministic 15-language zero-prose-comment lexing, and SSOT authority checks (`ssot-check`).
+3. **Screening & alarms** — Non-blocking supervision (`area-rounds`, `blocker-recurring`, `ci-not-green`, `arch-facts` anti-rot, host capacity bounds) triggers mandatory premise-testing diagnosis before stacking blind patches.
+4. **Model judgment** — Tool-using agents (Lead, Frame Reviewer, Critic, Actor, Judge) make every real design and engineering call from verified gate outputs.
+5. **Prose debt (`DEBT.md`)** — Any rule still relying on prose is tracked explicitly as debt and mechanized only when proven with two-way evidence (red on real defects, zero false kills on legitimate history).
 
-Use `self-loop.mjs dispatch analyze|waves|integrate` to inspect coupling, list ready waves, or integrate landed work. Use `call.mjs --plan PL-NNNN --package <id>` with the normal role arguments to bind a call to a committed package. See [Operating Flow](SKILL.md#step-1--parallel-first-multi-track-planning-pl-nnnn--admitacrossplans).
-
-</details>
-
-## What's New in v0.7.0
-
-- **Bounded Horizon Window (`window.mjs`, `metrics/windows.jsonl`)** — Opens a bounded refactoring window (`horizon: 2..12`) across multi-round architectural valleys (`slack` → `converging` → `gate-due`), mechanically gating further `actor` calls (`exit 7`) until closed as `verified` (committed `CONVERGED` ruling, cross-vendor independence, exact-tree `suite-green`, and live CI) or `reframed` (post-open `reviewer-diagnosis` citing `window-horizon:<phase>:<id>`).
-- **Asynchronous Periodic Outer Loop (`arch-facts.mjs`, `reviewer-architecture`, `T1`–`T4`)** — Decouples high-cadence inner delivery from periodic whole-repo architectural review (`T1` delivery cadence even on 0-bug green streaks, `T3` structural/anti-rot breach). `call.mjs` equips `reviewer-architecture` with deterministic `arch-facts.json` and a detached read-only worktree under strict `FILE_TOOLS` confinement, with mechanical `outerGrace` enforcement (`exit 7`) if ignored.
-- **Deterministic Anti-Rot, Comment-Bloat & Liveness Scanners (`anti-rot.mjs`)** — Scans committed trees for compatibility/legacy remnants, dead exports, hardcoded host paths/loopback ports, skipped/todo test rot, and bulky prose code comments (enforcing doc-level SSOT over stale code comments), feeding `T3` breaches and code-to-design liveness QA + Occam reflexive audits.
-- **Reliable Owner-Word Capture & Distillation Gate (`owner-words.mjs`, `reviewer-distill`, `self-loop.mjs start`)** — Filters T3/harness orchestration envelopes, probes Antigravity `hooks.json` health on `start`, and routes substantive open owner words to async `reviewer-distill` with a mechanical 1-turn grace gate (`exit 7`).
-
-<details>
-<summary>Earlier highlights in v0.6.0</summary>
-
-- **Zero-config in-repo `.self-loop/` records (`self-loop.mjs init`)** — Initializes a nested, Git-ignored `.self-loop/` records repository inside your project (or `--local-exclude` for zero-diff `.git/info/exclude`, or external `--records <dir>`), with automatic discovery on `start`, `next`, and `stall`.
-- **First-class Antigravity harness & T3 Code runner (`F-0009`)** — Full `hooks install|check|uninstall --harness antigravity`, Antigravity transcript & owner-word sync, and T3 Code child execution (`t3:claude`, `t3:codex`, `t3:antigravity`).
-- **Confined `reviewer` on `t3:antigravity` & `t3:claude`** — Frame Reviewer runs natively on T3 Code (`t3:antigravity` and `t3:claude`) in addition to `claude --restricted`, backed by fail-closed transcript and relative-path confinement audits.
-- **AWS CodeCommit + CodeBuild CI forge (`F-0013`)** — Unified `FORGES` dispatcher supporting both GitHub Actions (`github-actions/*`) and AWS CodeCommit / CodeBuild (`codebuild/*`) with STS caller-account binding, canonical endpoints, GRC `CODE_COMMIT_ENDPOINT` fail-closed guard, and credential redaction.
-- **SSOT authority doc verification & drift gates (`F-0014`)** — `ssot-check.mjs` (`check` / `attest`) verifies bound authority documents (Rung-2 `anchors` + clean-worktree `check` scripts, Rung-3 `ssot-drift` screening & strict promotion gates) and injects a read-only `ssot-status.md` role view into `actor` and `judge` workspaces.
-- **Complete `docs/` documentation suite** — Six focused guides covering Getting Started, Architecture, Concepts & Records, Harnesses, Forges & CI, and Release & Versioning.
-
-</details>
-
----
-
-## How `self-loop` Differs from Naive Agent Loops
-
-| Dimension | Naive Retry Loops | `self-loop` |
-|---|---|---|
-| **Who challenges the direction?** | Only the human owner | **`Frame Reviewer`** derives architecture from purpose, trajectory & Git facts at every phase start and on alarms (`CONTINUE` or `REFRAME`) |
-| **Who grades the work?** | The same model that wrote it | **Cross-vendor `Judge`** (different model vendor from `Actor`) re-runs the full suite in a clean checkout and seals its private ruling |
-| **Repeated failures** | Keep patching until timeout | **Premise Gate**: `trajectory.mjs alarms` fires and `call.mjs` mechanically **refuses** new patches until `reviewer-diagnosis` tests the shared premise |
-| **Authority doc drift** | Docs rot silently out of sync | **SSOT Gates (`ssot-check.mjs`)**: Rung-2 anchor & clean-worktree checks gate every push; Rung-3 drift tracks contract changes and gates promotion |
-| **Rule enforcement** | Prompt instructions ("please follow...") | **5-Rung Mechanization Ladder**: construction isolation → hard Git/CI gates → screening alarms → model judgment → explicit `DEBT.md` |
-| **When is a round "done"?** | Agent says "all tests pass" | **Exact-tree proof**: `suite-green.mjs` receipt for the exact Git tree + live destination `ci-green.mjs` `success` (GitHub or AWS CodeBuild) + `gated-push.mjs` |
-| **Human involvement** | Continuous babysitting | **Batched owner decisions** (`decisions.mjs`) with ≥2 options & a recommendation; **human attention per verified task is the metric** |
+### 4. Built for Round 80, Not Just Round 1 (Operational Self-Hygiene)
+Forged across 55–80+ round production loops on real multi-repo codebases:
+- **Bounded Audits (`<= 1 MiB`)**: Per-command deduplication and preview truncation prevent quadratic audit JSON blowups while preserving all Tier-0 security flags.
+- **Self-Healing Cleanup & Cryptographic Tombstones (`self-loop.mjs clean` / `records gc`)**: Reclaims finished worktrees, prunes LRU suite caches, compacts oversized logs/audits, and prunes uncited historical evidence while recording SHA-256 + origin-commit tombstones (`prune/PR-NNNN.md`) that keep citation integrity verifiable.
+- **Portable Records `pre-commit` Guard**: `self-loop.mjs init` and `hooks install --records` install a secret-free `.githooks/pre-commit` that blocks undeclared stray files and `INDEX.md`/`BLUEPRINT.md` drift before commit.
+- **Zero Model or Harness Lock-In**: Configure any `runner` (`paseo`, `t3`, `claude`, `codex`), `provider` (`better-paseo-antigravity`, `antigravity`, `claude`, `codex`, `cursor`, `opencode`, `pi`, or custom plugins), `adapter`, router-prefixed models, and independence policy (`vendor` | `model` | `session`) in `loop.json`.
 
 ---
 
@@ -97,117 +66,131 @@ Use `self-loop.mjs dispatch analyze|waves|integrate` to inspect coupling, list r
 
 ```mermaid
 flowchart TD
-    P["Purpose & Owner Words<br/>(purpose/P-NNNN.md)"] --> FR["Frame Reviewer (Generation Engine)<br/>First principles + Trajectory + Git Facts"]
-    FR -->|"REFRAME / Intent Batch"| OW["Owner Decision Batch<br/>(Options + Recommendation)"]
-    OW --> FR
-    FR -->|"CONTINUE + Blueprint (F-NNNN)"| PL["Dispatch & Integration Engine<br/>(plan.mjs + dispatch.mjs)"]
-    PL --> CR["Critic<br/>Executable acceptance cases<br/>(held-out cases sealed)"]
-    CR --> AC["Actor (Vendor A)<br/>General implementation + design note"]
-    AC --> JG["Judge (Vendor B ≠ Vendor A)<br/>Clean checkout + suite + GENERAL/HACK audit"]
-    JG -->|"CONVERGED / CONTINUE"| TR["Trajectory & Alarms<br/>(trajectory.mjs)"]
-    TR -->|"Alarm (≥3 rounds / recurring blocker / missing CI)"| DG["Diagnosis Gate<br/>call.mjs refuses patches until<br/>reviewer-diagnosis tests the premise"]
-    DG --> FR
-    JG -->|"CONVERGED + ACCEPTANCE: pass"| GT["Mechanical Landing Gates<br/>suite-green.mjs → ssot-check.mjs → gated-push.mjs → ci-green.mjs"]
+    O["Owner Verbatim Words & Purpose<br/>(owner/words.jsonl → purpose/P-NNNN.md)"] --> GE["Generation Engine<br/>Frame Reviewer + Independent Judge Frame<br/>(First principles · Arch Facts · Plans PL-NNNN)"]
+    GE -->|"Genuine Strategic Trade-Off Only"| OB["Batched Owner Decisions<br/>(Options + Recommendation)"]
+    OB --> GE
+    GE -->|"Approved Blueprint (F-NNNN) & Plans"| DP["Dispatch & Integration Engine<br/>(plan.mjs · dispatch.mjs · admitAcrossPlans)"]
+    DP --> W["Parallel File-Disjoint Actor Waves<br/>(Detached worktrees · Dual-Five Zeroing · Horizontal Sweep)"]
+    W --> CR["Independent Critic<br/>(Living domain acceptance suites · 0 prose)"]
+    CR -->|"Clean Pass (0 defects, 0 disputes)"| GT["Deterministic Landing Gates<br/>codeTree suite-green → ssot-check → ci-green → gated-push"]
+    CR -->|"Dispute / Open Defect / Sealed Cases"| JG["Cross-Vendor / Cross-Model Judge<br/>(Sealed rulings · GENERAL vs HACK)"]
+    JG -->|"CONVERGED"| GT
+    JG -->|"CONTINUE"| TR["Trajectory & Supervision Alarms<br/>(trajectory.mjs)"]
+    TR -->|"Premise Alarm"| DG["Diagnosis Gate<br/>(Blocks new patches until premise tested)"]
+    DG --> GE
+    GT --> HY["Operational Self-Hygiene<br/>(clean · records gc · tombstones · pre-commit)"]
 ```
 
----
+### How It Compares
 
-## The 5-Rung Mechanization Ladder
-
-> **Code gates over prompt obedience.** Every rule sits on the highest rung it can reach.
-
-1. **Prevention by construction** — Role views are exported from a single records commit via allow-list (`call.mjs`). Critic and Actor physically cannot read `sealed/` or other roles' private evidence; Frame Reviewer runs confined via Claude CLI `--restricted` or audited `t3:antigravity` / `t3:claude`.
-2. **Hard gates** — Deterministic scripts refuse invalid transitions (exit `2`, `6`, or `7`): `gated-push.mjs` blocks pushes without an exact-tree `suite-green.mjs` receipt, Rung-2/strict `ssot-check.mjs`, committed Judge `CONVERGED`, and live destination CI `success` on that exact SHA (`git --no-replace-objects`).
-3. **Screening predicates** — `trajectory.mjs alarms`, `records-check.mjs`, and `ssot-check.mjs` detect anomalies (`area-rounds`, `blocker-recurring`, `partly-closed`, `ci-absent`, `ci-not-green`, `module-growth`, `ssot-drift`) and route them to diagnosis without brittle false kills.
-4. **Model judgment** — The tool-equipped Lead model evaluates diagnoses, rulings, and next steps using verified gate outputs.
-5. **Prose debt (`DEBT.md`)** — Any rule still relying on prose is logged explicitly in [`DEBT.md`](DEBT.md) and systematically moved up the ladder—every hard gate requires two-way admission evidence (turns a real defect red, keeps legitimate history green).
+| Dimension | Naive Retry / Prompt Loops | Heavy Black-Box Frameworks | `self-loop` |
+|---|---|---|---|
+| **Who makes decisions?** | Unchecked single loop | Hard-coded state-machine orchestrator | **Tool-using LLM roles** reading deterministic Git/CLI gate outputs |
+| **Parallelism** | Serial one-task-at-a-time | Ad-hoc sub-agents with merge conflicts | **File-disjoint Actor waves** reconciled across plans + deterministic integration |
+| **Verification** | Self-graded ("tests look good") | Prompt-based self-review | **Independent Critic (direct pass on zero disputes)** + **Cross-vendor/model Judge** on disputes |
+| **Repeated failures** | Patch #3, #4, #5 blindly | Retry until max-iter timeout | **Premise Gate** mechanically blocks new patches until `reviewer-diagnosis` tests the assumption |
+| **Long-horizon hygiene** | Context & repo bloat over time | Logs pile up untracked | **Bounded `<= 1 MiB` audits, tombstone GC, portable `.githooks/pre-commit`** |
+| **Dependencies & lock-in** | Heavy SDKs / single vendor | Proprietary runtime | **Zero `npm` dependencies** (Node.js >= 22 + Git); any runner, model, or GitHub/CodeBuild forge |
 
 ---
 
 ## Empirical Lessons from Production Loops
 
-We build in the open and document what broke—not just what worked:
+We build in the open and document what broke — not just what worked:
 
-- **Why we deleted the v0.2 orchestrator (Lesson `L-0002`)**: `v0.2` included an 865-line autonomous state-machine orchestrator that tried to decide convergence and close rounds automatically. Two independent reviews found subtle false verdicts inside the orchestrator itself, and every patch made it worse (`550 → 865` lines). In `v0.3`, we deleted the entire orchestrator decision layer: scripts now do **only deterministic execution and factual gates**, while judgment stays with the tool-equipped Lead.
-- **What a blind backtest on 12 real pivots showed**: A trajectory-reading Frame Reviewer caught **~90% of real engineering issues** (and twice spotted needed direction shifts earlier than the human owner), yet fully replicated only **~1/6 of human strategic reframes**. That is why `self-loop` never pretends humans are obsolete—it protects human attention and reserves it strictly for batched, high-leverage decisions.
+- **Why we deleted our own v0.2 orchestrator (Lesson `L-0002`)**: `v0.2` included an 865-line autonomous state-machine orchestrator that tried to decide convergence and close rounds automatically. Independent reviews uncovered subtle false verdicts inside the orchestrator itself, and every patch worsened complexity (`550 → 865` lines). In `v0.3`, we deleted the entire deciding orchestrator: **scripts enforce isolation and factual gates; judgment belongs to tool-equipped models and humans.**
+- **Blind backtest on 12 real project pivots**: A trajectory-reading Frame Reviewer caught **~90% of real engineering issues** (twice spotting needed direction shifts earlier than the owner), yet replicated only **~1/6 of human strategic reframes**. That is why `self-loop` never pretends humans are obsolete — it protects human attention strictly for high-leverage calls.
+- **Complementary to craft skills**: Lightweight coding skills (such as seam-first TDD, deep-module design, and domain glossaries) teach agents *how to write clean code inside a task*; `self-loop` governs *multi-agent boundaries, independent verification, and Git-backed delivery truth across dozens of rounds*.
 
 ---
 
-## 5-Minute Quick Start
+## Quick Start (3 Minutes)
 
 ### 1. Prerequisites
-- **Node.js >= 22** (`>= 22.13` for built-in `node:sqlite` used by Antigravity session reads; CI runs on Node 24)
-- **Git**
-- Optional for live CI checks & agent runs: **GitHub CLI (`gh`)**, **AWS CLI (`aws`)** (for CodeCommit + CodeBuild), and **Claude Code** / **Codex** / **Antigravity** (or **T3 Code**)
+- **Node.js `>= 22`** (`>= 22.13` for built-in `node:sqlite`; CI verified on Node 24) and **Git** — **zero `npm install` required**.
+- Optional: `gh` (GitHub Actions), `aws` (AWS CodeCommit + CodeBuild), and your preferred agent harness (`paseo`, `antigravity`, `claude`, `codex`, or `t3`).
 
-### 2. Clone & Verify the Suite
-```bash
-git clone https://github.com/X32Studio/self-loop.git
-cd self-loop
-git checkout v0.9.6
-npm test
-```
-
-### 3. Run the 5-Second Mechanical Gate Demo
-No API keys or network calls needed—see records validation, trajectory alarm refusal (`exit 7`), exact-tree suite receipts, and protected push gating (`exit 2`) in action:
+### 2. Clone & Run the 5-Second Mechanical Gate Demo
+No API keys or network calls needed — watch records validation, trajectory alarm refusal (`exit 7`), exact-tree suite receipts, and protected push gating (`exit 2`) live:
 
 ```bash
+git clone https://github.com/X32Studio/self-loop.git ~/tools/self-loop
+cd ~/tools/self-loop
+git checkout v0.9.8
 npm run demo
 ```
 
-### 4. Bootstrap a Product Loop in One Command
-Initialize a nested, Git-ignored `.self-loop/` records repository inside your project (zero-config auto-discovery for `start`, `next`, and `stall`; add `--register` to register in your owner store for `gated-push.mjs` and multi-repo `tick`):
+### 3. Initialize a Loop in Your Project
+`self-loop` defaults to a nested, Git-ignored `.self-loop/` records repo inside your project (with automatic portable `.githooks/pre-commit` protection):
 
 ```bash
 cd /path/to/your-project
 
-# Recommended: initializes .self-loop/, updates .gitignore, and registers in ~/.self-loop/owner-store
-node /path/to/self-loop/scripts/self-loop.mjs init --register
+# Standard setup (creates .self-loop/, updates .gitignore, registers in ~/.self-loop/owner-store)
+node ~/tools/self-loop/scripts/self-loop.mjs init --register
 
-# Zero-diff option: writes .self-loop/ to .git/info/exclude instead of .gitignore
-node /path/to/self-loop/scripts/self-loop.mjs init --local-exclude --register
+# Parameterized multi-harness / model setup (e.g. Paseo + model independence)
+node ~/tools/self-loop/scripts/self-loop.mjs init --register \
+  --harness paseo --runner paseo --provider better-paseo-antigravity \
+  --independence model
 
-# External records repository option
-node /path/to/self-loop/scripts/self-loop.mjs init --records ../my-project-records --register
+# Zero-diff option (writes .self-loop/ to .git/info/exclude instead of tracked .gitignore)
+node ~/tools/self-loop/scripts/self-loop.mjs init --local-exclude --register
 ```
 
-Then configure `.self-loop/loop.json` (see [`assets/self-loop.example.json`](assets/self-loop.example.json)), distill your requirements into `.self-loop/purpose/P-0001.md`, and run `node /path/to/self-loop/scripts/self-loop.mjs start`. See [`docs/getting-started.md`](docs/getting-started.md) for the full walkthrough.
-
-### 5. Install as a Coding-Agent Skill
-Copy the repository into your agent skills directory so Claude Code / Codex / Antigravity can run `self-loop`:
+### 4. Install as a Coding-Agent Skill & Enable Harness Hooks
 
 ```bash
-mkdir -p ~/.claude/skills
-cp -r . ~/.claude/skills/self-loop
+# Link into your agent skills directory (Antigravity / Claude Code / Codex / Paseo)
+ln -s ~/tools/self-loop ~/.agents/skills/self-loop
+# or: cp -r ~/tools/self-loop ~/.claude/skills/self-loop
+
+# Optional: install Antigravity PreToolUse / owner-word / Stop hooks
+node ~/tools/self-loop/scripts/self-loop.mjs hooks install --harness antigravity
+node ~/tools/self-loop/scripts/self-loop.mjs hooks check --harness antigravity
 ```
 
-Configure Git hooks on any clone where you develop `self-loop`:
+Then write your phase purpose in `.self-loop/purpose/P-0001.md` and run:
+
 ```bash
-git config core.hooksPath .githooks
+node ~/tools/self-loop/scripts/self-loop.mjs start
+```
+
+### 5. Keep Long-Running Loops Clean
+
+```bash
+# Preview and reclaim finished worktrees, stale suite caches, oversized audits, and uncited old evidence
+node ~/tools/self-loop/scripts/self-loop.mjs clean --config .self-loop/loop.json --dry-run
+node ~/tools/self-loop/scripts/self-loop.mjs clean --config .self-loop/loop.json --apply
 ```
 
 ---
 
-## Documentation
+## When to Use `self-loop` — and When Not To
 
-### Guides (`docs/`)
+- **Use `self-loop` when**:
+  - You are shipping a multi-day or multi-week codebase with parallel feature tracks and real invariants.
+  - You want cryptographic/Git proof that every protected-branch merge was tested on its exact commit tree and verified independently.
+  - You run coding agents across 10–80+ rounds and want zero document rot, zero self-grading, and minimal human babysitting.
+- **Do NOT use `self-loop` for**:
+  - One-off Q&A, throwaway scripts, or quick exploratory prototypes that need no durable records or adversarial verification.
 
-| Document | Contents |
+---
+
+## Documentation & Contracts
+
+| Document | Purpose |
 |---|---|
-| [`docs/getting-started.md`](docs/getting-started.md) | Prerequisites, installation, `self-loop.mjs init` (in-repo `.self-loop/`, `--local-exclude`, external `--records`), owner store registration, harness hooks, and your first full round |
-| [`docs/architecture.md`](docs/architecture.md) | The 5-rung Enforcement Ladder, why v0.3 deleted the outer orchestrator, cross-vendor transcript independence, nested `.self-loop/` & `sealed/` isolation, and host capacity bounds |
-| [`docs/concepts-and-records.md`](docs/concepts-and-records.md) | Tour of the records layout (`purpose`, `decisions`, `blueprint`, `design`, `plans`, `rounds`, `evidence`, `sealed`, `owner/words.jsonl`, `metrics/ssot-sync.jsonl`) and CLI reference |
-| [`docs/harnesses.md`](docs/harnesses.md) | Claude Code, Codex, Antigravity, and T3 Code integration, `hooks install\|check\|uninstall`, owner-word capture/sync, confined T3 `reviewer`, and cross-vendor `observedModels` enforcement |
-| [`docs/forges-and-ci.md`](docs/forges-and-ci.md) | GitHub Actions, AWS CodeCommit + CodeBuild (`F-0013`), and other Git hosts; `ci-green.mjs`, `gated-push.mjs`, GRC `CODE_COMMIT_ENDPOINT` guard, and credential redaction |
-| [`docs/release-and-versioning.md`](docs/release-and-versioning.md) | `version-gate.mjs` (`tip`, `release`, `reconcile`, Git hooks), prerelease CI tips vs plain `X.Y.Z` releases, exact-tree suite caching, and multi-host release pinning |
-| [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) | Deep-dive into the two engines, 5-rung ladder & Lesson `L-0002` |
-
-### Normative Runtime Contracts
-
-- [`SKILL.md`](SKILL.md) — Operational protocol for Lead & roles
-- [`RECORDS.md`](RECORDS.md) — Managed records specification (parsed directly by `records-check.mjs`)
-- [`REQUIREMENTS.md`](REQUIREMENTS.md) — Core architectural requirements
-- [`DEBT.md`](DEBT.md) — Explicit register of rules not yet mechanized
+| [`SKILL.md`](SKILL.md) | Executable operating protocol for the Lead agent (Steps 0–5, Dual-Five Zeroing, Pre-Idle Anti-Serial Check, Before-You-Claim Gate Table) |
+| [`assets/reference-cli-and-gates.md`](assets/reference-cli-and-gates.md) | Complete CLI flag reference, JSON schemas, dispatch gates, and adapter protocols |
+| [`docs/getting-started.md`](docs/getting-started.md) | Step-by-step walkthrough from `init` to protected-branch promotion |
+| [`docs/architecture.md`](docs/architecture.md) | The 5-rung Enforcement Ladder, isolated role views, `sealed/` confinement, and zero-dependency design |
+| [`docs/harnesses.md`](docs/harnesses.md) | Paseo, Antigravity, Claude Code, Codex, and T3 integration, hooks, and transcript-verified independence |
+| [`docs/forges-and-ci.md`](docs/forges-and-ci.md) | GitHub Actions, AWS CodeCommit + CodeBuild, and generic Git host integration |
+| [`docs/release-and-versioning.md`](docs/release-and-versioning.md) | SemVer `VERSION`-only tips, `codeTree` suite caching, atomic tags, and dual-platform CI |
+| [`docs/concepts-and-records.md`](docs/concepts-and-records.md) | Records layout (`purpose`, `decisions`, `blueprint`, `plans`, `rounds`, `evidence`, `prune`, `sealed`) |
+| [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) | Deep dive into the engines, Enforcement Ladder, and Lesson `L-0002` |
+| [`RECORDS.md`](RECORDS.md) / [`REQUIREMENTS.md`](REQUIREMENTS.md) / [`DEBT.md`](DEBT.md) | Normative runtime contracts parsed by gates and explicit mechanization debt ledger |
 
 ---
 
@@ -215,29 +198,41 @@ git config core.hooksPath .githooks
 
 ```text
 self-loop/
-├── SKILL.md                 # Operational protocol for Lead & roles
-├── RECORDS.md               # Managed records specification (parsed by records-check.mjs)
-├── REQUIREMENTS.md          # Core architectural requirements
-├── DEBT.md                  # Explicit register of rules not yet mechanized
-├── docs/                    # Getting Started, Architecture, Harnesses, Forges/CI, Release, Concepts & Methodology
-├── assets/                  # Role brief templates, Antigravity hooks template & example configs
-├── examples/minimal-loop/   # Runnable 5-second demo of records, alarm & push gates
+├── SKILL.md                 # Lead agent operating procedure
+├── RECORDS.md               # Normative records schema (parsed by records-check.mjs)
+├── REQUIREMENTS.md          # First-principles requirements & rationale
+├── DEBT.md                  # Explicit ledger of prose rules yet to be mechanized
+├── docs/                    # Architecture, Getting Started, Harnesses, Forges/CI, Releases & Methodology
+├── assets/                  # Role brief templates, CLI reference, hook templates & example configs
+├── examples/minimal-loop/   # Runnable 5-second zero-API demo of deterministic gates
 ├── scripts/
-│   ├── self-loop.mjs        # Unified entry: init, start, next, stall, tick, ssot, window, hooks, registry, heartbeat
-│   ├── window.mjs           # Bounded horizon windows (open/status/close) for multi-round refactoring
-│   ├── call.mjs             # Isolated role execution, SSOT/arch-facts view injection, access audit & hand-off commits
-│   ├── ssot-check.mjs       # SSOT authority doc verification (Rung-2 anchors/check + Rung-3 drift & attest)
-│   ├── suite-green.mjs      # Clean-worktree, exact-tree cached test receipts
-│   ├── ci-green.mjs         # Live GitHub & AWS CodeBuild verification on exact push destination
-│   ├── gated-push.mjs       # Protected branch push gate (suite + SSOT + judge + live destination CI)
-│   ├── version-gate.mjs     # SemVer tip, pre-commit, pre-push & atomic release gates
-│   ├── trajectory.mjs       # Append-only trajectory ledger & supervision alarms
-│   ├── records-check.mjs    # Records layout enforcement & generated INDEX/BLUEPRINT views
-│   ├── decisions.mjs        # Batched owner questions & verbatim answer events
-│   ├── owner-words.mjs      # Verbatim owner directive capture (Claude/Codex/Antigravity), classification & metrics
-│   ├── plan.mjs             # Parallel package validation, readiness & measurements
-│   └── test/                # Deterministic unit & gate admission tests
-└── acceptance/              # End-to-end process & regression acceptance suite
+│   ├── self-loop.mjs        # Unified entry: init, start, next, stall, tick, clean, prune, records, dispatch, patch, ssot, window, hooks, registry, heartbeat
+│   ├── call.mjs             # Isolated worktree/view runner, access audit (<= 1 MiB), comment gate & atomic hand-off
+│   ├── dispatch.mjs         # Coupling analysis, parallel Actor/Critic waves & wave integration
+│   ├── plan.mjs             # Multi-plan validation, cross-plan admission & time-budget readiness
+│   ├── lead-patch.mjs       # Bounded Lead micro-patches (<= 20 lines, <= 3 files, mandatory --verify)
+│   ├── suite-green.mjs      # Clean-worktree, exact-codeTree cached full-suite receipts
+│   ├── ci-green.mjs         # Live GitHub Actions & AWS CodeBuild check verification
+│   ├── gated-push.mjs       # Protected branch push gate (suite + provenance + independent convergence + live CI)
+│   ├── version-gate.mjs     # SemVer tips, pre-commit/pre-push hooks & atomic branch+tag release
+│   ├── ssot-check.mjs       # Bound authority-doc anchors & drift gates
+│   ├── bench-gate.mjs       # Paired clean-worktree statistical latency gate
+│   ├── trajectory.mjs       # Append-only trajectory ledger & premise-testing alarms
+│   ├── records-check.mjs    # Records integrity, --staged pre-commit check, --prune tombstones & INDEX/BLUEPRINT sync
+│   ├── decisions.mjs        # Generation-Engine-first batched owner decisions & verbatim answers
+│   ├── owner-words.mjs      # Verbatim owner directive capture, envelope filtering, batch mark & settlement
+│   └── test/                # Deterministic unit & gate tests
+└── acceptance/              # End-to-end process, hygiene & regression acceptance suites
+```
+
+---
+
+## Running Tests
+
+```bash
+npm test                 # Unit & gate suite
+npm run test:acceptance  # End-to-end acceptance suite
+npm run test:all         # Full suite
 ```
 
 ---

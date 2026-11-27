@@ -19,7 +19,7 @@
   },
   "agents": {
     "critic": { "runner": "codex", "model": "gpt-5.4", "effort": "high" },
-    "actor": { "runner": "claude", "model": "claude-opus-4-6", "effort": "high" },
+    "actor": { "runner": "claude", "model": "claude-sonnet-4-6", "effort": "high" },
     "judge": { "runner": "codex", "model": "gpt-5.4-pro", "effort": "high" },
     "reviewer": { "runner": "claude", "model": "claude-opus-4-6", "effort": "high" }
   },

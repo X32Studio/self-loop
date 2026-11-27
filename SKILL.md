@@ -29,12 +29,15 @@ Start every session and parent recovery turn by reconciling committed state, hos
 
 ```bash
 node scripts/self-loop.mjs start [--parent-entry <public-input.json>] [--owner-store <dir>]
-node scripts/loop.mjs next --config <loop.json>
+node scripts/loop.mjs next --config <loop.json> [--full]
 node scripts/loop.mjs stall --hours N [--config <loop.json>]
+node scripts/self-loop.mjs clean|prune|records gc|records compact [--config <loop.json> | --records <dir> | --all] [--dry-run | --apply]
+node scripts/self-loop.mjs hooks install --records <dir>
 ```
 
-- **Phase start & advancing cadence**: run `call.mjs <config> reviewer --round N --step reviewer-frame --task <file>` (drafts features to `out/blueprint/F-NNNN.md`, cites `purpose/P-NNNN.md`), commit blueprint & owner decisions (`decisions.mjs send|answer`), and distill/mark open owner words (`owner-words.mjs open|mark`) before launching hardening roles.
-- **Record & diagnose first**: record finished child workspaces (`call.mjs <config> record --ws <ws>`) and diagnose any fired trajectory alarm (`trajectory.mjs alarms` -> `reviewer-diagnosis` with `alarms:` line) before new adversarial calls.
+- **Generation-Engine-First Rule (`I-0005`, `D-0030`)**: whenever the owner states a new direction or defect class, NEVER call `ask_question` or send an owner batch first. Distill verbatim words into `purpose/P-NNNN.md`, run `reviewer-frame` / `reviewer-distill` + `judge-frame`, and escalate ONLY genuine owner-only vision/policy trade-offs (`decisions.mjs send` refuses non-role `--from` senders, exit 2).
+- **Phase start & advancing cadence**: run `call.mjs <config> reviewer --round N --step reviewer-frame --task <file>` (drafts features to `out/blueprint/F-NNNN.md`, cites `purpose/P-NNNN.md`), commit blueprint & validated owner decisions (`decisions.mjs send|answer`), and distill/mark open owner words (`owner-words.mjs open|mark`) before launching hardening roles.
+- **Record, diagnose & maintain hygiene**: record finished child workspaces (`call.mjs <config> record --ws <ws>` — auto-reclaims heavy payloads while keeping `call.json`, filters junk in `out/`, bounds `*-audit.json <= 1 MiB`), diagnose fired alarms (`trajectory.mjs alarms` -> `reviewer-diagnosis`), and run `self-loop.mjs clean --apply` / `hooks install --records` when read-only `start`/`next` hygiene screening fires.
 
 ### Step 1 — Parallel-First Multi-Track Planning (`PL-NNNN` & `admitAcrossPlans`)
 
@@ -91,8 +94,8 @@ node scripts/loop.mjs stall --hours N [--config <loop.json>]
     "judgeIndependence": "model",
     "modelVendors": { "openrouter/": "google" },
     "agents": {
-      "actor": { "runner": "paseo", "provider": "better-paseo-antigravity", "model": "gemini-2.5-flash" },
-      "critic": { "runner": "paseo", "provider": "better-paseo-antigravity", "model": "gemini-2.5-pro" }
+      "actor": { "runner": "paseo", "provider": "better-paseo-antigravity", "model": "gemini-2.5-pro" },
+      "critic": { "runner": "paseo", "provider": "better-paseo-antigravity", "model": "gemini-2.5-flash" }
     }
   }
   ```
@@ -149,11 +152,11 @@ A claim without its gate output on the exact commit you name is not made (detail
   - Never hardcode unavailable models or harnesses; always configure via `loop.json`.
   - Never edit product code directly outside a planned Actor or bounded `self-loop.mjs patch`, and never pass `--no-verify` to bypass hooks.
   - Never claim convergence, closure, or green CI without exact-commit gate output, and never record owner words or answers the owner did not give.
-  - Never ask the owner what an agent can investigate or execute.
+  - Never ask the owner what an agent can investigate, derive via the Generation Engine (`P-NNNN` + `reviewer-frame`/`reviewer-distill` + `judge-frame`, `I-0005`), or execute.
 
 ## Reference
 
-- [`assets/reference-cli-and-gates.md`](assets/reference-cli-and-gates.md) — Complete CLI flag reference, JSON envelopes (`continuation-entry/v1`, `plan-time/v2`, `plan-forecast/v1`), dispatch gates `G1–G7`, Paseo/Antigravity/`better-paseo-antigravity` protocols, comment admission v2, SSOT checks, owner-word metrics, supervision/cadence/window mechanics, `suite-green`/`gated-push`/`bench-gate`, and full Enforcement Ladder details.
+- [`assets/reference-cli-and-gates.md`](assets/reference-cli-and-gates.md) — Complete CLI flag reference, JSON envelopes (`continuation-entry/v1`, `plan-time/v2`, `plan-forecast/v1`, `scoped-release`), dispatch gates `G1–G7`, Paseo/Antigravity/`better-paseo-antigravity` protocols, comment admission v2, SSOT checks, owner-word metrics, supervision/cadence/window mechanics, `suite-green`/`gated-push`/`bench-gate`, and full Enforcement Ladder details.
 - [`RECORDS.md`](RECORDS.md) — Records repository layout, schemas, and commit discipline.
 - [`REQUIREMENTS.md`](REQUIREMENTS.md) — First-principles requirements and rationale behind every rule.
 - [`DEBT.md`](DEBT.md) — Rules still left to judgment or prose.
