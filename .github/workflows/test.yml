@@ -7,9 +7,9 @@ on:
 permissions:
   contents: read
 jobs:
-  verify:
-    name: suite (${{ matrix.os }})
-    timeout-minutes: 30
+  unit:
+    name: unit (${{ matrix.os }})
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -28,7 +28,29 @@ jobs:
           git config --global user.name "self-loop CI"
           git config --global user.email "ci@self-loop.invalid"
           git config --global init.defaultBranch main
-      - name: Run unit and acceptance suites
+      - name: Run unit suite
+        run: node --test scripts/test
+
+  acceptance:
+    name: acceptance (${{ matrix.os }})
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Configure Git identity for test repositories
         run: |
-          node --test scripts/test
-          node --test acceptance
+          git config --global user.name "self-loop CI"
+          git config --global user.email "ci@self-loop.invalid"
+          git config --global init.defaultBranch main
+      - name: Run acceptance suite
+        run: node --test acceptance
