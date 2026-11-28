@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { preparedIn } from "../scripts/lib/t3-child.mjs";
 import { plansFrom, snapshot } from "../scripts/lib/plan.mjs";
 import { json, jsonl, jsonOutput, output, put, status, world } from "./fixture.mjs";
@@ -23,13 +24,15 @@ const renderPlan = (id, scope, phaseName, packages) => [
   ]),
 ].join("\n");
 
-export function round6B(t) {
+export function loopWorld(t) {
   const w = world(t);
   const load = join(w.dir, "host-load");
   const extraEnv = { SELF_LOOP_LOAD_DIR: load };
   const run = (entry, args, opts = {}) => w.run(args, { entry, ...opts, extraEnv: { ...extraEnv, ...opts.extraEnv } });
   return { ...w, load, extraEnv, run };
 }
+
+export const round6B = loopWorld;
 
 export function phase(w, name = "work", { files = {}, agents = {} } = {}) {
   const product = w.repo(join(w.projects, name), {
@@ -182,3 +185,38 @@ export function registerBudget(w, products, heavyBudget) {
 }
 
 export const batchDraw = (salt = 0) => seeded(seed + salt);
+
+const GiB = 1024 ** 3;
+
+export function hostMeasurement(w, { cores, load, availableGB, freeGB = availableGB }) {
+  const available = Math.round(availableGB * GiB);
+  const free = Math.round(freeGB * GiB);
+  const preload = put(w.dir, "measured-host.cjs", `
+const os = require("node:os");
+const fs = require("node:fs");
+const { syncBuiltinESMExports } = require("node:module");
+os.cpus = () => Array.from({ length: ${cores} }, () => ({ model: "Fixture", speed: 2400, times: {} }));
+os.availableParallelism = () => ${cores};
+os.loadavg = () => [${load}, 0.02, 0.01];
+os.freemem = () => ${available};
+os.totalmem = () => 64 * 2 ** 30;
+process.availableMemory = () => ${available};
+const read = fs.readFileSync;
+fs.readFileSync = (path, options) => {
+  const source = path === "/proc/meminfo"
+    ? "MemTotal:       67108864 kB\\nMemFree:        ${Math.round(free / 1024)} kB\\nMemAvailable:   ${Math.round(available / 1024)} kB\\n"
+    : path === "/proc/loadavg" ? "${load} 0.02 0.01 1/10 123\\n" : null;
+  if (source === null) return read(path, options);
+  return typeof options === "string" || options?.encoding ? source : Buffer.from(source);
+};
+syncBuiltinESMExports();
+`);
+  return {
+    NODE_OPTIONS: `--import=${pathToFileURL(join(w.dir, "clock.mjs")).href} --require=${preload}`,
+  };
+}
+
+export function suggestedHeavy(text) {
+  return text.split("\n").filter(line =>
+    /call\.mjs.* (critic|actor|judge) --round |suite-green\.mjs.* --command /.test(line));
+}

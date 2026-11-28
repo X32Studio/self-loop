@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// D-0015, D-0016, D-0064, D-0067, F-0015, R-0055-judge-frame-hygiene, R-0055-judge-frame-alphax
+// D-0015, D-0016, D-0064, D-0067, F-0015, F-0016, R-0055-judge-frame-hygiene, R-0055-judge-frame-alphax
 import "./lib/unbind-git.mjs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -27,6 +27,7 @@ export const PUBLIC_KINDS = ["Purpose", "Decisions", "Design", "Blueprint", "Rou
 export const isPublicKind = kind => kind !== "Rounds" && PUBLIC_KINDS.includes(kind);
 const gitEnv = () => ({ GIT_TERMINAL_PROMPT: "0", ...process.env });
 const QUOTED = new Set(["Backtests", "Evidence", "Blueprint evidence", "Sealed", "Index", "Blueprint view"]);
+const SUPERSESSION_KINDS = new Set(["Purpose", "Decisions", "Plan"]);
 const JSONL = /\.jsonl$/i;
 const TEXT = /\.(md|tsv|json|txt|mjs|js|ts|ya?ml)$/i;
 const INVALID_STAGED_PATH = /["\x00-\x1f]|^\s|\s$/;
@@ -315,12 +316,12 @@ export function inspect(repo, { layoutText, config = {}, files, own, screenOnly,
   const untracked = files || !existsSync(join(repo, ".git")) ? [] : listFiles(repo, { untracked: true });
   files = (files ?? listFiles(repo)).filter(p => given || existsSync(join(repo, p))).sort();
   const checked = new Set(own ?? files);
-  const records = [], failures = [], screening = [], ids = new Map();
+  const records = [], failures = [], screening = [], ids = new Map(), idKinds = new Map();
   for (const path of files) {
     const c = classify(layout, path);
     if (!c) { (checked.has(path) ? failures : screening).push({ rule: "undeclared", path, detail: "no declared kind and path (RECORDS.md layout or records.json extraKinds)" }); continue; }
     records.push({ path, ...c });
-    if (c.id) ids.set(c.id, path);
+    if (c.id) { ids.set(c.id, path); idKinds.set(c.id, c.kind); }
   }
   for (const path of untracked) screening.push({ rule: "untracked", path, detail: `not committed or staged, so not in the index${classify(layout, path) ? "" : "; no declared kind either"}` });
   const idRegex = idRegexOf(layout), has = new Set(files), prunedByPath = parsePruneManifests(files, read);
@@ -357,7 +358,13 @@ export function inspect(repo, { layoutText, config = {}, files, own, screenOnly,
     const text = read(record.path);
     texts.set(record.path, text);
     if (record.kind === "Decisions") for (const m of text.matchAll(idRegex)) decisionCitations.add(m[0]);
-    for (const m of text.matchAll(/^supersedes:\s*(.+)$/gmi)) for (const target of m[1].split(/[,\s]+/).filter(Boolean)) supersededBy.set(target, record.id ?? record.path);
+    if (SUPERSESSION_KINDS.has(record.kind) && record.id) {
+      for (const m of text.matchAll(/^supersedes:\s*(.+)$/gmi)) {
+        for (const target of m[1].split(/[,\s]+/).filter(Boolean)) {
+          if (target !== record.id && idKinds.get(target) === record.kind) supersededBy.set(target, record.id);
+        }
+      }
+    }
   }
   const latestActorWrite = new Map();
   for (const [i, h] of handoffs.entries()) if (h.role === "actor") for (const path of h.files) latestActorWrite.set(path, i);

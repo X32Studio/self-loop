@@ -52,11 +52,11 @@ node scripts/self-loop.mjs hooks install --records <dir>
 ### Step 2 — Execution & Bounded Micro-Patch (T5)
 
 - **Substantive work -> isolated parallel Actors**: prepare with `call.mjs <config> actor --round N --plan PL-NNNN --package <id> --task <file> [--prepare]` or `dispatch.mjs prepare --records <dir> --plan PL-NNNN`. On completion, run `call.mjs <config> record --ws <ws>` (auto-prunes finished `wt/`, skips `out/tmp/` & `.git/`, discovers nonce) and fold conflict-free heads with `dispatch.mjs integrate --apply`.
-- **Trivial hygiene -> bounded micro-patch (D-0064 T5)**: edits within hard caps (`<= 20` changed lines, `<= 3` files, `<= 2` consecutive per wave) may use:
+- **Trivial hygiene -> bounded micro-patch (D-0064 T5, F-0016)**: edits within hard caps (`<= 20` changed lines, `<= 3` files, `<= 2` consecutive per wave) run non-interactively under `lead-guard` in an isolated detached worktree:
   ```bash
-  node scripts/self-loop.mjs patch --records <dir> --reason "<why>" --verify "<cmd>"
+  node scripts/self-loop.mjs patch --records <dir> --diff <file|-> --reason "<why>" --verify "<cmd>"
   ```
-  Enforces `0` added prose comments and `--verify` exit 0 inline, records `role: "lead-patch"`, and never weakens protected-branch convergence.
+  Applies the unified diff atomically, enforces `0` added prose comments and `--verify` exit 0 before fast-forwarding `cfg.branch`, records `role: "lead-patch"` (`LP-NNNN`), and never weakens `lead-guard` or protected-branch convergence.
 - **Multi-round refactors**: open a Bounded Horizon Window (`window.mjs open --horizon <2..12>`) when intermediate Critic/CI checks are unproductive; `reviewer-architecture` runs asynchronously on `T1`/`T3` and only blocks packages intersecting breaching hotspots.
 
 ### Step 3 — Dual-Five Zeroing (双五归零, `D-0067`)
@@ -71,7 +71,7 @@ node scripts/self-loop.mjs hooks install --records <dir>
 
 ### Step 4 — Independent Verification & No-Dispute Convergence (`D-0064` T10)
 
-- **Living domain acceptance suites (D-0063)**: independent Critic attacks by defect class with horizontal sweep in domain-organized suites (`< 500`L, `0` prose, never append-only `-attack`, `-closure`, or round-numbered files). Post-actor Critic runs once per substantive wave; small (`<= 20–30`L) RED-to-GREEN fixes skip recursive Critics (T7).
+- **Living domain acceptance suites & Dual-Axis Critic review (D-0063, F-0016)**: independent Critic writes seam-first black-box cases in domain-organized suites (`< 500`L, `0` prose; bans implementation-coupled/tautological/round-numbered/`-attack` files) and reviews across **Axis 1 (Spec/Behavior)** and **Axis 2 (Standards/Subtraction/Zeroing)**. Post-actor Critic runs once per substantive wave; small (`<= 20–30`L) RED-to-GREEN fixes skip recursive Critics (T7).
 - **Deterministic zero-comment admission**: `lib/lexers*.mjs` and `lib/directives.mjs` verify JS/TS/JSX, Python, Swift, Shell, YAML, CSS, HTML, SQL, Go, Rust, C/C++, Java, Kotlin, and TOML in `< 1ms`. Comment-free, pointer-only, and tool-directive files pass immediately with zero `judge-comments` LLM audits; added prose fails deterministically with line diagnostics.
 - **No-Dispute No-Judge Convergence**: when an independent Critic passes with these exact headers and `audit.violations === 0` covering all unjudged wave Actors -> **converged directly without a redundant Judge** (honored uniformly by `ci.mjs`, `provenance.mjs`, `window-state.mjs`, `trajectory.mjs`, `facts.mjs`, and `loop.mjs`):
   ```text
@@ -81,7 +81,7 @@ node scripts/self-loop.mjs hooks install --records <dir>
   OPENED: -
   ```
 - **Invoke Judge ONLY when needed**: real Actor/Critic disputes (`DISPUTES:` non-empty), unresolved/open defects, non-independent Critic, held-out `sealed/` verification, `judge-frame` derivation review, or explicit owner request.
-- **Once-per-tree suite & `codeTree` reuse (D-0061, T6)**: `suite-green.mjs` caches green runs per `codeTree` + runtime; `VERSION`-only release tips reuse `codeTree`-equivalent suite and CI receipts; `pre-commit` fast-passes on `VERSION`/docs-only commits.
+- **Once-per-tree suite, checkpoint relay & `codeTree` reuse (D-0061, T6, F-0016, W-ee79c72dc0)**: `suite-green.mjs --relay` caches per-file green checkpoints under `.relay/<codeTree>/<runtimeKey>/` (or `SELF_LOOP_RELAY_DIR`) so retries execute only failed/unrun files and synthesize a full-tree green receipt; `VERSION`-only release tips reuse `codeTree`-equivalent suite and CI receipts; `pre-commit` fast-passes on `VERSION`/docs-only commits.
 - **Phase close & Owner interface**: run `reviewer-subtraction` (zero prose comments + every requirement retains mechanism & test), promote protected branches solely via `gated-push.mjs`, record lessons (`lessons/L-NNNN.md`), and quote `next`'s `Measures` header verbatim in the owner report. Batch owner-only decisions via `decisions.mjs validate|send|answer|replace` (intent batches `D-0031`: `1` initial + at most `1` follow-up per requirement per phase) and log unbatched owner reframes in `interventions/I-NNNN.md`.
 
 ### Step 5 — Configurable Models & Harnesses (`D-0068`, `D-0066`)
@@ -157,6 +157,7 @@ A claim without its gate output on the exact commit you name is not made (detail
 ## Reference
 
 - [`assets/reference-cli-and-gates.md`](assets/reference-cli-and-gates.md) — Complete CLI flag reference, JSON envelopes (`continuation-entry/v1`, `plan-time/v2`, `plan-forecast/v1`, `scoped-release`), dispatch gates `G1–G7`, Paseo/Antigravity/`better-paseo-antigravity` protocols, comment admission v2, SSOT checks, owner-word metrics, supervision/cadence/window mechanics, `suite-green`/`gated-push`/`bench-gate`, and full Enforcement Ladder details.
+- [`GLOSSARY.md`](GLOSSARY.md) — Ubiquitous domain vocabulary (engines, tree/relay checkpoints, deep modules, seam-first testing, Dual-Axis Review).
 - [`RECORDS.md`](RECORDS.md) — Records repository layout, schemas, and commit discipline.
 - [`REQUIREMENTS.md`](REQUIREMENTS.md) — First-principles requirements and rationale behind every rule.
 - [`DEBT.md`](DEBT.md) — Rules still left to judgment or prose.

@@ -1,12 +1,13 @@
 // D-0060, design/mandatory-control-plane.md#1
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import {
   DEFAULT_LEAD_PATHS,
   evaluateCertifiedWaveCoverage,
+  isAncestorFast,
   isCleanWaveMerge,
   isExactRevertOfAttested,
   isLeadOnlyCommit,
@@ -580,4 +581,83 @@ test("D-0064 T5: lead-patch commits are attested in provenance but still require
   commitFile(fx.records, "metrics/handoffs.jsonl", prev + JSON.stringify(badEntry) + "\n", "tampered lead-patch");
   const badRes = verifyProvenance({ repo: fx.product, records: fx.records, sha: badSha, mode: "base" });
   assert.equal(badRes.ok, false);
+});
+
+test("F-0016 A6: isAncestorFast serves linear, merge, unrelated, refresh, replace-resistant, and unreachable commit-tree queries in < 2 git calls", () => {
+  const r = repo({ "a.txt": "0\n" });
+  const c0 = git(r, "rev-parse", "HEAD");
+  const c1 = commitFile(r, "a.txt", "1\n", "c1");
+  const c2 = commitFile(r, "a.txt", "2\n", "c2");
+
+  git(r, "checkout", "-q", "-b", "side-b", c0);
+  const b1 = commitFile(r, "b.txt", "b1\n", "b1");
+  git(r, "checkout", "-q", "-b", "side-c", c0);
+  const s1 = commitFile(r, "c.txt", "s1\n", "s1");
+
+  git(r, "checkout", "-q", "side-b");
+  git(r, "merge", "-q", "--no-edit", c2);
+  const m2 = git(r, "rev-parse", "HEAD");
+  const m3Tree = git(r, "merge-tree", "--write-tree", m2, s1).split("\n")[0].trim();
+  const m3 = git(r, "commit-tree", m3Tree, "-p", c2, "-p", b1, "-p", s1, "-m", "octopus");
+  git(r, "branch", "-f", "octo", m3);
+
+  const orphanTree = git(r, "rev-parse", `${c0}^{tree}`);
+  const orphanRoot = git(r, "commit-tree", orphanTree, "-m", "orphan root");
+  const orphanChild = git(r, "commit-tree", orphanTree, "-p", orphanRoot, "-m", "orphan child");
+  const unreachableChild = git(r, "commit-tree", orphanTree, "-p", c2, "-m", "unreachable child");
+
+  const realGit = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim();
+  assert.ok(realGit && existsSync(realGit), "git executable must resolve");
+  const binDir = temp("git-spy-");
+  const logFile = join(binDir, "calls.log");
+  const spy = join(binDir, "git");
+  writeFileSync(spy, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(logFile)}\nexec ${JSON.stringify(realGit)} "$@"\n`);
+  chmodSync(spy, 0o755);
+
+  const origPath = process.env.PATH;
+  process.env.PATH = `${binDir}${delimiter}${origPath}`;
+  try {
+    const nodes = [c0, c1, c2, b1, s1, m2, m3];
+    const expected = [
+      [c0, c2, true], [c1, c2, true], [c2, c0, false], [c1, c1, true],
+      [c0, m2, true], [c2, m2, true], [b1, m2, true], [s1, m2, false],
+      [b1, c2, false], [c2, b1, false], [s1, b1, false],
+      [c0, m3, true], [c1, m3, true], [c2, m3, true], [b1, m3, true], [s1, m3, true], [m2, m3, false],
+    ];
+    for (let round = 0; round < 3; round++) {
+      for (const [anc, desc, want] of expected) {
+        assert.equal(isAncestorFast(r, anc, desc), want, `round ${round}: ${anc.slice(0, 7)} <= ${desc.slice(0, 7)}`);
+      }
+      for (const n of nodes) assert.equal(isAncestorFast(r, n, n), true);
+    }
+    const calls = existsSync(logFile) ? readFileSync(logFile, "utf8").trim().split("\n").filter(Boolean) : [];
+    assert.ok(calls.length < 2, `expected < 2 git spawns across ${expected.length * 3 + nodes.length * 3} queries, got ${calls.length}: ${calls.join(" | ")}`);
+    assert.ok(calls.every(line => !line.includes("merge-base")), `unexpected merge-base spawn: ${calls.join(" | ")}`);
+  } finally {
+    process.env.PATH = origPath;
+  }
+
+  assert.equal(isAncestorFast(r, orphanRoot, orphanChild), true);
+  assert.equal(isAncestorFast(r, orphanChild, orphanRoot), false);
+  assert.equal(isAncestorFast(r, c0, orphanRoot), false);
+  assert.equal(isAncestorFast(r, orphanRoot, m3), false);
+  assert.equal(isAncestorFast(r, c0, unreachableChild), true);
+  assert.equal(isAncestorFast(r, c2, unreachableChild), true);
+  assert.equal(isAncestorFast(r, b1, unreachableChild), false);
+  assert.equal(isAncestorFast(r, "f".repeat(40), "f".repeat(40)), false);
+  assert.equal(isAncestorFast(r, "", c2), false);
+
+  git(r, "checkout", "-q", "--detach", m2);
+  const cNew = commitFile(r, "fresh.txt", "fresh\n", "fresh detached");
+  assert.equal(isAncestorFast(r, c0, cNew), true);
+  assert.equal(isAncestorFast(r, b1, cNew), true);
+  assert.equal(isAncestorFast(r, s1, cNew), false);
+
+  git(r, "replace", cNew, s1);
+  try {
+    assert.equal(isAncestorFast(r, b1, cNew), true);
+    assert.equal(isAncestorFast(r, s1, cNew), false);
+  } finally {
+    git(r, "replace", "-d", cNew);
+  }
 });

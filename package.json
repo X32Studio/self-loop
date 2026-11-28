@@ -1,6 +1,6 @@
 {
   "name": "self-loop",
-  "version": "0.9.8",
+  "version": "0.9.9",
   "description": "The deterministic delivery control plane for coding-agent swarms: Generation-Engine-first framing, parallel file-disjoint waves, Dual-Five Zeroing, zero-waste Critic/Judge verification, and Round-80 operational self-hygiene.",
   "license": "MIT",
   "author": "Ruiyuan Kang <kang@x32studio.com>",

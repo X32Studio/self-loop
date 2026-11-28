@@ -10,7 +10,7 @@ import { join, dirname } from 'node:path';
 import { execFile, execFileSync, fork } from 'node:child_process';
 import { hostname } from 'node:os';
 import { once } from 'node:events';
-const { mechanisms, pkg, at, planText } = modelOnly ? {} : await import('./v1-round9-fixture.mjs');
+const { mechanisms, pkg, at, planText } = modelOnly ? {} : await import('./plan-world-fixture.mjs');
 const { put, json } = modelOnly ? {} : await import('./fixture.mjs');
 const { snapshot, loadPlan, planContext, readyPlan, admitAcrossPlans, releaseOf } = modelOnly ? {} : await import('../scripts/lib/plan.mjs');
 const moduleURL = new URL('../scripts/lib/continuation.mjs', import.meta.url).href;

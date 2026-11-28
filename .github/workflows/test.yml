@@ -28,8 +28,12 @@ jobs:
           git config --global user.name "self-loop CI"
           git config --global user.email "ci@self-loop.invalid"
           git config --global init.defaultBranch main
-      - name: Run unit suite
-        run: node --test scripts/test
+          git config --global gc.auto 0
+          git config --global maintenance.auto false
+      - name: Run unit suite with relay
+        env:
+          SELF_LOOP_RELAY_DIR: ${{ runner.temp }}/self-loop-ci-relay
+        run: node scripts/suite-green.mjs --repo . --sha HEAD --command "node --test scripts/test" --format node-test --relay
 
   acceptance:
     name: acceptance (${{ matrix.os }})
@@ -52,5 +56,9 @@ jobs:
           git config --global user.name "self-loop CI"
           git config --global user.email "ci@self-loop.invalid"
           git config --global init.defaultBranch main
-      - name: Run acceptance suite
-        run: node --test acceptance
+          git config --global gc.auto 0
+          git config --global maintenance.auto false
+      - name: Run acceptance suite with relay
+        env:
+          SELF_LOOP_RELAY_DIR: ${{ runner.temp }}/self-loop-ci-relay
+        run: node scripts/suite-green.mjs --repo . --sha HEAD --command "node --test acceptance" --format node-test --relay

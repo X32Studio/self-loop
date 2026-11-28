@@ -1,12 +1,11 @@
 import test from "node:test";
-import { admission } from "./round7-b-fixture.mjs";
-import { acceptedPatch, refusedPatch } from "./comment-contract-fixture.mjs";
+import { acceptedPatch, admission, refusedPatch } from "./comment-contract-fixture.mjs";
 
 const consoleLine = 'console.log("fixture");';
 const typed = 'export const value: number = "intentional";';
 const nodeIgnore = "node:coverage ignore next 2";
-const schema = 'yaml-language-server: $schema=./schema.json';
-const swiftLine = 'let value = raw as! String';
+const schema = "yaml-language-server: $schema=./schema.json";
+const swiftLine = "let value = raw as! String";
 
 const cases = [
   ["01", "interpreter line", "release.sh", "#!/usr/bin/env bash\nprintf 'ready\\n'\n",
@@ -144,11 +143,7 @@ for (const [id, title, goodFile, good, badFile, bad, line, phrase] of cases) {
     const support = id === "10" ? { "src/types.d.ts": "type Label = string;\n" } :
       ["24", "31"].includes(id) ? { "src/schema.json": '{"type":"object"}\n' } : {};
     const valid = { ...support, ["src/" + goodFile]: good };
-    if (goodFile !== badFile) {
-      const retry = { ...valid, [invalid]: null };
-      acceptedPatch(w, p, prepared, retry);
-    } else {
-      acceptedPatch(w, p, prepared, valid);
-    }
+    if (goodFile !== badFile) acceptedPatch(w, p, prepared, { ...valid, [invalid]: null });
+    else acceptedPatch(w, p, prepared, valid);
   });
 }

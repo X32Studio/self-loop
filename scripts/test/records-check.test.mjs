@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from "node:path";
 import test from "node:test";
 import { parseHandoffs, ROLES, validateHandoff, validateLeadPatchHandoff } from "../lib/handoff.mjs";
-import { check, classify, DEFAULT_LAYOUT, inspect, openWords, parseLayout } from "../records-check.mjs";
+import { check, checkStaged, classify, DEFAULT_LAYOUT, indexOfTree, inspect, openWords, parseLayout } from "../records-check.mjs";
 import { fixtures, git, here, repo, scripts } from "./helpers.mjs";
 
 const layoutText = readFileSync(DEFAULT_LAYOUT, "utf8");
@@ -489,4 +489,39 @@ test("F-0015: records-check --prune dry-run and apply delegate to pruneAndCompac
   assert.equal(JSON.parse(app.stdout).tombstonePath, "prune/PR-0001.md");
   assert.equal(existsSync(join(dir, "evidence/0001/actor-1/out/old.txt")), false);
   assert.equal(runCli().status, 0);
+});
+
+test("F-0016 A6: supersedes extraction ignores QUOTED/non-superseding kinds and cross-kind or self targets so --write and --staged match identically", () => {
+  const dir = repo({
+    "README.md": "# r\n",
+    "decisions/D-0001.md": "# D-0001 First\n\nby: owner\nstatus: active\n",
+    "decisions/D-0002.md": "# D-0002 Second\n\nby: owner\nsupersedes: D-0001\nstatus: active\n",
+    "decisions/D-0003.md": "# D-0003 Cross and self\n\nby: lead\nsupersedes: P-0001, D-0003, D-9999\nstatus: active\n",
+    "purpose/P-0001.md": "# P-0001 First purpose\n\nstatus: active\n",
+    "purpose/P-0002.md": "# P-0002 Second purpose\n\nsupersedes: P-0001\nstatus: active\n",
+    "plans/PL-0001.md": "# PL-0001 First plan\n\nscope: v1/a\nphase: v1\n",
+    "plans/PL-0002.md": "# PL-0002 Second plan\n\nscope: v1/a\nphase: v1\nsupersedes: PL-0001\n",
+    "evidence/0009/actor-c-1/out/context-read.txt": "quoted excerpt:\nsupersedes: D-0001\nsupersedes: D-0002\n",
+    "rounds/0001-actor.md": "# R-0001-actor\n\nQuoted:\nsupersedes: D-0002\n",
+  });
+  const runCli = (...a) => spawnSync(process.execPath, [join(scripts, "records-check.mjs"), "--repo", dir, ...a], { encoding: "utf8" });
+
+  assert.equal(runCli("--write").status, 0);
+  const writtenIndex = readFileSync(join(dir, "INDEX.md"), "utf8");
+  assert.match(writtenIndex, /\| D-0001 \| `decisions\/D-0001\.md` \| D-0001 First \| superseded by D-0002 \|/);
+  assert.match(writtenIndex, /\| D-0002 \| `decisions\/D-0002\.md` \| D-0002 Second \| active \|/);
+  assert.match(writtenIndex, /\| D-0003 \| `decisions\/D-0003\.md` \| D-0003 Cross and self \| active \|/);
+  assert.match(writtenIndex, /\| P-0001 \| `purpose\/P-0001\.md` \| P-0001 First purpose \| superseded by P-0002 \|/);
+  assert.match(writtenIndex, /\| PL-0001 \| `plans\/PL-0001\.md` \| PL-0001 First plan \| superseded by PL-0002 \|/);
+  assert.doesNotMatch(writtenIndex, /superseded by evidence\//);
+  assert.doesNotMatch(writtenIndex, /superseded by R-0001-actor/);
+  assert.doesNotMatch(writtenIndex, /superseded by D-0003/);
+
+  git(dir, "add", "INDEX.md");
+  const staged = checkStaged(dir, { layoutText });
+  assert.equal(staged.ok, true, JSON.stringify(staged.failures));
+  assert.equal(runCli("--staged").status, 0);
+
+  git(dir, "commit", "-qm", "index");
+  assert.equal(indexOfTree(dir, "HEAD", { layoutText }), writtenIndex);
 });

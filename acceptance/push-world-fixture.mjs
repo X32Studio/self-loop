@@ -1,9 +1,20 @@
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { closingWorld, serveChecks } from "./closing-fixture.mjs";
+import { closingScenario, closingWorld, serveChecks } from "./closing-fixture.mjs";
 import { json, put, status, world } from "./fixture.mjs";
-import { pushScenario } from "./r6-push-scenario.mjs";
+import { seed, seeded } from "./scenario.mjs";
+
+export function pushScenario(options = {}) {
+  const close = closingScenario(options);
+  const draw = seeded(seed);
+  const destination = (slug, checks) => ({ slug, url: "git@github.com:" + slug + ".git", checks });
+  return {
+    close,
+    first: destination(close.destination, close.initial),
+    second: destination("mirror/release-" + draw(10_000), close.failedRerun),
+  };
+}
 
 function installTransport(w, destinations) {
   const repos = Object.fromEntries(destinations.map(({ slug }) => [slug, join(w.dir, ...slug.split("/")) + ".git"]));

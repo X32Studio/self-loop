@@ -1,8 +1,10 @@
-// self-loop-records@bd8a1ad:evidence/0012/admitted-time-budget/contracts.json; TB-ADD-01/03/04.
+// D-0060, F-0016
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { fixture, digest, json, h } from './fixture.mjs';
+const linuxIdentity=process.platform==='linux'&&existsSync('/proc/sys/kernel/random/boot_id');
 const id=x=>`ct:${digest(JSON.stringify(x))}`;
 const moduleURL=new URL('../../scripts/lib/continuation.mjs',import.meta.url).href;
 const ledger='metrics/continuations.jsonl';
@@ -22,7 +24,7 @@ function call(f,method,args){
 const enter=(f,b)=>call(f,'reconcileAtExistingParentEntry',[f.records,{environmentId:b.environmentId,parentThreadId:b.parentThreadId,runId:'tb-parent-entry',deathRefs:[]},measured]);
 function publishPair(f){const one=f.publish(f.observation());f.publish(f.observation({asOf:6,checkpoint:12,parents:[one]}));}
 
-for(const status of ['failed','cancelled','completed'])test(`stable binding: forecast updates then ${status} without handoff`,t=>{
+for(const status of ['failed','cancelled','completed'])test(`stable binding: forecast updates then ${status} without handoff`,{skip:!linuxIdentity},t=>{
   const f=fixture(t),{b,ref}=bind(f);publishPair(f);const observation=terminal(f,b,status);
   assert.equal(f.ref(b.planRef.path).sha256,b.planRef.sha256);assert.equal(f.ref(b.delegationRef.path).sha256,b.delegationRef.sha256);
   const captured=call(f,'capture',[observation,ref,f.records]);assert.ok(captured.obligationId,JSON.stringify(captured));assert.deepEqual(captured.unknowns,[]);
@@ -42,7 +44,7 @@ test('genuine successor keeps stale-plan binding rejection',t=>{
   const o=terminal(f,b,'failed'),c=call(f,'capture',[o,ref,f.records]);assert.equal(c.obligationId,null);assert.match(c.unknowns.join('\n'),/stale plan binding/);
 });
 
-test('uncertain existing claim is not stolen by forecast refresh or later entry',t=>{
+test('uncertain existing claim is not stolen by forecast refresh or later entry',{skip:!linuxIdentity},t=>{
   const f=fixture(t),{b,ref}=bind(f);const first=f.publish(f.observation());const o=terminal(f,b,'failed'),c=call(f,'capture',[o,ref,f.records]);assert.ok(c.obligationId,JSON.stringify(c));
   const old=rows(f),previous=digest(JSON.stringify(old.at(-1))),claimant={host:'unreachable-host',bootId:'unknown-boot',pid:1234,startId:'unknown-start',parentThreadId:b.parentThreadId,runId:'uncertain-entry'};
   const payload={obligationId:c.obligationId,generation:b.generation,expectedHead:f.git('rev-parse','HEAD'),claimOrdinal:1,claimId:id([c.obligationId.slice(3),1,claimant]),claimant};

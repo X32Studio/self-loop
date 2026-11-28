@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { has, jsonOutput, output, status } from "./fixture.mjs";
-import { pushWorld } from "./r6-push-fixture.mjs";
+import { pushWorld } from "./push-world-fixture.mjs";
 
 function namesBoth(result, { first, second }) {
   has(output(result), first.url);
@@ -204,3 +204,17 @@ test("R6-A18 a working branch cannot bypass the one-destination rule", t => {
   p.assertDelivered(p.first, "candidate");
   assert.equal(p.snapshot()[1], mirrorBefore);
 });
+
+for (const [i, spelling] of ["https://github.com:443/", "ssh://git@github.com:22/", "https://GITHUB.COM/"].entries()) {
+  test(`R9-B4-0${i + 1} ordered · flow: CI gate reads a semantically equivalent supported destination then a different host · loss: false-verdict`, t => {
+    const p = pushWorld(t);
+    const set = url => p.w.git(p.product, "remote", "set-url", "--push", p.close.remote, url);
+    status(p.diagnose(), 0);
+    set(`${spelling}${p.first.slug}.git`);
+    const receipt = jsonOutput(p.diagnose());
+    assert.equal(receipt.host, "github.com");
+    assert.equal(receipt.repository, p.first.slug);
+    set(`https://different.example:443/${p.first.slug}.git`);
+    status(p.diagnose(), 2);
+  });
+}

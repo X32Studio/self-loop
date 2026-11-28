@@ -11,25 +11,14 @@ import { gunzipSync, gzipSync } from "node:zlib";
 import { cli, need, parseArgs, UsageError } from "./lib/args.mjs";
 import { fullSha, ORIGINAL_OBJECTS } from "./lib/ci.mjs";
 import { pruneSuiteStore } from "./lib/suite-prune.mjs";
+import { parseSummary, purgeRelayForTree, RELAY_DIR, runSuiteWithRelay, withGitNoMaintenance } from "./lib/suite-relay.mjs";
 import { tipProblem } from "./lib/tip.mjs";
 import { FORMS, parseVersion } from "./lib/version.mjs";
 
-export { pruneSuiteStore };
+export { parseSummary, pruneSuiteStore };
 
 export const STORE = "self-loop-suite";
 export const LOAD_ENV = "SELF_LOOP_LOAD_DIR";
-
-const KEYS = ["tests", "suites", "pass", "fail", "cancelled", "skipped", "todo"];
-
-export function parseSummary(output) {
-  const summary = Object.fromEntries(KEYS.map(k => [k, 0]));
-  let found = false;
-  for (const m of output.matchAll(/^(?:ℹ|#) (tests|suites|pass|fail|cancelled|skipped|todo) (\d+)\s*$/gm)) {
-    summary[m[1]] += Number(m[2]);
-    found = true;
-  }
-  return found ? summary : null;
-}
 
 export function verdict({ exit, output, format = "auto", installExit = 0 }) {
   const reasons = [];
@@ -44,7 +33,7 @@ export function verdict({ exit, output, format = "auto", installExit = 0 }) {
   return { green: reasons.length === 0, reasons, summary };
 }
 
-const shellEnv = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== "NODE_TEST_CONTEXT"));
+const shellEnv = () => withGitNoMaintenance(Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== "NODE_TEST_CONTEXT" && k !== "SELF_LOOP_RELAY_DIR")));
 const sh = (command, cwd, timeoutMin) => {
   const r = spawnSync("sh", ["-c", command], { cwd, env: shellEnv(), encoding: "utf8", maxBuffer: 1 << 30, timeout: timeoutMin * 60_000 });
   return { exit: r.status ?? -1, output: `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `\n${r.error.message}` : ""}` };
@@ -346,7 +335,7 @@ function acquireOrJoin(storeDir, tree, keyHash, timeoutMs, format, lookupGreen) 
   }
 }
 
-export function suiteGreen({ repo, sha, command, install = null, format = "auto", timeoutMin = 60, varyVersion = null }) {
+export function suiteGreen({ repo, sha, command, install = null, format = "auto", timeoutMin = 60, varyVersion = null, relay = true, concurrency = null }) {
   repo = resolve(repo);
   install = normInstall(install);
   const full = fullSha(repo, sha);
@@ -385,14 +374,18 @@ export function suiteGreen({ repo, sha, command, install = null, format = "auto"
       return reuseHit(rehit);
     }
     slot.assertCurrent("execution");
-    const started = Date.now(), release = holdLease(repo, full);
+    const started = Date.now(), release = holdLease(repo, full), useRelay = relay !== false && process.env.SELF_LOOP_NO_RELAY !== "1";
     let ran;
-    try { ran = runIn(repo, tested.commit, { command, install, timeoutMin, execution }); } finally { release(); }
+    try {
+      ran = (useRelay ? runSuiteWithRelay({ repo, commit: tested.commit, tree: tested.tree, codeTree, repository: dirname(storeDir), command, install, format, timeoutMin, execution, varyVersion, noRelay: !useRelay, concurrency }) : null)
+        ?? runIn(repo, tested.commit, { command, install, timeoutMin, execution });
+    } finally { release(); }
     const v = verdict({ exit: ran.exit, output: ran.log, format, installExit: ran.installExit });
-    const receipt = { ...base, exit: ran.exit, summary: v.summary, durationMs: Date.now() - started, green: v.green, reasons: v.reasons, log: { sha256: sha256(ran.log), bytes: Buffer.byteLength(ran.log) } };
+    const receipt = { ...base, exit: ran.exit, summary: v.summary, durationMs: Date.now() - started, green: v.green, reasons: v.reasons, ...(ran.relay ? { relay: ran.relay } : {}), log: { sha256: sha256(ran.log), bytes: Buffer.byteLength(ran.log) } };
     slot.assertCurrent("publication");
     let receiptPath = null;
     if (v.green) try { receiptPath = store(dir, { ...receipt, key, format, installExit: ran.installExit }, ran.log, storeDir, execution ? codeKey : null); } catch (e) { console.error(`suite-green: the receipt of ${full.slice(0, 7)} was not stored for reuse (${e.message})`); }
+    if (receiptPath && ran.relayDir && !process.env.SELF_LOOP_RELAY_DIR) try { rmSync(ran.relayDir, { recursive: true, force: true }); const p = dirname(ran.relayDir); if (readdirSync(p).length === 0) rmSync(p, { recursive: true, force: true }); } catch {}
     if (receiptPath) try { pruneSuiteStore(repo); } catch {}
     if (slot.finish) try { slot.finish({ green: v.green, receipt, receiptPath, text: ran.log, format, installExit: ran.installExit }); } catch (e) { console.error(`suite-green: generation g${slot.gen} of ${full.slice(0, 7)} was not recorded (${e.message})`); }
     finished = true;
@@ -423,11 +416,15 @@ export function lookupSuiteReceipt({ repo, sha, command, install = "", runtime =
 }
 
 export function purgeTreeReceipts(repo, tree) {
-  const storeDir = suiteStore(resolve(repo));
+  const resolved = resolve(repo);
+  let codeTree = null;
+  try { codeTree = codeTreeOf(resolved, tree); } catch {}
+  purgeRelayForTree(resolved, tree, codeTree);
+  const storeDir = suiteStore(resolved);
   if (!existsSync(storeDir)) return { purged: 0 };
   let purged = 0;
   for (const sub of readdirSync(storeDir, { withFileTypes: true })) {
-    if (!sub.isDirectory()) continue;
+    if (!sub.isDirectory() || sub.name === RELAY_DIR) continue;
     const subDir = join(storeDir, sub.name);
     if (sub.name === ".gen") { for (const e of readdirSync(subDir)) if (e.startsWith(`${tree}-`)) rmSync(join(subDir, e), { recursive: true, force: true }); continue; }
     if (sub.name === CODE_TREE_DIR) {
@@ -442,6 +439,7 @@ export function purgeTreeReceipts(repo, tree) {
       }
       continue;
     }
+    if (sub.name.startsWith(".")) continue;
     for (const entry of readdirSync(subDir).filter(n => n.endsWith(".json"))) {
       const jsonPath = join(subDir, entry), run = tryJson(readFileSync(jsonPath, "utf8"));
       if (!run || (run.tree !== tree && run.key?.tree !== tree)) continue;
@@ -474,13 +472,19 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) cli(() => {
   need(args, "repo", "sha", "command");
   const format = args.format || "auto";
   if (!["auto", "node-test"].includes(format)) throw new UsageError("--format must be auto or node-test");
+  if ("relay" in args && "no-relay" in args) throw new UsageError("use either --relay or --no-relay, not both");
   if (args.out && (existsSync(`${args.out}.json`) || existsSync(`${args.out}.log.gz`))) throw new UsageError(`${args.out}.json or .log.gz exists; evidence is never overwritten`);
   if ("vary-version" in args) need(args, "vary-version");
+  const relay = "no-relay" in args ? false : ("relay" in args ? true : process.env.SELF_LOOP_NO_RELAY !== "1");
   let receipt;
-  try { receipt = suiteGreen({ repo: args.repo, sha: args.sha, command: args.command, install: args.install || null, format, timeoutMin: Number(args["timeout-min"] || 60), varyVersion: args["vary-version"] ?? null }); }
+  try { receipt = suiteGreen({ repo: args.repo, sha: args.sha, command: args.command, install: args.install || null, format, timeoutMin: Number(args["timeout-min"] || 60), varyVersion: args["vary-version"] ?? null, relay }); }
   catch (e) { throw e instanceof UsageError ? e : new UsageError(e.message); }
   const { text, ...shown } = receipt;
   if (shown.reusedFrom) console.error(`reused ${shown.reusedFrom}`);
+  if (!receipt.green && text) {
+    const idx = text.indexOf("\n# relay failed ");
+    console.error((idx >= 0 ? text.slice(idx + 1) : text.slice(-8192)).slice(0, 16384));
+  }
   if (args.out) writeEvidence(args.out, shown, gzipSync(text));
   console.log(JSON.stringify(shown, null, 2));
   return receipt.green ? 0 : 2;

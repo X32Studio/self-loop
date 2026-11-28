@@ -11,8 +11,8 @@ import { firings, undiagnosedAlarms } from '../scripts/lib/diagnosis.mjs';
 import { buildAlarmContext } from '../scripts/lib/normal-entry-source.mjs';
 import { parseRows } from '../scripts/trajectory.mjs';
 import { put, json, jsonl, status, skill } from './fixture.mjs';
-import { phase } from './round6-b-fixture.mjs';
-import { pkg, planText, judgeRow } from './v1-round9-fixture.mjs';
+import { phase } from './loop-world-fixture.mjs';
+import { pkg, planText, judgeRow } from './plan-world-fixture.mjs';
 
 const detector = '32c9634ed2457e47e1e12f4a3d4e59a337a3472a';
 const trajectoryPath = 'metrics/trajectory.jsonl', stallPath = 'metrics/alarms.jsonl';

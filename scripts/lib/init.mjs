@@ -239,7 +239,7 @@ function buildLoopConfig({ productField, branch, protectedBranches, workDir, pre
     },
     owns: {
       critic: [],
-      actor: [],
+      actor: ["GLOSSARY.md"],
     },
     agents: preset.agents,
     setup: [],

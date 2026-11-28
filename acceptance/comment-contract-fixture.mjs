@@ -3,7 +3,13 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { json, jsonOutput, output, put, status } from './fixture.mjs';
-import { prepare, record, edit, head, assertRefused } from './round6-b-fixture.mjs';
+import { prepare, record, edit, head, assertRefused, loopWorld, phase } from './loop-world-fixture.mjs';
+
+export function admission(t) {
+  const w = loopWorld(t);
+  const p = phase(w);
+  return { w, p, prepared: prepare(w, p, 'actor') };
+}
 
 export function sourceRuling(path, source, language, proseComments = []) {
   return {path, source: createHash('sha256').update(source).digest('hex'), line:1, rule:'D-0016',

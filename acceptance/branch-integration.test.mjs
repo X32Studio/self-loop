@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { has, jsonOutput, output, put, readQueries, status, writeGh } from "./fixture.mjs";
-import { append, batchDraw, edit, greenCheck, head, integration, next, phase, prepare, record, round6B } from "./round6-b-fixture.mjs";
+import { append, batchDraw, edit, greenCheck, head, integration, loopWorld, next, phase, prepare, record } from "./loop-world-fixture.mjs";
 
 function sourceCommit(w, p, path, value) {
   put(p.product, path, `export const value = ${value};\n`);
@@ -15,7 +15,7 @@ function point(w, p, sha) {
 }
 
 test("R6-B1-01 both next entries recover a judged SHA and its protected VERSION tip from a lagging ref", t => {
-  const w = round6B(t);
+  const w = loopWorld(t);
   const p = phase(w);
   const judged = sourceCommit(w, p, "src/judged.mjs", batchDraw()(1000));
   put(p.product, "VERSION", "1.0.1\n");
@@ -36,7 +36,7 @@ test("R6-B1-01 both next entries recover a judged SHA and its protected VERSION 
 });
 
 test("R6-B1-02 a critic and actor on explicit descending SHAs advance the integration branch", t => {
-  const w = round6B(t);
+  const w = loopWorld(t);
   const p = phase(w);
   const critic = prepare(w, p, "critic", { base: p.initial });
   edit(critic, { "acceptance/check.mjs": "export const check = true;\n" });
@@ -50,7 +50,7 @@ test("R6-B1-02 a critic and actor on explicit descending SHAs advance the integr
 });
 
 test("R6-B1-03 next uses the newest recorded hand-off for suite, CI and judge when the branch lags", t => {
-  const w = round6B(t);
+  const w = loopWorld(t);
   const p = phase(w);
   writeGh(w, { [p.initial]: [greenCheck] });
   append(w, p, p.initial);
@@ -84,7 +84,7 @@ syncBuiltinESMExports();
 });
 
 test("R6-B1-04 parallel hand-offs give both heads and request a merge", t => {
-  const w = round6B(t);
+  const w = loopWorld(t);
   const p = phase(w);
   writeGh(w, { [p.initial]: [greenCheck] });
   append(w, p, p.initial);
@@ -105,7 +105,7 @@ test("R6-B1-04 parallel hand-offs give both heads and request a merge", t => {
 });
 
 test("R6-B1-05 a role prepared before the judged commit is recorded with a stale-base warning", t => {
-  const w = round6B(t);
+  const w = loopWorld(t);
   const p = phase(w);
   const actor = prepare(w, p, "actor", { base: p.initial });
   edit(actor, { "src/in-flight.mjs": "export const work = true;\n" });
@@ -123,7 +123,7 @@ test("R6-B1-05 a role prepared before the judged commit is recorded with a stale
 });
 
 test("R6-B1-06 a source-changing branch ahead of the latest ruling cannot replace the recorded SHA", t => {
-  const w = round6B(t);
+  const w = loopWorld(t);
   const p = phase(w);
   const unruled = sourceCommit(w, p, "src/unruled.mjs", batchDraw()(1000));
   put(p.product, "VERSION", "1.0.1\n");
@@ -138,7 +138,7 @@ test("R6-B1-06 a source-changing branch ahead of the latest ruling cannot replac
 });
 
 test("R6-B1-07 a same-second hand-off recorded before the ruling does not advance it", t => {
-  const w = round6B(t);
+  const w = loopWorld(t);
   const p = phase(w);
   const actor = prepare(w, p, "actor", { round: 2, base: p.initial });
   edit(actor, { "src/parallel.mjs": "export const parallel = true;\n" });
@@ -152,7 +152,7 @@ test("R6-B1-07 a same-second hand-off recorded before the ruling does not advanc
 });
 
 test("R6-B1-08 a diverged local branch gets a merge command for the newest judgement", t => {
-  const w = round6B(t);
+  const w = loopWorld(t);
   const p = phase(w);
   const judged = sourceCommit(w, p, "src/judged.mjs", batchDraw()(1000));
   const recovery = join(w.dir, "recovery");

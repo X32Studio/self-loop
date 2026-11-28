@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 const STORE = "self-loop-suite";
 const CODE_TREE_DIR = ".code-tree";
 const GEN_DIR = ".gen";
+const RELAY_DIR = ".relay";
 const CLAIM_RE = /^g(\d+)\.claim$/;
 const DONE_RE = /^g(\d+)\.done\.json$/;
 const DEAD_CLAIM_MAX_AGE_MS = 3600_000;
@@ -73,9 +74,22 @@ function shouldRemoveGenDir(genDir, nowMs) {
   return Boolean(st && nowMs - st.mtimeMs > DEAD_CLAIM_MAX_AGE_MS);
 }
 
+function treeLatestMtimeMs(target) {
+  const st = lstatSync(target, { throwIfNoEntry: false });
+  if (!st) return 0;
+  let latest = st.mtimeMs;
+  if (!st.isDirectory()) return latest;
+  try { for (const name of readdirSync(target)) latest = Math.max(latest, treeLatestMtimeMs(join(target, name))); } catch {}
+  return latest;
+}
+
 export function pruneSuiteStore(
   productRepo,
-  { maxReceipts = 32, maxBytes = 50 * 1024 * 1024, maxAgeMs = 14 * 86400_000, pinnedTrees = null, apply = true, now = () => Date.now() } = {},
+  {
+    maxReceipts = 32, maxBytes = 50 * 1024 * 1024, maxAgeMs = 14 * 86400_000,
+    maxRelayTrees = 16, maxRelayBytes = 32 * 1024 * 1024, maxRelayAgeMs = 14 * 86400_000,
+    pinnedTrees = null, apply = true, now = () => Date.now(),
+  } = {},
 ) {
   const repo = resolve(productRepo);
   const common = gitTry(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
@@ -88,7 +102,7 @@ export function pruneSuiteStore(
   let bytesFreed = 0;
 
   for (const sub of readdirSync(storeDir, { withFileTypes: true })) {
-    if (!sub.isDirectory() || sub.name === GEN_DIR || sub.name === CODE_TREE_DIR) continue;
+    if (!sub.isDirectory() || sub.name === GEN_DIR || sub.name === CODE_TREE_DIR || sub.name === RELAY_DIR || sub.name.startsWith(".")) continue;
     const subDir = join(storeDir, sub.name);
     for (const name of readdirSync(subDir).filter(n => n.endsWith(".json"))) {
       const jsonPath = join(subDir, name), logPath = jsonPath.replace(/\.json$/, ".log.gz");
@@ -153,6 +167,30 @@ export function pruneSuiteStore(
       bytesFreed += treeBytes(genDir);
       removed.push(genDir);
       if (apply) rmSync(genDir, { recursive: true, force: true });
+    }
+  }
+
+  const relayRoot = join(storeDir, RELAY_DIR);
+  if (existsSync(relayRoot)) {
+    const pinnedRelay = [], unpinnedRelay = [];
+    for (const sub of readdirSync(relayRoot, { withFileTypes: true })) {
+      if (!sub.isDirectory()) continue;
+      const treeDir = join(relayRoot, sub.name);
+      const item = { treeDir, bytes: treeBytes(treeDir), mtimeMs: treeLatestMtimeMs(treeDir) };
+      if (pinned.has(sub.name)) pinnedRelay.push(item);
+      else unpinnedRelay.push(item);
+    }
+    unpinnedRelay.sort((a, b) => b.mtimeMs - a.mtimeMs || b.treeDir.localeCompare(a.treeDir));
+    let keptRelayTrees = 0, keptRelayBytes = pinnedRelay.reduce((s, x) => s + x.bytes, 0);
+    for (const item of unpinnedRelay) {
+      if (nowMs - item.mtimeMs <= maxRelayAgeMs && keptRelayTrees < maxRelayTrees && keptRelayBytes + item.bytes <= maxRelayBytes) {
+        keptRelayTrees++;
+        keptRelayBytes += item.bytes;
+        continue;
+      }
+      removed.push(item.treeDir);
+      bytesFreed += item.bytes;
+      if (apply) rmSync(item.treeDir, { recursive: true, force: true });
     }
   }
   return { removed, bytesFreed };

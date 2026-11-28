@@ -11,6 +11,7 @@ import { tipProblem } from "../lib/tip.mjs";
 import { fixtures, git, repo, scripts, skill, temp } from "./helpers.mjs";
 
 process.env.SELF_LOOP_LOAD_DIR = temp("self-loop-load-");
+delete process.env.SELF_LOOP_RELAY_DIR;
 
 const ADMISSION = { c7e7c50: false, a4db050: true, "4748705": true };
 
@@ -335,4 +336,17 @@ test("pruneSuiteStore keeps pinned trees, evicts old/excess unpinned receipts an
   assert.ok(byteTrimmed.removed.includes(bigUnpinned));
   assert.equal(existsSync(bigUnpinned), false);
   assert.equal(existsSync(pinnedExtra), true);
+
+  const relayOld = join(storeDir, ".relay", "9".repeat(64), "0".repeat(64));
+  mkdirSync(relayOld, { recursive: true });
+  const relayFile = join(relayOld, "cp.json");
+  writeFileSync(relayFile, JSON.stringify({ version: 1 }));
+  const oldSec = Math.floor((nowMs - 20 * 86400_000) / 1000);
+  utimesSync(relayFile, oldSec, oldSec);
+  utimesSync(relayOld, oldSec, oldSec);
+  utimesSync(join(storeDir, ".relay", "9".repeat(64)), oldSec, oldSec);
+  assert.equal(storedRuns(dir).some(f => f.includes(".relay")), false);
+  const relayPruned = pruneSuiteStore(dir, { maxAgeMs: 14 * 86400_000, apply: true, now: () => nowMs });
+  assert.ok(relayPruned.removed.includes(join(storeDir, ".relay", "9".repeat(64))));
+  assert.equal(existsSync(join(storeDir, ".relay", "9".repeat(64))), false);
 });

@@ -1,5 +1,5 @@
-// self-loop-records@f81d0e8:evidence/0012/admitted-positive-final/effective-contract.json
-import test from 'node:test';
+// F-0016, R-0056-judge-frame-velocity
+import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -8,11 +8,40 @@ import { positiveFixture, at, digest } from '../../acceptance/time-budget/positi
 import { fixture, h } from '../../acceptance/time-budget/fixture.mjs';
 import { projectPlanTime } from '../lib/plan-time.mjs';
 
+function noGitMaintenanceEnv(base = process.env) {
+  const out = { ...base };
+  const raw = Number(out.GIT_CONFIG_COUNT);
+  let n = Number.isInteger(raw) && raw > 0 ? raw : 0;
+  for (const [key, val] of [['gc.auto', '0'], ['maintenance.auto', 'false']]) {
+    let has = false;
+    for (let i = 0; i < n; i++) if (out[`GIT_CONFIG_KEY_${i}`] === key && out[`GIT_CONFIG_VALUE_${i}`] === val) has = true;
+    if (!has) { out[`GIT_CONFIG_KEY_${n}`] = key; out[`GIT_CONFIG_VALUE_${n}`] = val; n++; }
+  }
+  out.GIT_CONFIG_COUNT = String(n);
+  return out;
+}
+
+const savedGitConfig = new Map();
+before(() => {
+  const next = noGitMaintenanceEnv(process.env);
+  for (const k of Object.keys(next)) {
+    if (k === 'GIT_CONFIG_COUNT' || k.startsWith('GIT_CONFIG_KEY_') || k.startsWith('GIT_CONFIG_VALUE_')) {
+      savedGitConfig.set(k, process.env[k]);
+      process.env[k] = next[k];
+    }
+  }
+});
+after(() => {
+  for (const [k, v] of savedGitConfig) {
+    if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  }
+});
+
 const project = (f, rev) => { const a = f.args(rev); return projectPlanTime(a.stateAtQ, a.plan, a); };
 const scripts = new URL('../', import.meta.url).pathname;
 function cli(f, script, args) {
   const r = spawnSync(process.execPath, [join(scripts, script), ...args], { encoding: 'utf8', cwd: f.records, timeout: 30000,
-    env: { ...process.env, HOME: f.records, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' } });
+    env: noGitMaintenanceEnv({ ...process.env, HOME: f.records, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' }) });
   assert.equal(r.status, 0, r.stderr || r.stdout); return r.stdout;
 }
 function tree(dir) {
@@ -82,7 +111,7 @@ test('actual measure, next, start expose evidence without writes; malformed unre
   for (const command of ['next', 'start']) {
     const text = cli(f, 'self-loop.mjs', [command, '--config', join(f.records, 'loop.json'), '--owner-store', join(f.records, 'missing-store'), '--now', at('13:00')]);
     assert.match(text, /met-on-time/); assert.match(text, /read-only simulation/);
-    const refused = spawnSync(process.execPath, [join(scripts, 'self-loop.mjs'), command, '--now', at('13:00'), '--parent-entry', '/missing'], { encoding: 'utf8' });
+    const refused = spawnSync(process.execPath, [join(scripts, 'self-loop.mjs'), command, '--now', at('13:00'), '--parent-entry', '/missing'], { encoding: 'utf8', env: noGitMaintenanceEnv(process.env) });
     assert.notEqual(refused.status, 0); assert.match(refused.stderr + refused.stdout, /--now simulation.*--parent-entry/);
   }
   assert.deepEqual(tree(f.records), before);

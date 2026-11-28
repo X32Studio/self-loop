@@ -1,6 +1,6 @@
 # Self-loop · CLI, Protocols & Gates Reference
 
-Complete technical reference for `self-loop` CLI flags, JSON envelopes, dispatch gates (`G1–G7`), Paseo/Antigravity/T3 harness protocols, comment admission v2, SSOT checks, owner-word accounting, time budgets, supervision windows, and publication gates. For the concise Lead operating procedure, see [`SKILL.md`](../SKILL.md).
+Complete technical reference for `self-loop` CLI flags, JSON envelopes, dispatch gates (`G1–G7`), Paseo/Antigravity/T3 harness protocols, comment admission v2, SSOT checks, owner-word accounting, time budgets, supervision windows, and publication gates. For the concise Lead operating procedure, see [`SKILL.md`](../SKILL.md); for canonical domain vocabulary, see [`GLOSSARY.md`](../GLOSSARY.md).
 
 ---
 
@@ -18,7 +18,7 @@ node scripts/plan.mjs validate <plan file> [--records R] | ready --records R --p
 
 # Suite, benchmark, CI, version & push gates
 node scripts/ci-green.mjs --repo <product> --sha <commit> --require app/name,... [--remote origin] [--out <records>/evidence/NNNN/ci-<k>]
-node scripts/suite-green.mjs --repo <product> --sha <commit> --command "<full suite>" [--install "<cmd>"] [--format node-test] [--vary-version <V>] --out <records>/evidence/NNNN/suite-<k>
+node scripts/suite-green.mjs --repo <product> --sha <commit> --command "<full suite>" [--install "<cmd>"] [--format node-test] [--relay | --no-relay] [--vary-version <V>] --out <records>/evidence/NNNN/suite-<k>
 node scripts/bench-gate.mjs --repo <product> --base <rev> --candidate <commit> --command "<benchmark printing one JSON object>" --metric <field> [--install "<cmd>"] [--require "f=v,g<=w"] [--pairs 24] [--warmup 1] [--max-ratio 1.10] [--confidence 0.95] --out <records>/evidence/NNNN/bench-<k>
 node scripts/gated-push.mjs --repo <product> --branch <b> [--suite-receipt <receipt.json>] [--sha <commit>] [--dry-run] [--verify-only] [--owner-store <dir>]
 node scripts/version-gate.mjs tip --version <V> [--on <commit>] [--branch <b>]
@@ -35,7 +35,7 @@ node scripts/self-loop.mjs next [--config <loop.json> | --all] [--full] [--paren
 node scripts/self-loop.mjs stall [--hours N] [--config <loop.json> | --all] [--now <ISO time>] [--json] [--owner-store <dir>]
 node scripts/self-loop.mjs tick [--hours N] [--now <ISO time>] [--json] [--owner-store <dir>]
 node scripts/self-loop.mjs clean|prune|records gc|records compact [--config <loop.json> | --records <dir> | --all] [--retain-rounds N] [--dry-run | --apply] [--json] [--owner-store <dir>]
-node scripts/self-loop.mjs patch --records <dir> --reason "<why>" --verify "<cmd>" [--files <p1,p2>] [--dry-run] [--json]
+node scripts/self-loop.mjs patch --records <dir> [--diff <file|->] [--files <p1,p2>] --reason "<why>" --verify "<cmd>" [--dry-run] [--json]
 node scripts/self-loop.mjs ssot [check|attest] [--config <loop.json>] ...
 node scripts/self-loop.mjs window open|status|close --records <dir> ...
 node scripts/self-loop.mjs dispatch analyze|waves|integrate|prepare|record --records <dir> --plan PL-NNNN ...
@@ -146,6 +146,15 @@ Envelope schema (public JSON, not a transcript, auth source, or platform lookup)
 
 - **`suite-green.mjs`**: runs `--command` in a clean worktree at `--sha` (`git --no-replace-objects`, `ORIGINAL_OBJECTS` in `lib/ci.mjs`, so `git replace` refs cannot spoof or alter checks). For `--format node-test`, requires `tests > 0`, `fail === 0`, `cancelled === 0`.
 - **Once-per-tree & `codeTree` caching (D-0020, D-0061, D-0064 T6)**: stores runs under `<Git common dir>/self-loop-suite/<sha256>/`, keyed by repository, tree/`codeTree` (tree hash with `VERSION` stripped), command, install, and runtime (pinned Node executable digest, version, platform, arch). Only direct literal `node --test` commands with no install, no `NODE_OPTIONS`, and a `PATH` Node resolving to the calling binary qualify for reuse; others run with `runtime: unknown` and no cache credit. Reused runs print `reused <receipt>` and name `reusedFrom`. A running suite holds `suite-<pid>-<n>.json` in `SELF_LOOP_LOAD_DIR`.
+- **Resumable per-file checkpoint relay (`--relay` / `--no-relay`, `SELF_LOOP_RELAY_DIR`, `F-0016`, `W-ee79c72dc0`)**:
+  - Enabled when `--format node-test`, `!noRelay` (`--no-relay` or `SELF_LOOP_NO_RELAY=1` disables), runtime execution qualifies (`!install`, `!NODE_OPTIONS`, `PATH` `node` matches `realpathSync(process.execPath)`), and `--command` is a decomposable `node --test` path list with no filter/watch flags; non-decomposable commands fall back transparently to whole-command execution.
+  - Discovers `*.test.{js,mjs,cjs}` files strictly from the committed `tree` (`git --no-replace-objects ls-tree -r -z <tree>`, excluding `index.js`, never reading live working-tree bytes) and executes only unverified/failed files inside `suite-green.mjs`'s clean detached worktree (`gc.auto=0`, `maintenance.auto=false` appended to `GIT_CONFIG_COUNT`).
+  - Persists fail-closed checkpoints under `SELF_LOOP_RELAY_DIR` (default `<suiteStore>/.relay/<codeTree>/<runtimeKey>/`), keyed on `(repository, command, install, execution.digest, varyVersion, node/platform/arch)` and verified against exact `(codeTree, relPath, fileBlobSha, runtimeKey, exitCode === 0, signal === null, pass > 0, fail === 0, cancelled === 0, todo === 0, skipped === 0, non-empty tapExcerpt)`. Synthesizes a full-tree green receipt + `ran.log` (re-verifiable under `storedGreen()`) once 100% of files pass; `purgeTreeReceipts` clears `.relay/<codeTree>` on unattested trees and `pruneSuiteStore` bounds `.relay/` retention (`14d` / `16` trees / `32 MiB`, preserving pinned trees).
+- **Non-interactive bounded Lead micro-patch (`self-loop.mjs patch --diff <file|->`, `D-0064` T5, `F-0016`)**:
+  - Accepts unified diff via `--diff <file>` or `--diff -` (stdin), mutually exclusive with `--files` (exit `2` on conflict or empty diff).
+  - Pre-checks `reason`, `verify`, clean tracked working tree on non-detached non-protected `cfg.branch` (no untracked collision on patched paths), and `< 2` consecutive `lead-patch` handoffs before creating an isolated detached `tmpWt` at `base` (cleaned in `try/finally`).
+  - Applies diff via `git apply --index --whitespace=nowarn -` and enforces hard bounds **before** `--verify`: `1..3` files, `1..20` added+deleted lines, modes strictly `{000000, 100644, 100755}` (rejecting symlinks `120000` and gitlinks `160000`), non-binary hunks, no `..`/`.git/**`/sealed paths, and `0` added prose comments.
+  - Runs `--verify <cmd>` in `tmpWt` without staging scratch files; supports `--dry-run`. Commits `loop(<phase>): lead-patch - <reason>`, fast-forwards `cfg.branch` via `--ff-only`, records `LP-NNNN` (`role: "lead-patch"`, `diffMode: true`, `diffSha256`), and rolls back `cfg.product` to `base` if `commitRecords` throws. `lead-guard.mjs` remains unweakened.
 - **`VERSION`-only tips & fast `pre-commit`**: `version-gate.mjs tip` builds a `VERSION`-only commit on the parent's published tree (`--no-replace-objects`) without touching the working tree/index and fast-forwards by CAS. `VERSION`-only commits reuse green `codeTree`-equivalent or `--vary-version <V>` suite and CI receipts (D-0064 T4/T6). `.githooks/pre-commit` fast-passes (`< 0.2s`) on `VERSION`-only or docs-only commits.
 - **`gated-push.mjs`**: resolves remote (`gates.remote`, default `origin`), `protected`, `gates.require`, optional `ssot`, and `records` solely from the one registered loop matching `--repo` (none or several: exit `2`; missing `protected` or `gates.require` key: exit `2` with migration message; `[]` allowed; CLI overrides `--protected`, `--require`, `--remote`, `--records`: exit `64`). Auto-resolves a cached green suite receipt for exact `sha^{tree}` via `lookupSuiteReceipt` when `--suite-receipt` is omitted. Verifies measured `tree` equals published commit tree (`--no-replace-objects`), enforces `verifyProvenance`, enforces Rung-2 SSOT on all branches (`ssot-drift` warns on working branches, blocks on protected branches via `--strict`), and enforces single-destination remote resolution (`git remote get-url --push --all` must return exactly one URL; unknown or multiple URLs exit `2` naming both fixes).
 - **Supported CI forges (`FORGES` in `lib/ci.mjs`)**:

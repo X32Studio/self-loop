@@ -8,8 +8,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { put, json, jsonl, status, skill } from './fixture.mjs';
-import { phase } from './round6-b-fixture.mjs';
-import { pkg, planText, judgeRow } from './v1-round9-fixture.mjs';
+import { phase } from './loop-world-fixture.mjs';
+import { pkg, planText, judgeRow } from './plan-world-fixture.mjs';
 
 const manifestPath = 'evidence/normal-entry/manifest.json';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');

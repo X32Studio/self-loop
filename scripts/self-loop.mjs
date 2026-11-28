@@ -512,7 +512,7 @@ function runInit(args, env, cwd) {
   }
 }
 
-export function main(argv, { env = process.env, cwd = process.cwd() } = {}) {
+export function main(argv, { env = process.env, cwd = process.cwd(), stdin = null } = {}) {
   const args = parseArgs(argv);
   const [command] = args._;
   if ("parent-entry" in args) {
@@ -545,7 +545,7 @@ export function main(argv, { env = process.env, cwd = process.cwd() } = {}) {
   if (command === "ssot") return runSsot(argv.slice(1), { env, cwd });
   if (command === "window") return runWindow(argv.slice(1), { env, cwd });
   if (command === "dispatch") return runDispatch(argv.slice(1));
-  if (command === "patch") return runPatch(argv.slice(1), { env, cwd });
+  if (command === "patch") return runPatch(argv.slice(1), { env, cwd, stdin });
   if (command === "heartbeat") return runHeartbeat(args, env);
   if (command === "hooks") return runHooks(args, env, cwd);
   if (command === "registry") return runRegistry(args, env);

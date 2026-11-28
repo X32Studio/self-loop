@@ -550,3 +550,73 @@ test("D-0064 T5: self-loop.mjs patch enforces <=20 lines, <=3 files, <=2 consecu
   assert.equal(onProtected.status, 2);
   assert.match(onProtected.stderr, /protected/);
 });
+
+test("F-0016 A5: lead-guard denies direct edit_file on tracked product code while permitting self-loop.mjs patch --diff end-to-end", () => {
+  const product = repo({ "src/a.mjs": "export const a = 1;\n" });
+  git(product, "checkout", "-qb", "loop/v1");
+  const records = repo({ "metrics/handoffs.jsonl": "" });
+  const workspaces = temp("lg-e2e-work-");
+  writeFileSync(join(records, "loop.json"), JSON.stringify({
+    product, records: ".", workDir: workspaces, branch: "loop/v1", phase: "v1",
+    briefs: {}, agents: {}, protected: ["main"],
+  }, null, 2) + "\n");
+  git(records, "add", "loop.json");
+  git(records, "commit", "-qm", "init loop.json");
+
+  const agOpts = { product, workspaces: [workspaces], allow: ["docs/", "AGENTS.md", "CLAUDE.md", "README.md"], format: "antigravity" };
+  const editDenied = refusal({
+    hookEventName: "PreToolUse",
+    conversationId: "lead-session",
+    cwd: product,
+    toolCall: { name: "edit_file", argumentsJson: JSON.stringify({ Path: join(product, "src/a.mjs"), Target: "a = 1", Replacement: "a = 2" }) },
+  }, agOpts);
+  assert.match(editDenied, /src\/a\.mjs is product code/);
+
+  const patchPath = join(workspaces, "tasks", "micro.patch");
+  const writePatchAllowed = refusal({
+    hookEventName: "PreToolUse",
+    conversationId: "lead-session",
+    cwd: product,
+    toolCall: { name: "write_file", argumentsJson: JSON.stringify({ Path: patchPath, Content: "diff\n" }) },
+  }, agOpts);
+  assert.equal(writePatchAllowed, null);
+
+  mkdirSync(join(workspaces, "tasks"), { recursive: true });
+  writeFileSync(patchPath, [
+    "diff --git a/src/a.mjs b/src/a.mjs",
+    "--- a/src/a.mjs",
+    "+++ b/src/a.mjs",
+    "@@ -1 +1 @@",
+    "-export const a = 1;",
+    "+export const a = 2;",
+    "",
+  ].join("\n"));
+
+  const cmd = `node ${join(scripts, "self-loop.mjs")} patch --records ${records} --diff ${patchPath} --reason "micro fix" --verify "true"`;
+  const runAllowed = refusal({
+    hookEventName: "PreToolUse",
+    conversationId: "lead-session",
+    cwd: product,
+    toolCall: { name: "run_command", argumentsJson: JSON.stringify({ CommandLine: cmd }) },
+  }, agOpts);
+  assert.equal(runAllowed, null);
+  assert.ok(refusal({
+    hookEventName: "PreToolUse",
+    conversationId: "lead-session",
+    cwd: product,
+    toolCall: { name: "run_command", argumentsJson: JSON.stringify({ CommandLine: `${cmd} && git push origin loop/v1` }) },
+  }, agOpts));
+
+  const res = spawnSync(process.execPath, [
+    join(scripts, "self-loop.mjs"), "patch", "--records", records, "--diff", patchPath,
+    "--reason", "micro fix", "--verify", "true", "--json",
+  ], { encoding: "utf8" });
+  assert.equal(res.status, 0, res.stderr);
+  const parsed = JSON.parse(res.stdout);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.handoff.id, "LP-0001");
+  assert.equal(parsed.handoff.diffMode, true);
+  assert.match(parsed.handoff.diffSha256, /^[0-9a-f]{64}$/);
+  assert.equal(readFileSync(join(product, "src/a.mjs"), "utf8"), "export const a = 2;\n");
+  assert.equal(git(product, "log", "-1", "--format=%s"), "loop(v1): lead-patch - micro fix");
+});

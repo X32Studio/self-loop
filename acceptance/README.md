@@ -1,12 +1,25 @@
-# F-0003 acceptance · rounds 1 through 5
+# Acceptance suites
 
-Run `node --test acceptance` from the product worktree (Node 24 and Git). These cases start the real commands as
-child processes. Products, owner store, Git branches, records, clock, CI responses and scheduler paths are isolated
-fixtures. Git network transports and provider commands are disabled in the children.
+Run `node --test acceptance/*.test.mjs acceptance/time-budget/*.test.mjs` from the product worktree (Node 24 and Git).
+This direct file-glob form runs suites across worker processes without a barrel file. These cases start the real
+commands as child processes. Products, owner store, Git branches, records, clock, CI responses and scheduler paths are
+isolated fixtures. Git network transports and provider commands are disabled in the children.
 
-`node acceptance/run.mjs` repeats the public cases with seeds 101, 202 and 303 and prints a timing and stability
-table. To run one case, use `node --test --test-name-pattern=REG-03 acceptance`. For seeded subsets, for example
-`node acceptance/run.mjs --seeds 287,512 acceptance/index.js --test-name-pattern=REG-04`.
+`node acceptance/run.mjs` discovers `acceptance/*.test.mjs` and `acceptance/time-budget/*.test.mjs`, repeats the public
+cases with seeds 101, 202 and 303, and prints a timing and stability table. To run one domain or case, use
+`node --test --test-name-pattern=REG-03 acceptance/registry.test.mjs`. For seeded subsets, use for example
+`node acceptance/run.mjs --seeds 287,512 --test-name-pattern=REG-04` or target specific files directly.
+
+## Living domain suites
+
+- **Foundation, entrypoints, and hooks**: `registry.test.mjs`, `tick.test.mjs`, `heartbeat.test.mjs`, `normal-entry.test.mjs`, `alarm-entry.test.mjs`, `alarm-gate.test.mjs`, `lead-guard.test.mjs`, `delegation-guard.test.mjs`, `operational-hygiene.test.mjs`, `driver-regressions.test.mjs`, `continuation.test.mjs`, `antigravity-*.test.mjs`, `paseo-*.test.mjs`
+- **Release, CI, and repository integration**: `closing.test.mjs`, `close-identity.test.mjs`, `ruling.test.mjs`, `prerelease.test.mjs`, `live-ci.test.mjs`, `codecommit-ci.test.mjs`, `push-destination.test.mjs`, `version-release-gate.test.mjs`, `suite-verification.test.mjs`, `suite-once.test.mjs`, `branch-integration.test.mjs`, `scoped-release*.test.mjs`
+- **Comments and subtractive review**: `comment-admission.test.mjs`, `comment-directives.test.mjs`, `comment-resolution-and-subtraction.test.mjs`
+- **Owner intent, provenance, and cadence**: `owner-words-and-interventions.test.mjs`, `owner-decisions.test.mjs`, `provenance-gate.test.mjs`, `predicate-coverage-and-cadence.test.mjs`, `cadence-delta.test.mjs`, `batch-replacement.test.mjs`
+- **Planning, dispatch, capacity, and trajectory**: `plan-authority-batch.test.mjs`, `plan-file-ownership.test.mjs`, `plan-validation-and-overlap.test.mjs`, `dispatch-lifecycle.test.mjs`, `dispatch-holds-and-idle.test.mjs`, `host-capacity.test.mjs`, `judge-records.test.mjs`, `trajectory-and-blockers.test.mjs`, `measures-and-metrics.test.mjs`, `mandatory-control-plane.test.mjs`
+- **Time-budget and fixtures**: `time-budget/*.test.mjs`, shared `*-fixture.mjs` modules, `fixtures/*.json`, and `candidate-replay.mjs`
+
+## Baseline scenario catalogue
 
 The owner store fixture uses the documented registry envelope. The clock varies by seed. Cases that
 exercise concurrent ticks also vary their scheduled timestamps, and discovery cases vary the nesting depth.
