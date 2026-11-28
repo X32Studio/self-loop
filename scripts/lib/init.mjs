@@ -1,4 +1,4 @@
-// F-0003, F-0009, F-0015, D-0010, D-0052, D-0065, D-0066, D-0067, D-0068, D-0069, R-0033-judge-hooks, R-0055-judge-frame-alphax
+// F-0003, F-0009, F-0015, F-0017, P-0019, D-0010, D-0052, D-0065, D-0066, D-0067, D-0068, D-0069, R-0033-judge-hooks, R-0055-judge-frame-alphax
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -239,7 +239,7 @@ function buildLoopConfig({ productField, branch, protectedBranches, workDir, pre
     },
     owns: {
       critic: [],
-      actor: ["GLOSSARY.md"],
+      actor: ["GLOSSARY.md", "EXPERIENCE.md"],
     },
     agents: preset.agents,
     setup: [],

@@ -3,8 +3,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { UsageError } from "./args.mjs";
 import { JUDGE_FRAME_STEP } from "./cadence.mjs";
-import { criticContradictedByTrajectory, criticConvergedAccepted, receiptProblem } from "./ci.mjs";
+import { criticContradictedByTrajectory, criticConvergedAccepted, receiptMatches } from "./ci.mjs";
 import { gatesOf, recordsLoop, rowReceiptProblem } from "./ci-receipt.mjs";
+import { isAncestorFast } from "./dag.mjs";
 import { alarmKeys, DIAGNOSIS_STEP, taskOfRecord } from "./diagnosis.mjs";
 import { git, gitOk } from "./git-plumbing.mjs";
 import { HANDOFFS, parseHandoffs } from "./handoff.mjs";
@@ -166,7 +167,7 @@ function verifyEvidence({ records, head, files, read, open, commit, handoffs, ro
         continue;
       }
       if (ch.product?.base && ch.product?.commit && ch.product.base !== ch.product.commit
-        && !gitOk(loop.product, "--no-replace-objects", "merge-base", "--is-ancestor", ch.product.base, ch.product.commit)) {
+        && !isAncestorFast(loop.product, ch.product.base, ch.product.commit)) {
         criticFailure ??= `window ${open.id} cannot close verified: critic ${ch.id} base is not an ancestor of its commit`;
         continue;
       }
@@ -193,7 +194,7 @@ function verifyEvidence({ records, head, files, read, open, commit, handoffs, ro
         criticFailure ??= `window ${open.id} cannot close verified: critic/actor independence failed (${cov.problem})`;
         continue;
       }
-      if (cov.actors.some(a => !ch.product?.base || !gitOk(loop.product, "--no-replace-objects", "merge-base", "--is-ancestor", a.product.commit, ch.product.base))) {
+      if (cov.actors.some(a => !ch.product?.base || !isAncestorFast(loop.product, a.product.commit, ch.product.base))) {
         criticFailure ??= `window ${open.id} cannot close verified: critic ${ch.id} base does not cover all wave actor commits`;
         continue;
       }
@@ -210,7 +211,7 @@ function verifyEvidence({ records, head, files, read, open, commit, handoffs, ro
     );
   }
   const evidenceFiles = [...files.keys()].filter(evidenceJson);
-  const suiteReceipt = evidenceFiles.find(p => { try { return receiptProblem(JSON.parse(read(p)), loop.product, commit) === null; } catch { return false; } }) ?? null;
+  const suiteReceipt = evidenceFiles.find(p => { try { return receiptMatches(JSON.parse(read(p)), loop.product, commit); } catch { return false; } }) ?? null;
   if (!suiteReceipt) throw new WindowRefusalError(`window ${open.id} cannot close verified: no committed green suite-green receipt for ${commit} under evidence/`);
   const { require } = gatesOf(loop);
   let ciReceipt = null;

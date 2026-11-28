@@ -1,4 +1,5 @@
-// P-0006, F-0012, design/dispatch.md#measurements
+// P-0006, P-0019, F-0012, F-0017, design/dispatch.md#measurements
+import { realpathSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { git } from './git-plumbing.mjs';
 import { parseHandoffs } from './handoff.mjs';
@@ -9,9 +10,41 @@ import { batchesFrom } from '../decisions.mjs';
 const stamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null;
 const iso = value => value === null ? null : new Date(value).toISOString();
 const delta = (start, end) => start !== null && end !== null && end >= start ? (end - start) / 1000 : null;
+const FIRST_PUB_MAX = 8;
+const FIRST_PUB_CACHE = new Map();
+const SHA = /^[0-9a-f]{40}$/;
+
+const repoKey = repo => { try { return realpathSync(repo); } catch { return repo; } };
+const touchLru = (map, key, value, max) => {
+  map.delete(key);
+  if (map.size >= max) map.delete(map.keys().next().value);
+  map.set(key, value);
+  return value;
+};
+
+function firstPublicationIndex(records, revision) {
+  const rev = SHA.test(revision ?? '') ? revision : git(records, 'rev-parse', '--verify', `${revision}^{commit}`);
+  const key = `${repoKey(records)}\0${rev}`;
+  const cached = FIRST_PUB_CACHE.get(key);
+  if (cached) return touchLru(FIRST_PUB_CACHE, key, cached, FIRST_PUB_MAX);
+  const byPath = new Map();
+  const raw = git(records, 'log', '--reverse', '--no-renames', '--format=%x00%cI', '--name-only', '--diff-filter=A', rev);
+  for (const block of raw.split('\0')) {
+    if (!block) continue;
+    const lines = block.split(/\r?\n/).filter(Boolean);
+    const date = lines[0];
+    if (!date) continue;
+    for (let i = 1; i < lines.length; i++) {
+      let dates = byPath.get(lines[i]);
+      if (!dates) { dates = []; byPath.set(lines[i], dates); }
+      dates.push(date);
+    }
+  }
+  return touchLru(FIRST_PUB_CACHE, key, byPath, FIRST_PUB_MAX);
+}
 
 export function firstPublication(state, path) {
-  const dates = git(state.records, 'log', '--reverse', '--format=%cI', '--diff-filter=A', state.revision, '--', path).split('\n').filter(Boolean);
+  const dates = firstPublicationIndex(state.records, state.revision).get(path) ?? [];
   return dates.length === 1 ? stamp(dates[0]) : null;
 }
 

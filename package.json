@@ -1,6 +1,6 @@
 {
   "name": "self-loop",
-  "version": "0.9.9",
+  "version": "0.9.10",
   "description": "The deterministic delivery control plane for coding-agent swarms: Generation-Engine-first framing, parallel file-disjoint waves, Dual-Five Zeroing, zero-waste Critic/Judge verification, and Round-80 operational self-hygiene.",
   "license": "MIT",
   "author": "Ruiyuan Kang <kang@x32studio.com>",
@@ -25,9 +25,9 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test scripts/test",
-    "test:acceptance": "node --test acceptance",
-    "test:all": "node --test scripts/test acceptance",
+    "test": "node --test scripts/test/*.test.mjs",
+    "test:acceptance": "node --test acceptance/*.test.mjs acceptance/time-budget/*.test.mjs",
+    "test:all": "node scripts/suite-green.mjs --repo . --sha HEAD --command \"node --test scripts/test acceptance\" --format node-test --relay",
     "demo": "node examples/minimal-loop/demo.mjs"
   }
 }

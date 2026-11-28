@@ -71,7 +71,7 @@ node scripts/self-loop.mjs hooks install --records <dir>
 
 ### Step 4 — Independent Verification & No-Dispute Convergence (`D-0064` T10)
 
-- **Living domain acceptance suites & Dual-Axis Critic review (D-0063, F-0016)**: independent Critic writes seam-first black-box cases in domain-organized suites (`< 500`L, `0` prose; bans implementation-coupled/tautological/round-numbered/`-attack` files) and reviews across **Axis 1 (Spec/Behavior)** and **Axis 2 (Standards/Subtraction/Zeroing)**. Post-actor Critic runs once per substantive wave; small (`<= 20–30`L) RED-to-GREEN fixes skip recursive Critics (T7).
+- **Living domain acceptance suites & Dual-Axis Critic review (D-0063, F-0016, P-0019)**: independent Critic writes seam-first black-box cases in domain-organized suites (`< 500`L, `0` prose; bans implementation-coupled/tautological/round-numbered/`-attack` files) and reviews across **Axis 1 (Spec/Behavior)** and **Axis 2 (Standards/Subtraction/Zeroing, rejecting blacklisted `EXPERIENCE.md` `TB-*` patterns)**; Actors check `EXPERIENCE.md` before coding. Post-actor Critic runs once per substantive wave; small (`<= 20–30`L) RED-to-GREEN fixes skip recursive Critics (T7).
 - **Deterministic zero-comment admission**: `lib/lexers*.mjs` and `lib/directives.mjs` verify JS/TS/JSX, Python, Swift, Shell, YAML, CSS, HTML, SQL, Go, Rust, C/C++, Java, Kotlin, and TOML in `< 1ms`. Comment-free, pointer-only, and tool-directive files pass immediately with zero `judge-comments` LLM audits; added prose fails deterministically with line diagnostics.
 - **No-Dispute No-Judge Convergence**: when an independent Critic passes with these exact headers and `audit.violations === 0` covering all unjudged wave Actors -> **converged directly without a redundant Judge** (honored uniformly by `ci.mjs`, `provenance.mjs`, `window-state.mjs`, `trajectory.mjs`, `facts.mjs`, and `loop.mjs`):
   ```text
@@ -158,6 +158,7 @@ A claim without its gate output on the exact commit you name is not made (detail
 
 - [`assets/reference-cli-and-gates.md`](assets/reference-cli-and-gates.md) — Complete CLI flag reference, JSON envelopes (`continuation-entry/v1`, `plan-time/v2`, `plan-forecast/v1`, `scoped-release`), dispatch gates `G1–G7`, Paseo/Antigravity/`better-paseo-antigravity` protocols, comment admission v2, SSOT checks, owner-word metrics, supervision/cadence/window mechanics, `suite-green`/`gated-push`/`bench-gate`, and full Enforcement Ladder details.
 - [`GLOSSARY.md`](GLOSSARY.md) — Ubiquitous domain vocabulary (engines, tree/relay checkpoints, deep modules, seam-first testing, Dual-Axis Review).
+- [`EXPERIENCE.md`](EXPERIENCE.md) — Living Technical Option Blacklist (`TB-01`…`TB-10`) and engineering lessons checked by Actors, Critics, and Frame Reviewers (`P-0019`).
 - [`RECORDS.md`](RECORDS.md) — Records repository layout, schemas, and commit discipline.
 - [`REQUIREMENTS.md`](REQUIREMENTS.md) — First-principles requirements and rationale behind every rule.
 - [`DEBT.md`](DEBT.md) — Rules still left to judgment or prose.

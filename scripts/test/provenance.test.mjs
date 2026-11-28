@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
+import { firstMergeBetweenFast, hasCommitFast, isAncestorFast as dagIsAncestorFast, parentsOfFast } from "../lib/dag.mjs";
 import {
   DEFAULT_LEAD_PATHS,
   evaluateCertifiedWaveCoverage,
@@ -445,9 +446,13 @@ test("provenance.mjs and window.mjs form a strict acyclic DAG via window-state.m
     return [...src.matchAll(/(?:import|export)\s+(?:[^;{}'"\n]*|\{[^}]*\})\s+from\s+["'](\.[^"']+)["']/gm)].map(m => m[1]);
   };
   const stateImports = importsOf("lib/window-state.mjs");
+  const dagImports = importsOf("lib/dag.mjs");
   const provImports = importsOf("lib/provenance.mjs");
   const winImports = importsOf("lib/window.mjs");
   assert.deepEqual(stateImports, []);
+  assert.deepEqual(dagImports, []);
+  assert.equal(isAncestorFast, dagIsAncestorFast);
+  assert.ok(provImports.includes("./dag.mjs"));
   assert.ok(provImports.includes("./window-state.mjs"));
   assert.ok(!provImports.includes("./window.mjs"));
   assert.ok(winImports.includes("./window-state.mjs"));
@@ -660,4 +665,19 @@ test("F-0016 A6: isAncestorFast serves linear, merge, unrelated, refresh, replac
   } finally {
     git(r, "replace", "-d", cNew);
   }
+
+  assert.equal(hasCommitFast(r, c2), c2);
+  assert.equal(hasCommitFast(r, unreachableChild), unreachableChild);
+  assert.equal(hasCommitFast(r, "f".repeat(40)), null);
+  assert.deepEqual(parentsOfFast(r, c0), []);
+  assert.deepEqual(parentsOfFast(r, c2), [c1]);
+  assert.deepEqual(parentsOfFast(r, m3), [c2, b1, s1]);
+  assert.deepEqual(parentsOfFast(r, unreachableChild), [c2]);
+  assert.equal(firstMergeBetweenFast(r, c0, c2), null);
+  assert.equal(firstMergeBetweenFast(r, c0, m2), m2);
+  assert.equal(firstMergeBetweenFast(r, c0, cNew), m2);
+  assert.equal(firstMergeBetweenFast(r, m2, cNew), null);
+  assert.equal(firstMergeBetweenFast(r, c2, c0), null);
+  const unreachMerge = git(r, "commit-tree", orphanTree, "-p", c2, "-p", b1, "-m", "unreachable merge");
+  assert.equal(firstMergeBetweenFast(r, c0, unreachMerge), unreachMerge);
 });

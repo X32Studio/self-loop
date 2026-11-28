@@ -13,7 +13,7 @@
   <b>English</b> · <a href="README.zh-CN.md">中文</a> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/architecture.md">Architecture</a> · <a href="docs/METHODOLOGY.md">Methodology</a> · <a href="SKILL.md">Skill Spec</a>
 </p>
 
-<sub>By <a href="https://x32studio.com">X32 Studio</a> · MIT Licensed · Zero Dependencies (Node.js &gt;= 22 + Git) · v0.9.8</sub>
+<sub>By <a href="https://x32studio.com">X32 Studio</a> · MIT Licensed · Zero Dependencies (Node.js &gt;= 22 + Git) · v0.9.10</sub>
 
 </div>
 
@@ -42,7 +42,8 @@ Human attention is the scarcest resource in AI engineering. Before escalating a 
 - **Parallel Actor Waves (`plan.mjs`, `dispatch.mjs`)**: Decoupled features split automatically into file-disjoint parallel Actor packages reconciled across all active plans (`admitAcrossPlans`), with conflict-free wave integration.
 - **Dual-Five Zeroing (`SKILL.md`)**: Every fix pinpoints root cause, reproduces deterministically, verifies cleanly, and performs a mandatory **whole-repo horizontal grep sweep** so sibling consumers and state machines sharing the same bug are fixed in the same wave — then feeds management lessons back into briefs and gates.
 - **Zero-Waste Convergence**: When an independent Critic passes with zero open defects, zero disputes, and zero audit violations, the wave **converges directly without a redundant Judge**. The cross-vendor/cross-model **Judge** is reserved for real disputes, held-out `sealed/` verification, and derivation rulings.
-- **Once-Per-`codeTree` Suite Reuse (`suite-green.mjs`)**: Full test suites run once per exact `(codeTree, runtime)` and are reused across `VERSION`-only release tips and read-only sign-offs.
+- **Multi-Core Parallel Suites, Per-File `--relay` & `codeTree` Reuse (`suite-green.mjs`)**: Runs test files concurrently across CPU cores, caches per-file checkpoints by content hash so reruns only execute failed/changed files (macOS 132/133 relay finish in `17s`), and reuses exact `(codeTree, runtime)` receipts across `VERSION`-only release tips (`~11s` CI).
+- **Atomic Isolated-Worktree Lead Patches (`self-loop.mjs patch --diff`)**: Bounded Lead micro-fixes (`<= 20` lines, `<= 3` files) apply unified diffs in a clean temporary worktree, run mandatory `--verify`, and fast-forward land — zero unverified edits in the main checkout.
 
 ### 3. Code Gates Over Prompt Obedience (The 5-Rung Enforcement Ladder)
 Prompts decay under context load. Every rule in `self-loop` lives on the highest mechanical rung it can earn — and **scripts never substitute for engineering judgment** (see [Lesson `L-0002`](#empirical-lessons-from-production-loops)):
@@ -57,6 +58,8 @@ Prompts decay under context load. Every rule in `self-loop` lives on the highest
 Forged across 55–80+ round production loops on real multi-repo codebases:
 - **Bounded Audits (`<= 1 MiB`)**: Per-command deduplication and preview truncation prevent quadratic audit JSON blowups while preserving all Tier-0 security flags.
 - **Self-Healing Cleanup & Cryptographic Tombstones (`self-loop.mjs clean` / `records gc`)**: Reclaims finished worktrees, prunes LRU suite caches, compacts oversized logs/audits, and prunes uncited historical evidence while recording SHA-256 + origin-commit tombstones (`prune/PR-NNNN.md`) that keep citation integrity verifiable.
+- **Shared In-Memory Commit DAG & Batched Git Snapshots (`scripts/lib/dag.mjs`)**: Loads commit ancestry once per repo and batches Git object/log reads, eliminating `O(N)` subprocess storms across `provenance`, `dispatch`, `plan`, `ci`, and `gated-push` (`>3m → 12.5s` on 57-round histories).
+- **Persistent Engineering Experience & Technical Option Blacklist (`EXPERIENCE.md`)**: Codifies recurring low-level failure classes (`TB-01`–`TB-10`, Forbidden Naive Option → Mandatory Better Option → Enforcement Rung) directly into `SKILL.md` and Actor/Critic/Frame-Reviewer briefs so hard-won lessons compound instead of repeating.
 - **Portable Records `pre-commit` Guard**: `self-loop.mjs init` and `hooks install --records` install a secret-free `.githooks/pre-commit` that blocks undeclared stray files and `INDEX.md`/`BLUEPRINT.md` drift before commit.
 - **Zero Model or Harness Lock-In**: Configure any `runner` (`paseo`, `t3`, `claude`, `codex`), `provider` (`better-paseo-antigravity`, `antigravity`, `claude`, `codex`, `cursor`, `opencode`, `pi`, or custom plugins), `adapter`, router-prefixed models, and independence policy (`vendor` | `model` | `session`) in `loop.json`.
 
@@ -116,7 +119,7 @@ No API keys or network calls needed — watch records validation, trajectory ala
 ```bash
 git clone https://github.com/X32Studio/self-loop.git ~/tools/self-loop
 cd ~/tools/self-loop
-git checkout v0.9.8
+git checkout v0.9.10
 npm run demo
 ```
 
@@ -190,6 +193,8 @@ node ~/tools/self-loop/scripts/self-loop.mjs clean --config .self-loop/loop.json
 | [`docs/release-and-versioning.md`](docs/release-and-versioning.md) | SemVer `VERSION`-only tips, `codeTree` suite caching, atomic tags, and dual-platform CI |
 | [`docs/concepts-and-records.md`](docs/concepts-and-records.md) | Records layout (`purpose`, `decisions`, `blueprint`, `plans`, `rounds`, `evidence`, `prune`, `sealed`) |
 | [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) | Deep dive into the engines, Enforcement Ladder, and Lesson `L-0002` |
+| [`EXPERIENCE.md`](EXPERIENCE.md) | Persistent engineering experience & Technical Option Blacklist (`TB-01`–`TB-10`) enforced across Actors, Critics, and Frame Reviewers |
+| [`GLOSSARY.md`](GLOSSARY.md) | Canonical domain glossary preventing terminology drift across briefs, records, and gates |
 | [`RECORDS.md`](RECORDS.md) / [`REQUIREMENTS.md`](REQUIREMENTS.md) / [`DEBT.md`](DEBT.md) | Normative runtime contracts parsed by gates and explicit mechanization debt ledger |
 
 ---
@@ -199,6 +204,8 @@ node ~/tools/self-loop/scripts/self-loop.mjs clean --config .self-loop/loop.json
 ```text
 self-loop/
 ├── SKILL.md                 # Lead agent operating procedure
+├── EXPERIENCE.md            # Persistent engineering experience & Technical Option Blacklist (TB-01..TB-10)
+├── GLOSSARY.md              # Canonical domain glossary
 ├── RECORDS.md               # Normative records schema (parsed by records-check.mjs)
 ├── REQUIREMENTS.md          # First-principles requirements & rationale
 ├── DEBT.md                  # Explicit ledger of prose rules yet to be mechanized
@@ -210,8 +217,8 @@ self-loop/
 │   ├── call.mjs             # Isolated worktree/view runner, access audit (<= 1 MiB), comment gate & atomic hand-off
 │   ├── dispatch.mjs         # Coupling analysis, parallel Actor/Critic waves & wave integration
 │   ├── plan.mjs             # Multi-plan validation, cross-plan admission & time-budget readiness
-│   ├── lead-patch.mjs       # Bounded Lead micro-patches (<= 20 lines, <= 3 files, mandatory --verify)
-│   ├── suite-green.mjs      # Clean-worktree, exact-codeTree cached full-suite receipts
+│   ├── lead-patch.mjs       # Bounded Lead micro-patches (--diff in isolated worktree, <= 20 lines, <= 3 files, mandatory --verify)
+│   ├── suite-green.mjs      # Clean-worktree, parallel per-file --relay & exact-codeTree cached full-suite receipts
 │   ├── ci-green.mjs         # Live GitHub Actions & AWS CodeBuild check verification
 │   ├── gated-push.mjs       # Protected branch push gate (suite + provenance + independent convergence + live CI)
 │   ├── version-gate.mjs     # SemVer tips, pre-commit/pre-push hooks & atomic branch+tag release

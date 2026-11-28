@@ -14,7 +14,7 @@ import { collectArchFacts } from "./lib/arch-facts.mjs";
 import { blockerState as foldRulings, withStatus } from "./lib/blockers.mjs";
 import { FEATURE_EVENTS, inspectBlueprint } from "./lib/blueprint.mjs";
 import { advancingAction, ARCH_STEP, cadenceLines, cadenceOf, cadenceState, dueReason, JUDGE_FRAME_STEP, outerCadenceOf, outerLoopLines, outerLoopState } from "./lib/cadence.mjs";
-import { ciGreen, fullSha, judgeAccepted, receiptProblem } from "./lib/ci.mjs";
+import { ciGreen, fullSha, judgeAccepted, receiptMatches } from "./lib/ci.mjs";
 import { gatesOf } from "./lib/ci-receipt.mjs";
 import { command, env, evidencePrefix, gatherCommand, node, shell } from "./lib/commands.mjs";
 import { proseInTree } from "./lib/comments.mjs";
@@ -260,7 +260,7 @@ export function nextLines(cfg, config, state, { store = null, load: measured = n
   const trajectory = join(records, TRAJECTORY);
   const stateCheck = check(records, { config: JSON.parse(state.read("records.json") || "{}"), fast: !fullDiag });
   const suite = target && state.files.filter(evidenceJson).find(path => {
-    try { return !receiptProblem(JSON.parse(state.read(path)), product, target); } catch { return false; }
+    try { return receiptMatches(JSON.parse(state.read(path)), product, target); } catch { return false; }
   });
 
   let ci;

@@ -1,13 +1,13 @@
 // P-0006, D-0018, D-0063, D-0064, design/dispatch.md#file-ownership, design/dispatch.md#ready-state
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { gzipSync } from 'node:zlib';
 import { globOverlap } from '../lib/plan-globs.mjs';
 import { admitAcrossPlans, buildSharedPlanContext, criticCausalBase, judgeCoverageProblems, judgeJoinProblems, judgeLineageProblems, packageOrder, parsePlan, planCallCommand, planPackageMap, reconcilePlans, RELEASE_IN_WORDS, validatePlan, readyPlan } from '../lib/plan.mjs';
-import { executionInterval, measurePlan, renderMeasures } from '../lib/plan-measures.mjs';
+import { executionInterval, firstPublication, measurePlan, renderMeasures } from '../lib/plan-measures.mjs';
 import { citedPredicates, cliClock, createPredicates, firstParentHistory, measuresLines, predicateContext, predicateReplay, queryClock, timeLines } from '../lib/predicate-replay.mjs';
 import { certifiedCriticOn, checkouts, integrationOf, recordedAfter } from '../lib/integration.mjs';
 import { git, repo, roomyStore, scripts, setup, temp } from './helpers.mjs';
@@ -622,4 +622,75 @@ test('F-0015: reconcilePlans shares context across current plans and extracted l
     const src = readFileSync(join(scripts, rel), 'utf8');
     assert.doesNotMatch(src, /from\s+["'][^"']*loop\.mjs["']/, `${rel} must not import loop.mjs`);
   }
+});
+
+// P-0019, F-0017
+test('F-0017 TB-03: firstPublication caches one repo-wide git log pass across 6+ paths, returns exact ISO timestamps, rejects re-added paths, and refreshes on moving HEAD', () => {
+  const r = repo({});
+  const put = (p, body) => { mkdirSync(dirname(join(r, p)), { recursive: true }); writeFileSync(join(r, p), body); };
+  const commitAt = (isoDate, msg) => {
+    const res = spawnSync('git', ['-C', r, 'commit', '-qm', msg], {
+      encoding: 'utf8',
+      env: { ...process.env, GIT_AUTHOR_DATE: isoDate, GIT_COMMITTER_DATE: isoDate },
+    });
+    assert.equal(res.status, 0, res.stderr);
+  };
+  const t1 = '2026-11-20T10:00:00Z';
+  const t2 = '2026-11-21T11:30:00Z';
+  const t3 = '2026-11-22T12:45:00Z';
+  const t4 = '2026-11-23T14:15:00Z';
+  const t5 = '2026-11-24T15:00:00Z';
+  put('plans/PL-0001.md', '# PL-0001\n');
+  put('owner/B-0001.md', '# B-0001\n');
+  put('rounds/0001-actor-a.md', '# a\n');
+  git(r, 'add', '-A'); commitAt(t1, 'c1');
+  put('rounds/0001-actor-b.md', '# b\n');
+  put('rounds/0001-critic.md', '# c\n');
+  put('rounds/0001-readded.md', '# v1\n');
+  git(r, 'add', '-A'); commitAt(t2, 'c2');
+  git(r, 'rm', '-q', 'rounds/0001-readded.md');
+  put('plans/PL-0001.md', '# PL-0001 updated\n');
+  put('rounds/0002-actor.md', '# a2\n');
+  git(r, 'add', '-A'); commitAt(t3, 'c3');
+  put('rounds/0001-readded.md', '# v2\n');
+  git(r, 'add', '-A'); commitAt(t4, 'c4');
+  const rev = git(r, 'rev-parse', 'HEAD');
+
+  const prevPath = process.env.PATH ?? '';
+  const realGit = prevPath.split(':').map(dir => join(dir, 'git')).find(p => existsSync(p));
+  assert.ok(realGit, 'real git binary must be resolvable on PATH');
+  const bin = temp('self-loop-gitwrap-');
+  const logFile = join(bin, 'git-log-calls.txt');
+  const wrapper = join(bin, 'git');
+  writeFileSync(wrapper, `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = "log" ]; then
+    printf 'log\\n' >> ${JSON.stringify(logFile)}
+    break
+  fi
+done
+exec ${JSON.stringify(realGit)} "$@"
+`);
+  chmodSync(wrapper, 0o755);
+
+  const st = { records: r, revision: rev };
+  try {
+    process.env.PATH = `${bin}:${prevPath}`;
+    assert.equal(firstPublication(st, 'plans/PL-0001.md'), Date.parse(t1));
+    assert.equal(firstPublication(st, 'owner/B-0001.md'), Date.parse(t1));
+    assert.equal(firstPublication(st, 'rounds/0001-actor-a.md'), Date.parse(t1));
+    assert.equal(firstPublication(st, 'rounds/0001-actor-b.md'), Date.parse(t2));
+    assert.equal(firstPublication(st, 'rounds/0001-critic.md'), Date.parse(t2));
+    assert.equal(firstPublication(st, 'rounds/0002-actor.md'), Date.parse(t3));
+    assert.equal(firstPublication(st, 'rounds/0001-readded.md'), null);
+    assert.equal(firstPublication(st, 'rounds/9999-missing.md'), null);
+  } finally {
+    process.env.PATH = prevPath;
+  }
+  const calls = existsSync(logFile) ? readFileSync(logFile, 'utf8').split('\n').filter(Boolean) : [];
+  assert.equal(calls.length, 1, `expected <= 1 git log subprocess, got ${calls.length}`);
+
+  put('rounds/0003-late.md', '# late\n');
+  git(r, 'add', '-A'); commitAt(t5, 'c5');
+  assert.equal(firstPublication({ records: r, revision: 'HEAD' }, 'rounds/0003-late.md'), Date.parse(t5));
 });

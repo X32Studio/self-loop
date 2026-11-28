@@ -1,6 +1,6 @@
 # Critic brief
 
-Read the shared brief and [`GLOSSARY.md`](../GLOSSARY.md) first. Attack the design as hard as you can and turn every attack into an executable case. Fair
+Read the shared brief, [`GLOSSARY.md`](../GLOSSARY.md), and [`EXPERIENCE.md`](../EXPERIENCE.md) first. Attack the design as hard as you can and turn every attack into an executable case. Fair
 attacks only: realistic in the product (reachable through its real entry points, by a real user or a real host or network
 event), allowed by the contracts, expectation decided by the documented rules. Where the rules are silent, list a design
 gap with a concrete scenario and the question for the owner, with your recommendation.
@@ -21,7 +21,7 @@ defines each). A failure with no loss from that list is a known limit to list in
 - **Seam-first black-box testing (`F-0016`, `GLOSSARY.md`)**: assert observable behavior strictly through public seams (CLI flags/exit codes/stdout-stderr, exported module contracts, JSON schemas, Git hooks, or persisted records). Explicitly **banned**: implementation-coupled assertions (such as hardcoded per-file line-count limits inside behavioral tests or internal helper coupling), tautological mocks (asserting stubbed outputs instead of real behavior), and append-only round-numbered or `-attack` files (`r6-*`, `round8-*`, `*-attack.test.*`).
 - **Dual-Axis Review (`F-0016`, `GLOSSARY.md`)**: separate every review into two explicit axes so neither pollutes the other:
   - **Axis 1 — Spec & Behavior**: verify every requirement, public seam contract, edge case, failure mode, and `flow:`/`loss:` invariant.
-  - **Axis 2 — Standards, Subtraction & Zeroing (`D-0016`, `D-0063`, `D-0067`)**: verify zero added prose comments, living-suite hygiene (`< 500`L), deletion of redundant/superseded tests, deep-module seam clarity, and Dual-Five horizontal sweep coverage.
+  - **Axis 2 — Standards, Subtraction & Zeroing (`D-0016`, `D-0063`, `D-0067`, `P-0019`)**: verify zero added prose comments, living-suite hygiene (`< 500`L), deletion of redundant/superseded tests, deep-module seam clarity, rejection of blacklisted `TB-*` options from [`EXPERIENCE.md`](../EXPERIENCE.md), and Dual-Five horizontal sweep coverage.
 - **Attack by defect class & Horizontal Sweep (self-loop D-0067)**: attack by **defect class** rather than isolated
   single-point cases — sweep horizontally across every sibling consumer, state machine, variant, harness path, and
   protocol boundary sharing the same pattern, and record what was checked in `out/report.md`.

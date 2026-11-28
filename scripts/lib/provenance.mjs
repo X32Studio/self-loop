@@ -1,15 +1,17 @@
-// F-0015, F-0016, D-0060, D-0062, D-0064, D-0068, design/mandatory-control-plane.md#1, design/paseo-and-judge-policy.md#1
+// F-0015, F-0016, F-0017, D-0060, D-0062, D-0064, D-0068, design/mandatory-control-plane.md#1, design/paseo-and-judge-policy.md#1
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseRows, TRAJECTORY } from "../trajectory.mjs";
 import { JUDGE_FRAME_STEP } from "./cadence.mjs";
 import { criticContradictedByTrajectory, criticConvergedAccepted, judgeAccepted } from "./ci.mjs";
+import { hasCommitFast, isAncestorFast, parentsOfFast } from "./dag.mjs";
 import { HANDOFFS, parseHandoffs } from "./handoff.mjs";
 import { recordsSnapshot } from "./records-commit.mjs";
 import { priorConvergedCommits, unjudgedCoveringActors, validateJudgeIndependence, validateModelVendors, waveIndependenceProblem } from "./vendor.mjs";
 import { parseWindows, WINDOWS, windowState } from "./window-state.mjs";
 
+export { isAncestorFast };
 export { parseHandoffs as parseProvenanceHandoffs, validateLeadPatchHandoff } from "./handoff.mjs";
 
 export const DEFAULT_LEAD_PATHS = Object.freeze(["VERSION", "docs/", "AGENTS.md", "CLAUDE.md", "README.md"]);
@@ -26,46 +28,8 @@ const gitRun = (repo, ...argv) => spawnSync("git", ["-C", repo, ORIGINAL, ...arg
 const gitOut = (repo, ...argv) => { const r = gitRun(repo, ...argv); return r.status === 0 ? r.stdout.trim() : null; };
 const gitLines = (repo, ...argv) => { const r = gitRun(repo, ...argv); return r.status === 0 ? r.stdout.split("\n").filter(Boolean) : null; };
 const treeOf = (repo, rev) => gitOut(repo, "rev-parse", "--verify", "--quiet", `${rev}^{tree}`);
-const commitOf = (repo, rev) => gitOut(repo, "rev-parse", "--verify", "--quiet", `${rev}^{commit}`);
-const DAG_MAX_REPOS = 16, DAG_MAX_ANCESTORS = 512, DAG_CACHE = new Map();
-const repoKey = repo => { try { return realpathSync(repo); } catch { return repo; } };
-const touchLru = (m, k, v, max) => { m.delete(k); if (m.size >= max) m.delete(m.keys().next().value); m.set(k, v); return v; };
-const refSignature = repo => `${gitOut(repo, "for-each-ref", "--format=%(objectname)") ?? ""}\nHEAD:${gitOut(repo, "rev-parse", "--verify", "--quiet", "HEAD") ?? ""}`;
-function loadDag(repo, sig = null) {
-  const parentsBySha = new Map(), r = gitRun(repo, "rev-list", "--parents", "--all", "HEAD");
-  for (const l of (r.status === 0 ? r.stdout : (gitOut(repo, "rev-list", "--parents", "--all") ?? "")).split("\n")) if (l) { const [s, ...p] = l.split(" "); parentsBySha.set(s, p); }
-  return { refSignature: sig, parentsBySha, ancestors: new Map() };
-}
-function getDag(repo, needed = []) {
-  const key = repoKey(repo);
-  let dag = touchLru(DAG_CACHE, key, DAG_CACHE.get(key) ?? loadDag(repo), DAG_MAX_REPOS);
-  if (needed.some(sha => !dag.parentsBySha.has(sha))) { const sig = refSignature(repo); if (sig !== dag.refSignature) dag = touchLru(DAG_CACHE, key, loadDag(repo, sig), DAG_MAX_REPOS); }
-  return dag;
-}
-function ancestorsOf(dag, sha) {
-  let seen = dag.ancestors.get(sha);
-  if (seen) return touchLru(dag.ancestors, sha, seen, DAG_MAX_ANCESTORS);
-  seen = new Set();
-  for (const stack = [sha]; stack.length;) {
-    const cur = stack.pop();
-    if (seen.has(cur)) continue;
-    seen.add(cur);
-    const c = cur !== sha && dag.ancestors.get(cur);
-    if (c) for (const a of c) seen.add(a); else for (const p of dag.parentsBySha.get(cur) ?? []) if (!seen.has(p)) stack.push(p);
-  }
-  return touchLru(dag.ancestors, sha, seen, DAG_MAX_ANCESTORS);
-}
-const parentsOf = (repo, sha) => {
-  if (SHA.test(sha ?? "")) { const d = getDag(repo, [sha]); if (d.parentsBySha.has(sha)) return d.parentsBySha.get(sha); }
-  const raw = gitOut(repo, "show", "-s", "--format=%P", sha); return raw === null ? null : raw.split(/\s+/).filter(Boolean);
-};
-export function isAncestorFast(repo, anc, desc) {
-  if (!anc || !desc) return false;
-  if (!SHA.test(anc) || !SHA.test(desc)) return anc === desc || gitRun(repo, "merge-base", "--is-ancestor", anc, desc).status === 0;
-  const dag = getDag(repo, anc === desc ? [anc] : [anc, desc]);
-  if (anc === desc) return dag.parentsBySha.has(anc) || Boolean(commitOf(repo, anc));
-  return dag.parentsBySha.has(anc) && dag.parentsBySha.has(desc) ? ancestorsOf(dag, desc).has(anc) : gitRun(repo, "merge-base", "--is-ancestor", anc, desc).status === 0;
-}
+const commitOf = hasCommitFast;
+const parentsOf = parentsOfFast;
 const isAncestor = isAncestorFast;
 const matchesLeadPath = (path, leadPaths) => leadPaths.some(rule => (rule.endsWith("/") ? path.startsWith(rule) : path === rule));
 const toSet = items => (items instanceof Set ? items : new Set(items ?? []));

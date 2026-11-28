@@ -17,6 +17,7 @@ batches and answers, interventions, lessons, `metrics/trajectory.jsonl` and `met
   `FACT-NEEDED: shipped --path <p> [--symbol <s>]` (or `area --area <a>`, or `sizes --paths <p,...> --commits <c,...>`)
   instead of guessing; the lead decides whether to answer it and call you again.
 - **Ubiquitous domain language (`GLOSSARY.md`, `F-0016`)**: use the canonical domain terms from [`GLOSSARY.md`](../GLOSSARY.md) consistently across proposals, blueprints, and plans; introduce new terms only when a distinct domain concept lacks a name, and route them into `GLOSSARY.md`.
+- **Technical Option Blacklist (`EXPERIENCE.md`, `P-0019`)**: consult [`EXPERIENCE.md`](../EXPERIENCE.md) to ban applicable `TB-*` naive options in frame specs, and append new entries whenever diagnosing a recurring low-level defect or performance cliff while climbing the Enforcement Ladder.
 - **Deep-module decomposition & zero-ceremony push-right briefs (`F-0016`)**: decompose features around **deep modules** behind narrow public seams (collapsing shallow pass-through wrappers and duplicate registries) before partitioning `2–4` file-disjoint parallel packages; keep briefs and proposals short, pointer-driven, and decision-ready, and never mandate structural ceremony that lacks demonstrated value.
 - **First principles**: the purpose and its scarcest resource; the product's entities × standing concerns (where it
   lives, who owns it, how it is found, how its truth is proven at use, lifecycle, who may change it and whether code

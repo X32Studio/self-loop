@@ -6,6 +6,7 @@ import { call, preparedIn, recordCall } from "../call.mjs";
 import { batchesFrom } from "../decisions.mjs";
 import { buildImportGraph } from "./arch-facts.mjs";
 import { node as nodeCommand } from "./commands.mjs";
+import { isAncestorFast } from "./dag.mjs";
 import { git, gitOk, regularFiles } from "./git-plumbing.mjs";
 import { HANDOFFS, idOf, parseHandoffs } from "./handoff.mjs";
 import { isPreparedRunner } from "./paseo.mjs";
@@ -130,7 +131,7 @@ export function computeDispatchPlan({ state, plan, context, ready = null, produc
       ? [{ id: p.id, role: p.role, handoff: h.id, wave: waveMap.get(p.id), base: h.product.base, commit: h.product.commit, changed: h.product.commit !== h.product.base }] : [];
   });
   const landedActors = landedWriters.filter(w => w.role === "actor");
-  const isMergedInto = (sha, target) => Boolean(target && gitOk(repo, "merge-base", "--is-ancestor", sha, target));
+  const isMergedInto = (sha, target) => Boolean(target && isAncestorFast(repo, sha, target));
   const unmergedWriters = landedWriters.filter(w => (w.role === "actor" || w.changed) && !isMergedInto(w.commit, base));
   const unmergedActors = unmergedWriters.filter(w => w.role === "actor");
   const needsIntegration = unmergedWriters.length > 0;
@@ -284,7 +285,7 @@ function writerBranch(cfg) {
   return { branchRef, branchHead, refHead };
 }
 const integratesHandoff = (repo, pkg, h, refHead) => Boolean(h?.product?.commit
-  && (h.product.commit !== h.product.base || (pkg.role === "actor" && refHead && !gitOk(repo, "merge-base", "--is-ancestor", h.product.commit, refHead))));
+  && (h.product.commit !== h.product.base || (pkg.role === "actor" && refHead && !isAncestorFast(repo, h.product.commit, refHead))));
 
 // P-0012, D-0059, design/parallel-dispatch.md#4
 export function integrateWave({ cfg, state, plan, wave = null, apply = false }) {
@@ -310,8 +311,8 @@ export function integrateWave({ cfg, state, plan, wave = null, apply = false }) 
     const aSet = new Set(landed[i].files);
     for (let j = i + 1; j < landed.length; j++) {
       if (ordered(landed[i].id, landed[j].id) && (
-        gitOk(cfg.product, "merge-base", "--is-ancestor", landed[i].commit, landed[j].commit)
-        || gitOk(cfg.product, "merge-base", "--is-ancestor", landed[j].commit, landed[i].commit)
+        isAncestorFast(cfg.product, landed[i].commit, landed[j].commit)
+        || isAncestorFast(cfg.product, landed[j].commit, landed[i].commit)
       )) continue;
       const shared = landed[j].files.filter(f => aSet.has(f));
       if (shared.length) conflicts.push({ left: landed[i].id, right: landed[j].id, files: shared });

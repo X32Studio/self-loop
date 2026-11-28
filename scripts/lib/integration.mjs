@@ -1,5 +1,6 @@
 // F-0003, F-0015, D-0064, D-0067, R-0054-reviewer-architecture
 import { criticContradictedByTrajectory, criticConvergedAccepted, fullSha } from "./ci.mjs";
+import { isAncestorFast } from "./dag.mjs";
 import { git, gitOk, run } from "./git-plumbing.mjs";
 import { HANDOFFS } from "./handoff.mjs";
 import { evaluateCertifiedWaveCoverage } from "./provenance.mjs";
@@ -35,7 +36,7 @@ export function integrationOf(cfg, state, handoffs, rows) {
   const ancestor = (a, b) => {
     if (a === b) return true;
     const key = `${a} ${b}`;
-    if (!known.has(key)) known.set(key, gitOk(product, "merge-base", "--is-ancestor", a, b));
+    if (!known.has(key)) known.set(key, isAncestorFast(product, a, b));
     return known.get(key);
   };
   const named = [...new Set([...rows.map(r => r.commit), ...handoffs.map(h => h.product?.commit)].filter(sha => /^[0-9a-f]{40}$/.test(sha ?? "")))];

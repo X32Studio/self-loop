@@ -13,7 +13,7 @@
   <a href="README.md">English</a> · <b>中文</b> · <a href="docs/getting-started.md">快速开始</a> · <a href="docs/architecture.md">架构设计</a> · <a href="docs/METHODOLOGY.md">方法论</a> · <a href="SKILL.md">Skill 规范</a>
 </p>
 
-<sub>由 <a href="https://x32studio.com">X32 Studio</a> 构建 · MIT 协议 · 零外部依赖（Node.js &gt;= 22 + Git）· v0.9.8</sub>
+<sub>由 <a href="https://x32studio.com">X32 Studio</a> 构建 · MIT 协议 · 零外部依赖（Node.js &gt;= 22 + Git）· v0.9.10</sub>
 
 </div>
 
@@ -42,7 +42,8 @@
 - **文件不交的并行 Actor 波次（`plan.mjs`、`dispatch.mjs`）**：跨计划全局协同调度（`admitAcrossPlans`），确保同一文件同一时间仅归单个 Actor，最大化并行吞吐并无冲突自动集成。
 - **航天级双五归零（`SKILL.md`）**：每次修复必须定位根因、澄清机理、确定性复现、闭环验证，并强制做**全仓水平横扫（举一反三）**把同根因的兄弟模块一并修净；同时把管理归零反哺回简报与门禁。
 - **无争议直收，告别多余裁判税**：独立 Critic 验收通过且 `0 缺陷 / 0 争议 / 0 审计违规` 时**直接收敛**，无需多余裁判；跨厂商/跨模型 **Judge** 专注于真实争议仲裁、封存用例（`sealed/`）复核与框架推导裁决。
-- **`codeTree` 级套件缓存复用（`suite-green.mjs`）**：同一份 `(codeTree, runtime)` 全量测试只跑一次，`VERSION`-only 发版顶提交与只读最终签收秒级复用已验证绿灯回执。
+- **多核并行测试、逐文件 `--relay` 断点接力与 `codeTree` 复用（`suite-green.mjs`）**：跨核心并行执行测试文件，按内容哈希持久化已过文件检查点，复跑仅执行未过/变更文件（macOS 132/133 接力复跑仅需 `17s`）；`VERSION`-only 发版顶提交秒级复用已验证绿灯回执（远端 CI `~11s`）。
+- **隔离工作树原子微补丁（`self-loop.mjs patch --diff`）**：Lead 发起的有界小修（`<= 20` 行、`<= 3` 文件）通过 unified diff 在临时隔离工作树中应用、强制执行 `--verify` 并 fast-forward 落地，零污染主检出。
 
 ### 3. 代码门禁高于提示词祈祷（五层机械化阶梯）
 提示词在长上下文下必然衰减。每条规矩都尽量升到它能达到的最高机械层，且**脚本绝不替代工程判断**（见下方 [教训 `L-0002`](#来自真实生产循环的经验教训)）：
@@ -57,6 +58,8 @@
 经由 55–80+ 轮真实多仓生产长跑淬炼：
 - **有界审计（`<= 1 MiB`）**：单命令去重与预览截断彻底杜绝平方级审计日志爆炸，同时完整保留全部高危安全标记。
 - **自愈清理与加密墓碑（`self-loop.mjs clean` / `records gc`）**：自动回收已完成工作树、LRU 清理过期套件缓存、压缩超限审计与日志，并在裁剪未引用旧证据时写入带 SHA-256 与来源提交的 `prune/PR-NNNN.md` 墓碑，保持全链引用可校验。
+- **共享内存提交图 DAG 与批量 Git 快照（`scripts/lib/dag.mjs`）**：按仓一次加载提交图并批量读取 Git 对象/历史，消除 `provenance`、`dispatch`、`plan`、`ci` 与 `gated-push` 中的 `O(N)` 子进程风暴（57 轮历史推送校验从 `>3 分钟` 降至 `12.5 秒`）。
+- **持久化工程经验与技术选项黑名单（`EXPERIENCE.md`）**：把反复出现的底层踩坑固化为结构化条款（`TB-01`–`TB-10`：禁用朴素选项 → 强制更优选项 → 观测失效模式 → 机械化阶梯），直接接入 `SKILL.md` 与 Actor / Critic / Frame Reviewer 简报，让经验跨轮复利沉淀而不重复踩坑。
 - **可移植记录仓 `pre-commit` 防线**：`self-loop.mjs init` 与 `hooks install --records` 自动安装无私密路径的 `.githooks/pre-commit`，提交前拦截未声明杂散文件及 `INDEX.md`/`BLUEPRINT.md` 漂移。
 - **零模型与零 Harness 绑定**：在 `loop.json` 中自由配置任意 `runner`（`paseo`、`t3`、`claude`、`codex`）、`provider`（`better-paseo-antigravity`、`antigravity`、`claude`、`codex`、`cursor`、`opencode`、`pi` 或自定义插件）、`adapter`、路由前缀模型与独立性策略（`vendor` | `model` | `session`）。
 
@@ -116,7 +119,7 @@ flowchart TD
 ```bash
 git clone https://github.com/X32Studio/self-loop.git ~/tools/self-loop
 cd ~/tools/self-loop
-git checkout v0.9.8
+git checkout v0.9.10
 npm run demo
 ```
 
@@ -190,6 +193,8 @@ node ~/tools/self-loop/scripts/self-loop.mjs clean --config .self-loop/loop.json
 | [`docs/release-and-versioning.md`](docs/release-and-versioning.md) | SemVer `VERSION`-only 顶提交、`codeTree` 复用、原子打标与双平台 CI |
 | [`docs/concepts-and-records.md`](docs/concepts-and-records.md) | 记录仓布局（`purpose`、`decisions`、`blueprint`、`plans`、`rounds`、`evidence`、`prune`、`sealed`） |
 | [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) | 引擎机理、五层阶梯与教训 `L-0002` 深度解析 |
+| [`EXPERIENCE.md`](EXPERIENCE.md) | 持久化工程经验与技术选项黑名单（`TB-01`–`TB-10`），接入 Actor、Critic 与 Frame Reviewer 全流程 |
+| [`GLOSSARY.md`](GLOSSARY.md) | 权威领域词表，防止简报、记录与门禁术语漂移 |
 | [`RECORDS.md`](RECORDS.md) / [`REQUIREMENTS.md`](REQUIREMENTS.md) / [`DEBT.md`](DEBT.md) | 由门禁脚本直接解析的运行时契约与显性机械化欠账台账 |
 
 ---

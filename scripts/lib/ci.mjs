@@ -9,6 +9,7 @@ import {
   checkAppProblem, CODEBUILD_APP, codecommitHost, DestinationError, grcEndpointProblem, isGrcUrl,
   parseDestination, redactDestinationOutput, shownUrl, validateCodeBuildSpec,
 } from "./ci-destination.mjs";
+import { isAncestorFast } from "./dag.mjs";
 import { gitOk } from "./git-plumbing.mjs";
 import { HANDOFFS, parseHandoffs } from "./handoff.mjs";
 import { evaluateCertifiedWaveCoverage, verifyProvenance } from "./provenance.mjs";
@@ -204,6 +205,14 @@ export function shownTree(repo, sha) {
 const isVaried = receipt => receipt.versionVaried !== undefined && receipt.versionVaried !== null;
 
 // design/version-tip.md#suite-evidence-at-the-point-of-use
+export function receiptMatches(receipt, repo, full) {
+  if (!receipt || typeof receipt !== "object" || receipt.green !== true || !receipt.tree || !receipt.repository) return false;
+  if (real(receipt.repository) !== real(repo)) return false;
+  const ofSha = typeof receipt.sha === "string" && SHA.test(receipt.sha) ? receipt.sha : null;
+  if (receipt.sha !== full && !(isVaried(receipt) && ofSha && originalObjects(() => tipProblem(repo, ofSha, full)) === null)) return false;
+  return receipt.tree === treeOf(repo, full);
+}
+
 export function receiptProblem(receipt, repo, full) {
   if (!receipt || typeof receipt !== "object") return "no suite receipt; run suite-green.mjs on this commit first";
   const varied = isVaried(receipt);
@@ -316,14 +325,14 @@ export function hasConvergence(repo, records, full, cfg = null) {
       && criticConvergedAccepted(h, { has: path => files.has(path), read }));
     for (const ch of candidates) {
       if (ch.product?.base && ch.product?.commit && ch.product.base !== ch.product.commit
-        && !gitOk(repo, ORIGINAL_OBJECTS, "merge-base", "--is-ancestor", ch.product.base, ch.product.commit)) continue;
+        && !isAncestorFast(repo, ch.product.base, ch.product.commit)) continue;
       if (criticContradictedByTrajectory(rows, ch, [sha])) continue;
       const cov = evaluateCertifiedWaveCoverage({
         repo, records, snap, cfg: loopInfo.cfg, phase: phase ?? ch.phase ?? null,
         targetCommit: sha, judge: ch, allHandoffs: handoffs, allRows: rows, requireActor: false,
       });
       if (!cov.ok) continue;
-      if (cov.actors.some(a => !ch.product?.base || !gitOk(repo, ORIGINAL_OBJECTS, "merge-base", "--is-ancestor", a.product.commit, ch.product.base))) continue;
+      if (cov.actors.some(a => !ch.product?.base || !isAncestorFast(repo, a.product.commit, ch.product.base))) continue;
       return true;
     }
     return false;

@@ -15,7 +15,7 @@
   },
   "owns": {
     "critic": ["test/acceptance", "test/acceptance.test.js"],
-    "actor": ["src", "test/unit", "GLOSSARY.md"]
+    "actor": ["src", "test/unit", "GLOSSARY.md", "EXPERIENCE.md"]
   },
   "agents": {
     "critic": { "runner": "codex", "model": "gpt-5.4", "effort": "high" },

@@ -1,7 +1,7 @@
 // P-0006, F-0012, D-0060, D-0063, D-0064, D-0069, design/dispatch.md#file-ownership, design/dispatch.md#ready-state, design/mandatory-control-plane.md#4
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { git, regularFiles, run } from './git-plumbing.mjs';
+import { blobs, git, regularFiles, run } from './git-plumbing.mjs';
 import { canonical } from './path-canonical.mjs';
 import { HEAVY_ROLES, normalize, preparedIn } from '../call.mjs';
 import { HANDOFFS, parseHandoffs, ROLES } from './handoff.mjs';
@@ -22,10 +22,20 @@ const object = value => value !== null && typeof value === 'object' && !Array.is
 export const PLAN_ID = /^PL-\d{4}$/;
 const recordPointer = /^(?:PL|D|P|F|B|I|L)-\d{4}$|^R-\d{4}-[a-z]+(?:-[a-z]+)*$/;
 
+const batchKey = p => { const s = p.indexOf('/'), d = s > 0 ? p.slice(0, s) : ''; return d === 'evidence' ? (p.endsWith('.json') ? 'ev' : null) : /^(?:decisions|plans|purpose|blueprint|rounds|interventions|metrics|owner|prune|design)$/.test(d) ? d : null; };
 export function snapshot(records, revision = 'HEAD') {
   records = realpathSync(resolve(records));
-  const head = git(records, 'rev-parse', `${revision}^{commit}`), files = new Set(regularFiles(records, head).map(f => f.path)), cache = new Map();
-  const bytes = path => !files.has(path) ? null : (cache.has(path) ? cache.get(path) : cache.set(path, run('git', ['-C', records, 'show', `${head}:${path}`])).get(path));
+  const head = git(records, 'rev-parse', `${revision}^{commit}`), entries = regularFiles(records, head), files = new Set(entries.map(f => f.path)), cache = new Map(), byKey = new Map(), done = new Set();
+  for (const e of entries) { const k = batchKey(e.path); if (k) (byKey.get(k) ?? byKey.set(k, []).get(k)).push(e); }
+  const bytes = p => {
+    if (!files.has(p)) return null;
+    if (!cache.has(p)) {
+      const k = batchKey(p);
+      if (k && !done.has(k)) { done.add(k); const list = (byKey.get(k) ?? []).filter(e => !cache.has(e.path)); for (let i = 0; i < list.length; i += 256) { const s = list.slice(i, i + 256); blobs(records, s.map(e => e.sha)).forEach((b, j) => cache.set(s[j].path, b)); } }
+      if (!cache.has(p)) cache.set(p, run('git', ['-C', records, 'show', `${head}:${p}`]));
+    }
+    return cache.get(p);
+  };
   return { records, revision: head, files, bytes, read: path => bytes(path)?.toString('utf8') ?? '' };
 }
 

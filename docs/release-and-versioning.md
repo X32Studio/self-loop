@@ -101,7 +101,15 @@ Receipts and findings are stored under the product repository's Git common direc
 
 ## Dual-Platform CI Verification
 
-For `self-loop` itself, [`.github/workflows/test.yml`](../.github/workflows/test.yml) runs both the unit suite (`node --test scripts/test/*.test.mjs`) and the acceptance suite (`node --test acceptance`) on **Linux (ARM64)** and **macOS (ARM64)** under Node 24. A prerelease tip (e.g., `0.6.0-v1.1`) verifies both platforms on live remote CI before any plain `0.6.0` release is cut and installed.
+For `self-loop` itself, [`.github/workflows/test.yml`](../.github/workflows/test.yml) verifies **Linux (ARM64)** and **macOS (ARM64)** under Node 24 with:
+
+```bash
+node scripts/suite-green.mjs --repo . --sha HEAD --command "node --test scripts/test acceptance" --format node-test --relay
+```
+
+- **Multi-core parallel per-file execution & relay**: `--relay` discovers every unit and acceptance `*.test.mjs` file from the committed Git tree, runs them in parallel across host cores, and persists content-addressed per-file checkpoints in `SELF_LOOP_RELAY_DIR` across reruns so a rerun after a single-file failure only re-executes uncheckpointed files.
+- **Deterministic Git maintenance suppression**: both the workflow environment and `suite-green.mjs` set `gc.auto=0` and `maintenance.auto=false` so background Git maintenance never races with ephemeral test repositories.
+- **`codeTree` receipt reuse**: cutting a `VERSION`-only release commit (for example `0.9.10` from a verified `0.9.10-v1.1` candidate) preserves `codeTree` and reuses the verified suite receipt instead of rerunning unchanged code. A prerelease tip verifies both platforms on live remote CI before any plain `X.Y.Z` release is cut and installed.
 
 ## Multi-Host Controlled Installation & Rollback
 

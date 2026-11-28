@@ -8,7 +8,7 @@ import { addEvent, FEATURE_EVENTS, FEATURE_ID, inspectBlueprint, parseRoundRef, 
 import { ownerAlarms, phaseMoveAlarms } from "./lib/blueprint-alarms.mjs";
 import { criticConvergedAccepted } from "./lib/ci.mjs";
 import { notGreen, readCi, recordsLoop } from "./lib/ci-receipt.mjs";
-import { gitOk } from "./lib/git-plumbing.mjs";
+import { isAncestorFast } from "./lib/dag.mjs";
 import { HANDOFFS, parseHandoffs } from "./lib/handoff.mjs";
 import { evaluateCertifiedWaveCoverage } from "./lib/provenance.mjs";
 import { listFiles } from "./records-check.mjs";
@@ -59,7 +59,7 @@ function roundEvidence(repo, round) {
   try { loop = recordsLoop(repo); } catch {}
   if (loop?.product) {
     if (handoff.product?.base && handoff.product?.commit && handoff.product.base !== handoff.product.commit
-      && !gitOk(loop.product, "--no-replace-objects", "merge-base", "--is-ancestor", handoff.product.base, handoff.product.commit))
+      && !isAncestorFast(loop.product, handoff.product.base, handoff.product.commit))
       return { problem: `done --round ${round} critic base is not an ancestor of its commit` };
     const files = new Set(recordsFiles(repo));
     const cov = evaluateCertifiedWaveCoverage({
@@ -68,7 +68,7 @@ function roundEvidence(repo, round) {
       allHandoffs: handoffs, allRows: rows, requireActor: false,
     });
     if (!cov.ok) return { problem: `done --round ${round} failed critic/actor independence (${cov.problem})` };
-    if (cov.actors.some(a => !handoff.product?.base || !gitOk(loop.product, "--no-replace-objects", "merge-base", "--is-ancestor", a.product.commit, handoff.product.base)))
+    if (cov.actors.some(a => !handoff.product?.base || !isAncestorFast(loop.product, a.product.commit, handoff.product.base)))
       return { problem: `done --round ${round} critic base does not cover all wave actor commits` };
   }
   return { evidence: { commit: row.commit, ...(row.tip ? { tip: row.tip } : {}), ci: row.ciReceipt } };

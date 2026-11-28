@@ -1,19 +1,17 @@
-// D-0009 item 2: a pushed tip is valid for a ruling on an earlier SHA when the only file between them is VERSION.
+// D-0009, F-0017
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import test from "node:test";
 import { pushCommit } from "../lib/ci.mjs";
-import { tipProblem } from "../lib/tip.mjs";
+import { tipCovers, tipProblem } from "../lib/tip.mjs";
 import { fakeGh, git, green, loopProduct, repo, roomyStore, scripts, temp } from "./helpers.mjs";
 
-/** The one required check's run as GitHub serves it: run `id` of github-actions/verify, completed with `conclusion`. */
 const served = (conclusion = "success", id = 1) => conclusion === "pending"
   ? { id, app: "github-actions", name: "verify", status: "in_progress", conclusion: null }
   : { id, app: "github-actions", name: "verify", status: "completed", conclusion };
 
-/** A records repository whose loop.json is the loop of `product` (phase v1, one required check), and its ledger. */
 function loopRecords(product) {
   const records = repo({ "README.md": "# records\n", "metrics/.keep": "", "loop.json": JSON.stringify({ product, records: ".", workDir: temp(), phase: "v1",
     briefs: {}, agents: {}, gates: { require: ["github-actions/verify"] } }) + "\n" });
@@ -22,7 +20,7 @@ function loopRecords(product) {
 
 function history() {
   const product = repo({ "VERSION": "1.0.0\n", "src/a.js": "a\n" });
-  git(product, "remote", "add", "origin", "https://github.com/o/r.git"); // where the receipts below read CI
+  git(product, "remote", "add", "origin", "https://github.com/o/r.git");
   const ruled = git(product, "rev-parse", "HEAD");
   const commit = (files, message, parent = "HEAD") => {
     git(product, "checkout", "-q", "--detach", parent);
@@ -223,14 +221,12 @@ test("a CONVERGED row on a VERSION-only tip takes its CI word from the append's 
   assert.equal(ok.status, 0, ok.stderr);
   assert.deepEqual([rows()[0].commit, rows()[0].tip, rows()[0].ci, rows()[0].verdict], [h.ruled, h.tip, "success", "CONVERGED"]);
 
-  // A real failure stays recordable, so its diagnosis still fires.
   gh.serve({ "o/r": { [h.tip]: [served(), served("failure", 2)] } });
   const failed = append("CONTINUE", ...tip);
   assert.equal(failed.status, 0, failed.stderr);
   assert.equal(rows()[1].ci, "failure");
   const alarms = spawnSync(process.execPath, [join(scripts, "trajectory.mjs"), "alarms", "--file", file, "--json"], { encoding: "utf8" });
   assert.ok(JSON.parse(alarms.stdout).some(a => a.type === "ci-not-green" && a.at === 1), alarms.stdout);
-  // Old rows, a tip row without a receipt among them, are still read.
   writeFileSync(file, readFileSync(file, "utf8") + JSON.stringify({ round: 2, phase: "v1", role: "judge", verdict: "CONVERGED", commit: h.ruled, tip: h.tip, ci: "success" }) + "\n");
   assert.equal(spawnSync(process.execPath, [join(scripts, "trajectory.mjs"), "alarms", "--file", file], { encoding: "utf8" }).status, 0);
 });
@@ -255,7 +251,7 @@ test("next prints the closing command for a VERSION-only tip without any CI inpu
   writeFileSync(join(p.product, "VERSION"), "1.0.1\n");
   git(p.product, "commit", "-qam", "1.0.1");
   const tip = git(p.product, "rev-parse", "HEAD");
-  const gh = fakeGh(); // serves nothing yet: the checks cannot be read
+  const gh = fakeGh();
   const next = spawnSync(process.execPath, [join(scripts, "loop.mjs"), "next", "--config", join(p.records, "loop.json")], { encoding: "utf8", env: gh.env });
   const block = next.stdout.split("\n- ").find(text => text.startsWith("ruling not in the trajectory")) ?? "";
   const line = block.split("\n").map(l => l.trim()).find(l => l.includes("trajectory.mjs append")) ?? "";
@@ -271,4 +267,111 @@ test("next prints the closing command for a VERSION-only tip without any CI inpu
   const row = JSON.parse(readFileSync(join(p.records, "metrics", "trajectory.jsonl"), "utf8"));
   assert.deepEqual([row.commit, row.tip, row.verdict, row.ci], [ruled, tip, "CONVERGED", "success"]);
   assert.ok(readFileSync(join(p.records, row.ciReceipt), "utf8").includes(tip));
+});
+
+test("F-0017: tipProblem and tipCovers use shared DAG with < 2 git spawns across 30+ non-covering checks, merge detection, fallback, and replace resistance", () => {
+  const product = repo({ "VERSION": "1.0.0\n", "src/a.js": "a\n" });
+  const c0 = git(product, "rev-parse", "HEAD");
+  const commit = (files, msg) => {
+    for (const [p, text] of Object.entries(files)) writeFileSync(join(product, p), text);
+    git(product, "add", "-A");
+    git(product, "commit", "-qm", msg);
+    return git(product, "rev-parse", "HEAD");
+  };
+  const v1 = commit({ VERSION: "1.0.1\n" }, "v1");
+  const v2 = commit({ VERSION: "1.0.2\n" }, "v2");
+  const code = commit({ VERSION: "1.0.3\n", "src/a.js": "b\n" }, "code");
+
+  git(product, "checkout", "-q", "-b", "side", c0);
+  const s1 = commit({ "src/side.js": "s1\n" }, "side-1");
+  const s2 = commit({ "src/side.js": "s2\n" }, "side-2");
+
+  git(product, "checkout", "-q", "-b", "merged-branch", v1);
+  git(product, "merge", "-q", "--no-edit", s1);
+  const m1 = git(product, "rev-parse", "HEAD");
+  const mTip = commit({ VERSION: "1.0.9\n" }, "after-merge");
+
+  assert.equal(tipCovers(product, c0, v1), true);
+  assert.equal(tipCovers(product, c0, v2), true);
+  assert.equal(tipProblem(product, c0, v2), null);
+  assert.equal(tipCovers(product, c0, code), false);
+  assert.match(tipProblem(product, c0, code), new RegExp(`^${code.slice(0, 7)} changes src/a\\.js after the ruled commit ${c0.slice(0, 7)}; only VERSION may change$`));
+  assert.equal(tipCovers(product, c0, m1), false);
+  assert.match(tipProblem(product, c0, m1), new RegExp(`^${m1.slice(0, 7)} follows the ruled commit ${c0.slice(0, 7)} through merge ${m1.slice(0, 7)}; only commits of VERSION may follow a ruling$`));
+  assert.equal(tipCovers(product, c0, mTip), false);
+  assert.match(tipProblem(product, c0, mTip), new RegExp(`^${mTip.slice(0, 7)} follows the ruled commit ${c0.slice(0, 7)} through merge ${m1.slice(0, 7)}; only commits of VERSION may follow a ruling$`));
+  assert.equal(tipCovers(product, v2, c0), false);
+  assert.match(tipProblem(product, v2, c0), new RegExp(`^${c0.slice(0, 7)} does not follow the ruled commit ${v2.slice(0, 7)}$`));
+  assert.equal(tipCovers(product, s1, v2), false);
+
+  const unreachLinear = git(product, "commit-tree", git(product, "rev-parse", `${v1}^{tree}`), "-p", c0, "-m", "unreachable version tip");
+  assert.equal(tipCovers(product, c0, unreachLinear), true);
+  assert.equal(tipProblem(product, c0, unreachLinear), null);
+  const unreachMerge = git(product, "commit-tree", git(product, "rev-parse", `${v1}^{tree}`), "-p", c0, "-p", s1, "-m", "unreachable merge");
+  assert.equal(tipCovers(product, c0, unreachMerge), false);
+  assert.match(tipProblem(product, c0, unreachMerge), /through merge/);
+  const unreachOrphan = git(product, "commit-tree", git(product, "rev-parse", `${v1}^{tree}`), "-m", "unreachable orphan");
+  assert.equal(tipCovers(product, c0, unreachOrphan), false);
+  assert.match(tipProblem(product, c0, unreachOrphan), /does not follow/);
+
+  git(product, "replace", code, v1);
+  git(product, "replace", "--graft", v1);
+  try {
+    assert.equal(tipCovers(product, c0, code), false);
+    assert.match(tipProblem(product, c0, code), /changes src\/a\.js/);
+    assert.equal(tipCovers(product, c0, v1), true);
+  } finally {
+    git(product, "replace", "-d", code);
+    git(product, "replace", "-d", v1);
+  }
+
+  const spyRepo = repo({ "VERSION": "2.0.0\n", "src/a.js": "0\n" });
+  const r0 = git(spyRepo, "rev-parse", "HEAD");
+  const chain = [r0];
+  for (let i = 1; i <= 8; i++) {
+    writeFileSync(join(spyRepo, "src/a.js"), `${i}\n`);
+    git(spyRepo, "commit", "-qam", `c${i}`);
+    chain.push(git(spyRepo, "rev-parse", "HEAD"));
+  }
+  git(spyRepo, "checkout", "-q", "-b", "alt", r0);
+  writeFileSync(join(spyRepo, "src/b.js"), "alt\n");
+  git(spyRepo, "add", "src/b.js");
+  git(spyRepo, "commit", "-qm", "alt-1");
+  const alt1 = git(spyRepo, "rev-parse", "HEAD");
+  git(spyRepo, "merge", "-q", "--no-edit", chain[4]);
+  const spyMerge = git(spyRepo, "rev-parse", "HEAD");
+
+  const realGit = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim();
+  assert.ok(realGit && existsSync(realGit));
+  const binDir = temp("tip-git-spy-");
+  const logFile = join(binDir, "calls.log");
+  const spy = join(binDir, "git");
+  writeFileSync(spy, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(logFile)}\nexec ${JSON.stringify(realGit)} "$@"\n`);
+  chmodSync(spy, 0o755);
+
+  const origPath = process.env.PATH;
+  process.env.PATH = `${binDir}${delimiter}${origPath}`;
+  try {
+    let checks = 0;
+    for (let i = 1; i < chain.length; i++) {
+      for (let j = 0; j < i; j++) {
+        assert.equal(tipCovers(spyRepo, chain[i], chain[j]), false);
+        checks++;
+      }
+      assert.equal(tipCovers(spyRepo, alt1, chain[i]), false);
+      checks++;
+      assert.equal(tipCovers(spyRepo, chain[i], alt1), false);
+      checks++;
+    }
+    assert.equal(tipCovers(spyRepo, r0, spyMerge), false);
+    assert.equal(tipCovers(spyRepo, alt1, spyMerge), false);
+    assert.equal(tipCovers(spyRepo, chain[4], spyMerge), false);
+    checks += 3;
+    assert.ok(checks >= 30, `expected >= 30 checks, ran ${checks}`);
+    const calls = existsSync(logFile) ? readFileSync(logFile, "utf8").trim().split("\n").filter(Boolean) : [];
+    assert.ok(calls.length < 2, `expected < 2 git spawns across ${checks} tipCovers calls, got ${calls.length}: ${calls.join(" | ")}`);
+    assert.ok(calls.every(line => !line.includes("merge-base") && !line.includes("--min-parents=2")), `unexpected hot-path git spawn: ${calls.join(" | ")}`);
+  } finally {
+    process.env.PATH = origPath;
+  }
 });

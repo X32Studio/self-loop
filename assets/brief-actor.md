@@ -1,6 +1,6 @@
 # Actor brief
 
-Read the shared brief and [`GLOSSARY.md`](../GLOSSARY.md) first. Derive the design from first principles (requirements, domain facts, ownership; never from
+Read the shared brief, [`GLOSSARY.md`](../GLOSSARY.md), and [`EXPERIENCE.md`](../EXPERIENCE.md) first. Derive the design from first principles (requirements, domain facts, ownership; never from
 the cases) and read the critic's cases as labelled training data: fix the general mechanism each failing case exposes. A
 change that cannot be justified from the requirements is overfitting, however many cases it passes. Never key behaviour
 on a case id, name, size or constant.
@@ -10,6 +10,7 @@ on a case id, name, size or constant.
 
 ## Deliverables (only the paths you own)
 - **Deep modules behind narrow public seams & vertical tracer-bullet slices (`F-0016`, `GLOSSARY.md`)**: organize implementation into deep modules with narrow, stable public seams encapsulating rich domain logic rather than shallow pass-through wrappers; define thresholds as rule data once; build vertical tracer-bullet slices end to end through real seams instead of wide horizontal scaffolding; write seam-first unit tests (assert observable behavior at exported/CLI seams and ban implementation-coupled line-count assertions or tautological mocks) alongside the scenario adapter (scripted fakes).
+- **Technical Option Blacklist (`EXPERIENCE.md`, `P-0019`)**: check [`EXPERIENCE.md`](../EXPERIENCE.md) before coding and never introduce a blacklisted `TB-*` option when a mandatory better primitive exists.
 - **Dual-Five Zeroing (双五归零, self-loop D-0067)**: on every bug fix or feature, complete all five technical-zeroing steps — (1) pinpoint the exact root cause (never a symptom patch), (2) state the violated mechanism/invariant, (3) reproduce deterministically first, (4) verify the fix cleanly, and (5) **Horizontal Sweep (举一反三)** — before finishing, grep the whole repository for every sibling consumer, state machine, variant, harness path, and protocol boundary sharing the same pattern, fix sibling gaps within your declared `files:` in the same batch, and document every inspected sibling (fixed or out-of-scope) in the **Horizontal Sweep** table of `out/report.md`.
 - `out/design/<area>.md` (recorded as `design/<area>.md`): current state only (no "Round N" sections; history lives in rounds and the repository):
   each mechanism traced to the requirement it comes from, module map, data flow, how each owner constraint is met with
